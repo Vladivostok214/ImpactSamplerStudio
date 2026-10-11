@@ -1,0 +1,41 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Node dependencies
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Rust / Tauri build artifacts
+src-tauri/target/
+src-tauri/gen/
+target/
+
+# Capturas de prueba y temporales
+*.png
+*.jpg
+*.jpeg
+scratch/
+
+# SoundFonts pesados (>100MB superan el límite de GitHub)
+# Coloca tus archivos .sf2 directamente en la carpeta soundfonts/
+soundfonts/*.sf2
+!soundfonts/.gitkeep

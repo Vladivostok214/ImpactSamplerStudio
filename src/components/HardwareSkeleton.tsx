@@ -1,0 +1,722 @@
+import React, { useState, useEffect } from "react";
+import { PadSlotInfo, KnobMappingInfo, KnobTarget, FxRouting } from "../types/sampler";
+
+import { SoundFontInfo } from "../types/soundfont";
+
+interface HardwareSkeletonProps {
+  activeNotes: Map<number, number>;
+  faders: number[]; // 9 values, 0-127
+  knobs: number[]; // 8 values, 0-127
+  pitchBend: number; // -8192 to 8191
+  modWheel: number; // 0 to 127
+  keyRange?: { minNote: number; maxNote: number; label?: string };
+  padSlots?: PadSlotInfo[];
+  knobMappings?: KnobMappingInfo[];
+  onSetKnobMapping?: (knobIndex: number, target: KnobTarget) => void;
+  fxRouting?: FxRouting;
+  onChangeFxRouting?: (routing: FxRouting) => void;
+  currentSoundfont?: SoundFontInfo | null;
+  activePresetIndex?: number;
+  onOpenInstrumentSelect?: () => void;
+  onSelectPreset?: (patch: number, index: number) => void;
+  onTriggerNote: (note: number, velocity: number) => void;
+  onReleaseNote: (note: number) => void;
+  onChangeFader: (index: number, value: number) => void;
+  onChangeKnob: (index: number, value: number) => void;
+  onChangePitchBend: (normalized: number) => void;
+  onChangeModWheel: (value: number) => void;
+  hideKeyboard?: boolean;
+  children?: React.ReactNode;
+}
+
+interface KeyItem {
+  note: number;
+  isBlack: boolean;
+  isActive: boolean;
+  velocity: number;
+  isOutOfRange: boolean;
+}
+
+const FADER_PAD_COLORS = [
+  { line: "bg-amber-400 shadow-[0_0_6px_#f59e0b]", dot: "bg-amber-400", border: "border-amber-400/40" }, // P1
+  { line: "bg-emerald-400 shadow-[0_0_6px_#10b981]", dot: "bg-emerald-400", border: "border-emerald-400/40" }, // P2
+  { line: "bg-teal-400 shadow-[0_0_6px_#14b8a6]", dot: "bg-teal-400", border: "border-teal-400/40" }, // P3
+  { line: "bg-cyan-400 shadow-[0_0_6px_#06b6d4]", dot: "bg-cyan-400", border: "border-cyan-400/40" }, // P4
+  { line: "bg-sky-400 shadow-[0_0_6px_#0ea5e9]", dot: "bg-sky-400", border: "border-sky-400/40" }, // P5
+  { line: "bg-orange-400 shadow-[0_0_6px_#f97316]", dot: "bg-orange-400", border: "border-orange-400/40" }, // P6
+  { line: "bg-rose-400 shadow-[0_0_6px_#f43f5e]", dot: "bg-rose-400", border: "border-rose-400/40" }, // P7
+  { line: "bg-purple-400 shadow-[0_0_6px_#a855f7]", dot: "bg-purple-400", border: "border-purple-400/40" }, // P8
+  { line: "bg-cyan-400 shadow-[0_0_8px_#22d3ee]", dot: "bg-cyan-400", border: "border-cyan-400/50" }, // Master F9
+];
+
+export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
+  activeNotes,
+  faders,
+  knobs,
+  pitchBend,
+  modWheel,
+  keyRange,
+  padSlots = [],
+  knobMappings = [],
+  onSetKnobMapping,
+  fxRouting = "both",
+  onChangeFxRouting,
+  currentSoundfont,
+  activePresetIndex = 0,
+  onOpenInstrumentSelect,
+  onSelectPreset,
+  onTriggerNote,
+  onReleaseNote,
+  onChangeFader,
+  onChangeKnob,
+  onChangePitchBend,
+  onChangeModWheel,
+  hideKeyboard = false,
+  children,
+}) => {
+  const [knobContextMenu, setKnobContextMenu] = useState<{
+    knobIdx: number;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  useEffect(() => {
+    const handleClickOutside = () => {
+      setKnobContextMenu(null);
+    };
+    window.addEventListener("click", handleClickOutside);
+    return () => window.removeEventListener("click", handleClickOutside);
+  }, []);
+
+  const AVAILABLE_KNOB_TARGETS: { target: KnobTarget; label: string; desc: string }[] = [
+    { target: "cutoff", label: "CUTOFF", desc: "Filtro Paso Bajo (40Hz - 18kHz)" },
+    { target: "resonance", label: "RES", desc: "Filtro Resonancia Q" },
+    { target: "drive", label: "DRIVE", desc: "Warm Saturation Analógica" },
+    { target: "reverbMix", label: "REVERB", desc: "Reverb Freeverb Estéreo" },
+    { target: "delayTime", label: "D-TIME", desc: "Delay Tiempo (40ms - 1s)" },
+    { target: "delayFeedback", label: "D-FDBK", desc: "Delay Feedback / Ecos" },
+    { target: "delayMix", label: "D-MIX", desc: "Delay Mix (Dry / Wet)" },
+    { target: "chorusMix", label: "CHORUS", desc: "Chorus Modulación Estéreo" },
+    { target: "pan", label: "PAN", desc: "Panorámica L/R Máster" },
+  ];
+
+  // Generar las 49 teclas (C1 / nota 36 a C5 / nota 84)
+  const keys: KeyItem[] = [];
+  const startNote = 36; // C1
+  const numKeys = 49;
+
+  for (let i = 0; i < numKeys; i++) {
+    const note = startNote + i;
+    const noteInOctave = note % 12;
+    const isBlack = [1, 3, 6, 8, 10].includes(noteInOctave);
+    const isActive = activeNotes.has(note);
+    const velocity = activeNotes.get(note) || 0;
+    const isOutOfRange =
+      keyRange !== undefined &&
+      (note < keyRange.minNote || note > keyRange.maxNote);
+
+    keys.push({
+      note,
+      isBlack,
+      isActive,
+      velocity,
+      isOutOfRange,
+    });
+  }
+
+
+
+
+
+  // Drag handlers para Faders
+  const handleFaderPointerDown = (index: number, e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+
+    const updateFromPointer = (ev: PointerEvent | React.PointerEvent) => {
+      const rect = el.getBoundingClientRect();
+      const relativeY = ev.clientY - rect.top;
+      const pct = 1.0 - Math.min(Math.max(relativeY / rect.height, 0), 1);
+      const val = Math.round(pct * 127);
+      onChangeFader(index, val);
+    };
+
+    updateFromPointer(e);
+
+    const onPointerMove = (ev: PointerEvent) => updateFromPointer(ev);
+    const onPointerUp = (ev: PointerEvent) => {
+      el.releasePointerCapture(ev.pointerId);
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  };
+
+  // Drag handlers para Knobs (arrastre vertical estilo DAW)
+  const handleKnobPointerDown = (index: number, e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const startY = e.clientY;
+    const startVal = knobs[index];
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+
+    const onPointerMove = (ev: PointerEvent) => {
+      const deltaY = startY - ev.clientY; // Arriba suma, abajo resta
+      const deltaVal = Math.round((deltaY / 100) * 127);
+      const newVal = Math.min(Math.max(startVal + deltaVal, 0), 127);
+      onChangeKnob(index, newVal);
+    };
+
+    const onPointerUp = (ev: PointerEvent) => {
+      el.releasePointerCapture(ev.pointerId);
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  };
+
+  // Drag handlers para Pitch Wheel (con resorte de retorno automático al centro 0)
+  const handlePitchWheelPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+
+    const updatePitch = (ev: PointerEvent | React.PointerEvent) => {
+      const rect = el.getBoundingClientRect();
+      const relativeY = ev.clientY - rect.top;
+      const normalizedRatio = 1.0 - 2.0 * Math.min(Math.max(relativeY / rect.height, 0), 1);
+      const bend = Math.round(normalizedRatio * 8191);
+      onChangePitchBend(bend);
+    };
+
+    updatePitch(e);
+
+    const onPointerMove = (ev: PointerEvent) => updatePitch(ev);
+    const onPointerUp = (ev: PointerEvent) => {
+      el.releasePointerCapture(ev.pointerId);
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      // Retorno con resorte a 0
+      onChangePitchBend(0);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  };
+
+  // Drag handlers para Mod Wheel
+  const handleModWheelPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+
+    const updateMod = (ev: PointerEvent | React.PointerEvent) => {
+      const rect = el.getBoundingClientRect();
+      const relativeY = ev.clientY - rect.top;
+      const pct = 1.0 - Math.min(Math.max(relativeY / rect.height, 0), 1);
+      onChangeModWheel(Math.round(pct * 127));
+    };
+
+    updateMod(e);
+
+    const onPointerMove = (ev: PointerEvent) => updateMod(ev);
+    const onPointerUp = (ev: PointerEvent) => {
+      el.releasePointerCapture(ev.pointerId);
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  };
+
+  return (
+    <div className="bg-[#050508] border border-white/[0.12] rounded-2xl shadow-[0_20px_60px_rgba(0,0,0,0.95),0_0_1px_1px_rgba(255,255,255,0.06),inset_0_1px_0_0_rgba(255,255,255,0.1)] flex flex-col overflow-hidden select-none transition-all duration-200">
+      {/* 1. Deck Superior del Hardware: Panel de Control Unificado (Wheels, Faders Matrix y Knobs Rack) */}
+      <div className="p-3.5 md:p-4 bg-gradient-to-b from-[#111216] via-[#0d0e12] to-[#08080a] border-b border-white/[0.08] flex flex-col lg:flex-row gap-3 lg:gap-4 items-stretch lg:items-center w-full">
+        {/* Sección Ruedas (Pitch Bend & Mod Wheel) */}
+        <div className="flex items-center gap-2 pr-3 lg:pr-4 pb-3 lg:pb-0 border-b lg:border-b-0 lg:border-r border-white/[0.08] shrink-0">
+          {/* Pitch Wheel */}
+          <div className="flex flex-col items-center">
+            <span className="text-[9px] font-mono text-zinc-400 mb-1 font-semibold">PITCH</span>
+            <div
+              onPointerDown={handlePitchWheelPointerDown}
+              className="w-6 h-28 bg-[#08080a] rounded-lg border border-white/[0.08] relative overflow-hidden flex items-center justify-center cursor-ns-resize shadow-[inset_0_2px_6px_rgba(0,0,0,0.9)] hover:border-white/20 transition"
+              title="Arrastra verticalmente para flexionar el tono (vuelve solo al centro)"
+            >
+              {/* Estrías de goma física en la rueda */}
+              <div className="absolute inset-0 flex flex-col justify-between py-2 pointer-events-none opacity-20">
+                <div className="w-full h-[1px] bg-white" />
+                <div className="w-full h-[1px] bg-white" />
+                <div className="w-full h-[1px] bg-white" />
+                <div className="w-full h-[1px] bg-white" />
+                <div className="w-full h-[1px] bg-white" />
+                <div className="w-full h-[1px] bg-white" />
+              </div>
+              {/* Centro neutro */}
+              <div className="absolute w-full h-[1px] bg-white/30 top-1/2 shadow-[0_0_4px_white]" />
+              {/* Indicador */}
+              <div
+                className="absolute w-full h-3 bg-cyan-400/90 rounded transition-all duration-75 shadow-[0_0_10px_rgba(34,211,238,0.8)]"
+                style={{
+                  top: `${50 - (pitchBend / 8192) * 40}%`,
+                }}
+              />
+            </div>
+            <span className="text-[8px] font-mono text-zinc-500 mt-1 font-medium">
+              {pitchBend >= 0 ? `+${pitchBend}` : pitchBend}
+            </span>
+          </div>
+
+          {/* Modulation Wheel */}
+          <div className="flex flex-col items-center">
+            <span className="text-[9px] font-mono text-zinc-400 mb-1 font-semibold">MOD</span>
+            <div
+              onPointerDown={handleModWheelPointerDown}
+              className="w-6 h-28 bg-[#08080a] rounded-lg border border-white/[0.08] relative overflow-hidden flex items-end cursor-ns-resize shadow-[inset_0_2px_6px_rgba(0,0,0,0.9)] hover:border-white/20 transition"
+              title="Arrastra verticalmente para modular"
+            >
+              {/* Estrías de goma física en la rueda */}
+              <div className="absolute inset-0 flex flex-col justify-between py-2 pointer-events-none opacity-20 z-0">
+                <div className="w-full h-[1px] bg-white" />
+                <div className="w-full h-[1px] bg-white" />
+                <div className="w-full h-[1px] bg-white" />
+                <div className="w-full h-[1px] bg-white" />
+                <div className="w-full h-[1px] bg-white" />
+                <div className="w-full h-[1px] bg-white" />
+              </div>
+              <div
+                className="w-full bg-emerald-500 rounded transition-all duration-75 shadow-[0_0_10px_rgba(16,185,129,0.8)] z-10"
+                style={{
+                  height: `${(modWheel / 127) * 100}%`,
+                }}
+              />
+            </div>
+            <span className="text-[8px] font-mono text-zinc-500 mt-1 font-medium">{modWheel}</span>
+          </div>
+        </div>
+
+        {/* Sección Faders Matrix (F1 a F9) */}
+        <div className="w-full lg:w-[340px] shrink-0 pr-0 lg:pr-4 pb-3 lg:pb-0 border-b lg:border-b-0 lg:border-r border-white/[0.08]">
+          <div className="flex justify-between items-center mb-1.5 px-0.5">
+            <span className="text-[9px] font-mono uppercase tracking-wider text-zinc-400 font-semibold">
+              Faders Matrix (F1 - F9)
+            </span>
+            <span className="text-[8px] font-mono text-cyan-400 font-bold flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_6px_#22d3ee]" />
+              F9: Master
+            </span>
+          </div>
+          <div className="flex justify-between items-center gap-1">
+            {faders.map((val, idx) => {
+              const isMaster = idx === 8;
+              const heightPct = (val / 127) * 100;
+              const padLabel = idx < 8 ? `P${idx + 1}` : "M";
+              const padSample = idx < 8 ? padSlots[idx]?.sampleName : null;
+              const colorTheme = FADER_PAD_COLORS[idx] || FADER_PAD_COLORS[0];
+
+              return (
+                <div key={idx} className="flex-1 flex flex-col items-center">
+                  <div className="flex items-center gap-0.5 mb-1">
+                    <span className={`w-1 h-1 rounded-full ${isMaster ? "bg-cyan-400" : colorTheme.dot}`} />
+                    <span className="text-[7.5px] font-mono text-zinc-400 font-semibold truncate max-w-full text-center">
+                      {padLabel}
+                    </span>
+                  </div>
+                  <div
+                    onPointerDown={(e) => handleFaderPointerDown(idx, e)}
+                    className="w-full h-24 bg-[#08080a] rounded-lg border border-white/[0.08] relative flex items-center justify-center p-0.5 cursor-ns-resize hover:border-white/20 transition shadow-[inset_0_2px_6px_rgba(0,0,0,0.9)] overflow-hidden group/fader"
+                    title={
+                      isMaster
+                        ? `Master Volume: ${val}`
+                        : `Pad ${idx + 1}${padSample ? ` (${padSample})` : ""} Ganancia: ${(val / 127 * 1.5).toFixed(2)}x (${val})`
+                    }
+                  >
+                    {/* Ranura vertical metálica del chasis (Fader Track Slot) */}
+                    <div className="absolute left-1/2 -translate-x-1/2 w-[3px] h-[calc(100%-8px)] bg-black rounded-full border border-white/[0.06] shadow-inner" />
+
+                    {/* Relleno sutil del nivel de señal en la ranura */}
+                    <div
+                      className={`absolute left-1/2 -translate-x-1/2 w-[2px] bottom-1 rounded-full transition-all duration-75 ${
+                        isMaster
+                          ? "bg-cyan-400/70 shadow-[0_0_6px_rgba(34,211,238,0.5)]"
+                          : `${colorTheme.dot} opacity-60`
+                      }`}
+                      style={{ height: `${Math.max(0, heightPct * 0.78)}%` }}
+                    />
+
+                    {/* Fader Cap (Perilla Deslizante Táctil de Hardware) */}
+                    <div
+                      className="absolute left-1/2 -translate-x-1/2 w-[88%] h-4 rounded-sm bg-gradient-to-b from-[#383a42] via-[#22242a] to-[#141518] border border-white/20 shadow-[0_3px_6px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.35)] flex items-center justify-center transition-all duration-75 pointer-events-none group-hover/fader:border-white/40"
+                      style={{
+                        bottom: `calc(${heightPct}% * 0.76 + 2px)`,
+                      }}
+                    >
+                      {/* Estría táctil y línea indicadora central */}
+                      <div className={`w-[75%] h-[2px] rounded-full ${isMaster ? "bg-cyan-400 shadow-[0_0_6px_#22d3ee]" : colorTheme.line}`} />
+                    </div>
+                  </div>
+                  <span className="text-[8px] font-mono text-zinc-400 mt-1 font-medium">
+                    {val}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+
+
+        {/* Sección Knobs Matrix & FX Rack (K1 a K8) con Pantalla OLED de Instrumento/Preset */}
+        <div className="flex-1 min-w-0 pr-0 lg:pr-4 pb-3 lg:pb-0 border-b lg:border-b-0 lg:border-r border-white/[0.08] flex flex-col justify-between">
+          {/* Pantalla OLED de Selección de Instrumento Melódico y Patch / Preset */}
+          <div className="mb-2 p-1 bg-[#040406] border border-white/10 rounded-lg shadow-[inset_0_2px_4px_rgba(0,0,0,0.9),0_1px_0_rgba(255,255,255,0.05)] flex items-center justify-between gap-2 flex-wrap">
+            {/* Display Principal del Instrumento */}
+            <button
+              type="button"
+              onClick={onOpenInstrumentSelect}
+              className="flex-1 min-w-[180px] h-7 px-2.5 bg-[#0a0c10] hover:bg-[#121620] border border-white/10 hover:border-white/25 rounded-md flex items-center justify-between transition-all group cursor-pointer shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]"
+              title="Clic para cambiar instrumento melódico (SoundFont)"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#10b981]" />
+                <span className="text-[8px] font-mono uppercase font-black tracking-widest text-zinc-500">
+                  INST:
+                </span>
+                <span className="font-mono text-[10px] font-black text-emerald-300 group-hover:text-emerald-200 transition truncate drop-shadow-[0_0_8px_rgba(16,185,129,0.4)]">
+                  {currentSoundfont ? currentSoundfont.displayName.toUpperCase() : "SELECCIONAR INSTRUMENTO..."}
+                </span>
+              </div>
+              <span className="text-zinc-500 group-hover:text-emerald-400 text-[10px] font-bold ml-1">
+                ▾
+              </span>
+            </button>
+
+            {/* Selector de Preset (visible cuando el soundfont tiene más de 1 preset, ej. Mellotron) */}
+            {currentSoundfont && currentSoundfont.presets.length > 1 && (
+              <div className="h-7 px-2 bg-[#0a0c10] border border-white/10 hover:border-white/25 rounded-md flex items-center gap-1.5 transition-all shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shadow-[0_0_6px_#f59e0b]" />
+                <span className="text-[8px] font-mono uppercase font-black tracking-wider text-zinc-500">
+                  PATCH:
+                </span>
+                <select
+                  value={activePresetIndex}
+                  onChange={(e) => {
+                    const idx = parseInt(e.target.value, 10);
+                    const patch = currentSoundfont.presets[idx]?.patch ?? 0;
+                    onSelectPreset?.(patch, idx);
+                  }}
+                  className="bg-transparent text-amber-300 font-mono text-[9.5px] font-bold focus:outline-none cursor-pointer pr-1"
+                >
+                  {currentSoundfont.presets.map((p, idx) => (
+                    <option key={idx} value={idx} className="bg-zinc-950 text-zinc-200 font-mono text-xs">
+                      {p.name.toUpperCase()}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+          <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5 sm:gap-2">
+            {knobs.map((val, idx) => {
+              const rotDeg = -135 + (val / 127) * 270;
+              const mapping = knobMappings.find((m) => m.index === idx);
+              const defaultLabel =
+                idx < 4
+                  ? ["CUTOFF", "RES", "DRIVE", "REVERB"][idx]
+                  : ["D-TIME", "D-FDBK", "D-MIX", "PAN"][idx - 4];
+              const activeLabel = mapping ? mapping.label : defaultLabel;
+              const displayName = mapping ? mapping.displayName : activeLabel;
+
+              // Constantes de arco circular (r = 14, circunferencia = 87.96, arco de 270° = 65.97)
+              const circ = 87.96;
+              const arcLength = 65.97;
+              const activeDash = (val / 127) * arcLength;
+
+              return (
+                <div
+                  key={idx}
+                  className="flex flex-col items-center cursor-pointer group py-1 rounded-lg hover:bg-white/[0.03] transition-colors"
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const x = Math.min(e.clientX, window.innerWidth - 260);
+                    const y = Math.min(e.clientY, window.innerHeight - 340);
+                    setKnobContextMenu({ knobIdx: idx, x, y });
+                  }}
+                  title={`K${idx + 1}: ${activeLabel} (${displayName}) | Valor: ${val} | Clic derecho para reasignar`}
+                >
+                  <div className="text-[8px] font-mono text-zinc-500 font-semibold mb-1">
+                    K{idx + 1}
+                  </div>
+
+                  {/* Knob con Anillo de Progreso Circular */}
+                  <div
+                    onPointerDown={(e) => handleKnobPointerDown(idx, e)}
+                    className="relative w-9 h-9 flex items-center justify-center cursor-ns-resize"
+                  >
+                    {/* Anillo de Medición SVG (Arc Gauge de 270 grados) */}
+                    <svg className="w-9 h-9 rotate-[135deg] pointer-events-none" viewBox="0 0 36 36">
+                      {/* Pista de fondo */}
+                      <circle
+                        cx="18"
+                        cy="18"
+                        r="14"
+                        fill="none"
+                        stroke="#1e2026"
+                        strokeWidth="2.5"
+                        strokeDasharray={`${arcLength} ${circ}`}
+                        strokeLinecap="round"
+                      />
+                      {/* Pista activa luminosa */}
+                      <circle
+                        cx="18"
+                        cy="18"
+                        r="14"
+                        fill="none"
+                        stroke="#fbbf24"
+                        strokeWidth="2.5"
+                        strokeDasharray={`${activeDash} ${circ}`}
+                        strokeLinecap="round"
+                        className="transition-all duration-75 drop-shadow-[0_0_5px_rgba(251,191,36,0.85)]"
+                      />
+                    </svg>
+
+                    {/* Perilla Física Central */}
+                    <div className="absolute w-6 h-6 rounded-full bg-gradient-to-b from-[#34373e] via-[#1e2025] to-[#121316] border border-white/15 shadow-[0_2px_5px_rgba(0,0,0,0.8),inset_0_1px_0_rgba(255,255,255,0.25)] flex items-center justify-center group-hover:border-amber-400/60 transition">
+                      {/* Aguja del knob */}
+                      <div
+                        className="absolute w-[1.5px] h-2.5 bg-amber-400 rounded-full origin-bottom bottom-1/2 shadow-[0_0_6px_#fbbf24]"
+                        style={{ transform: `rotate(${rotDeg}deg)` }}
+                      />
+                    </div>
+                  </div>
+
+                  <span className="text-[8px] font-mono font-bold text-amber-400/90 mt-1 truncate max-w-[56px] text-center leading-tight">
+                    {activeLabel}
+                  </span>
+                  <span className="text-[7.5px] font-mono text-zinc-400 mt-0.5 font-medium">
+                    {val}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Sección Selector Vertical FX Route (Switch de 3 Posiciones: KEYS / BOTH / PADS) */}
+        <div className="w-full lg:w-20 shrink-0 flex flex-col items-center justify-between">
+          <div className="text-[8.5px] font-mono uppercase tracking-wider text-zinc-400 font-semibold mb-1.5 text-center">
+            FX Route
+          </div>
+
+          {/* Torre / Switch Empotrado de 3 Posiciones con LEDs de estado */}
+          <div className="w-full h-24 bg-[#08080a] rounded-lg border border-white/[0.08] p-1 flex flex-col justify-between shadow-[inset_0_2px_6px_rgba(0,0,0,0.9)] relative overflow-hidden">
+            {[
+              { id: "keys", label: "KEYS", title: "FX procesa solo Teclado Melódico" },
+              { id: "both", label: "BOTH", title: "FX procesa Mezcla Completa (Teclado + Pads)" },
+              { id: "pads", label: "PADS", title: "FX procesa solo Pads Rítmicos" },
+            ].map((opt) => {
+              const isActive = fxRouting === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => onChangeFxRouting?.(opt.id as FxRouting)}
+                  title={opt.title}
+                  className={`flex-1 w-full rounded flex items-center justify-between px-2 font-mono text-[8px] font-bold transition-all active:scale-95 ${
+                    isActive
+                      ? "bg-amber-500/20 text-amber-300 border border-amber-400/60 shadow-[0_0_8px_rgba(245,158,11,0.35),inset_0_1px_0_rgba(255,255,255,0.15)] font-black"
+                      : "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.03] border border-transparent"
+                  }`}
+                >
+                  <span>{opt.label}</span>
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full transition-all ${
+                      isActive
+                        ? "bg-amber-400 shadow-[0_0_6px_#f59e0b]"
+                        : "bg-zinc-700/60"
+                    }`}
+                  />
+                </button>
+              );
+            })}
+          </div>
+
+          <span className="text-[7.5px] font-mono text-zinc-500 mt-1 uppercase font-semibold text-center">
+            {fxRouting}
+          </span>
+        </div>
+      </div>
+
+      {/* Menú Contextual Noir para Knobs (Clic Derecho) */}
+      {knobContextMenu && (
+        <div
+          className="fixed z-50 bg-[#121214] border border-white/10 rounded-xl shadow-2xl py-1.5 w-64 text-xs font-mono text-slate-200 animate-in fade-in zoom-in-95 duration-100"
+          style={{ top: knobContextMenu.y, left: knobContextMenu.x }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-3 py-1 text-[10px] uppercase font-bold text-slate-400 border-b border-white/10 mb-1 flex justify-between items-center">
+            <span>Asignar Knob K{knobContextMenu.knobIdx + 1}</span>
+            <span className="text-[9px] text-amber-400 font-semibold">
+              {knobMappings.find((m) => m.index === knobContextMenu.knobIdx)?.label || ""}
+            </span>
+          </div>
+          <div className="max-h-72 overflow-y-auto divide-y divide-white/5">
+            {AVAILABLE_KNOB_TARGETS.map((t) => {
+              const currentTarget = knobMappings.find((m) => m.index === knobContextMenu.knobIdx)?.target;
+              const isSelected = currentTarget === t.target;
+              return (
+                <button
+                  key={t.target}
+                  type="button"
+                  className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors ${
+                    isSelected
+                      ? "bg-amber-950/40 text-amber-300 font-bold"
+                      : "hover:bg-white/5 hover:text-white text-slate-300"
+                  }`}
+                  onClick={() => {
+                    const idx = knobContextMenu.knobIdx;
+                    setKnobContextMenu(null);
+                    onSetKnobMapping?.(idx, t.target);
+                  }}
+                >
+                  <div className="flex flex-col">
+                    <span className="text-[11px] font-semibold tracking-wide">
+                      {t.label}
+                    </span>
+                    <span className="text-[9px] text-slate-500 font-normal">
+                      {t.desc}
+                    </span>
+                  </div>
+                  {isSelected && (
+                    <span className="text-amber-400 text-xs font-bold ml-2">✓</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* 2. Deck Inferior: Bahía del Teclado de 49 Teclas Empotrado en el Chasis */}
+      {!hideKeyboard && (
+        <div className="bg-[#050507] flex flex-col relative">
+          {/* Hendidura superior de montaje del lecho de teclas (Keybed Seam) */}
+          <div className="h-1 w-full bg-gradient-to-b from-black to-[#09090c] border-b border-black/90 shadow-[inset_0_2px_4px_rgba(0,0,0,0.95)] shrink-0 z-20" />
+
+          {/* Lecho del Teclado continuo con topes laterales de chasis (Cheek Blocks) */}
+          <div className="flex w-full items-stretch relative">
+            {/* Cheek Block Izquierdo */}
+            <div className="w-2 sm:w-3 bg-gradient-to-r from-[#0c0d10] to-[#060608] border-r border-black/90 shadow-[inset_1px_0_0_rgba(255,255,255,0.03),inset_-2px_0_4px_rgba(0,0,0,0.8)] shrink-0 z-30" />
+
+            {/* Riel del Teclado Alargado Recto */}
+            <div
+              className="relative flex-1 h-44 flex overflow-x-auto overflow-y-hidden select-none bg-black"
+              onMouseLeave={() => {
+                // Silenciar cualquier nota colgada si el cursor sale del riel
+                for (const k of keys) {
+                  if (k.isActive) onReleaseNote(k.note);
+                }
+              }}
+            >
+              {keys.map((k) => {
+                const isCKey = k.note % 12 === 0;
+                const octaveNum = Math.floor(k.note / 12) - 2; // 36 = C1, 60 = C3, etc.
+                const isMiddleC = k.note === 60;
+
+                if (k.isBlack) {
+                  return (
+                    <div
+                      key={k.note}
+                      onMouseDown={(e) => {
+                        if (k.isOutOfRange) return;
+                        e.stopPropagation();
+                        onTriggerNote(k.note, 110);
+                      }}
+                      onMouseUp={(e) => {
+                        if (k.isOutOfRange) return;
+                        e.stopPropagation();
+                        onReleaseNote(k.note);
+                      }}
+                      onMouseEnter={(e) => {
+                        if (k.isOutOfRange) return;
+                        if (e.buttons === 1) onTriggerNote(k.note, 110);
+                      }}
+                      onMouseLeave={(e) => {
+                        if (k.isOutOfRange) return;
+                        if (e.buttons === 1) onReleaseNote(k.note);
+                      }}
+                      className={`w-[22px] h-[106px] -mx-[11px] z-20 rounded-b-[2px] transition-all duration-75 ${
+                        k.isOutOfRange
+                          ? "bg-zinc-950 border-x border-b border-black opacity-20 cursor-not-allowed shadow-none"
+                          : k.isActive
+                          ? "bg-gradient-to-b from-cyan-400 via-cyan-500 to-cyan-600 border-x border-cyan-400 border-b-[4px] border-b-cyan-700 shadow-[0_0_20px_rgba(6,182,212,0.95),inset_0_4px_6px_rgba(0,0,0,0.4)] cursor-pointer"
+                          : "bg-gradient-to-b from-[#18191c] via-[#121316] to-[#08080a] border-x border-[#060608] border-b-[4px] border-b-[#020203] shadow-[2px_6px_10px_rgba(0,0,0,0.95),-2px_6px_10px_rgba(0,0,0,0.95)] hover:bg-[#1f2026] cursor-pointer"
+                      }`}
+                      style={{ flexShrink: 0 }}
+                      title={k.isOutOfRange ? `Nota ${k.note} fuera de rango de cinta (G2 - F5 / 43-77)` : `Tecla negra ${k.note}`}
+                    />
+                  );
+                }
+                return (
+                  <div
+                    key={k.note}
+                    onMouseDown={() => {
+                      if (k.isOutOfRange) return;
+                      onTriggerNote(k.note, 100);
+                    }}
+                    onMouseUp={() => {
+                      if (k.isOutOfRange) return;
+                      onReleaseNote(k.note);
+                    }}
+                    onMouseEnter={(e) => {
+                      if (k.isOutOfRange) return;
+                      if (e.buttons === 1) onTriggerNote(k.note, 100);
+                    }}
+                    onMouseLeave={(e) => {
+                      if (k.isOutOfRange) return;
+                      if (e.buttons === 1) onReleaseNote(k.note);
+                    }}
+                    className={`flex-1 min-w-[20px] h-full rounded-b-[4px] transition-all duration-75 relative z-10 ${
+                      k.isOutOfRange
+                        ? "bg-zinc-900/60 border-r border-zinc-950 opacity-20 cursor-not-allowed shadow-none"
+                        : k.isActive
+                        ? "bg-gradient-to-b from-cyan-300 via-cyan-400 to-cyan-500 text-black border-r border-cyan-300 shadow-[inset_0_4px_8px_rgba(0,0,0,0.25),inset_0_-2px_0_#0891b2,0_0_18px_rgba(6,182,212,0.9)] cursor-pointer"
+                        : "bg-gradient-to-b from-[#eef1f5] via-[#fafbfc] to-[#dce2ea] border-r border-black/30 shadow-[inset_0_-5px_0_#cbd5e1,0_2px_4px_rgba(0,0,0,0.3)] hover:brightness-105 cursor-pointer"
+                    }`}
+                    title={k.isOutOfRange ? `Nota ${k.note} fuera de rango de cinta (G2 - F5 / 43-77)` : `Tecla blanca ${k.note}`}
+                  >
+                    {/* Marcador de Octava en teclas C (C1 a C5) con grabado láser */}
+                    {isCKey && (
+                      <span
+                        className={`absolute bottom-2.5 left-1/2 -translate-x-1/2 font-mono text-[9px] font-black tracking-tight select-none pointer-events-none transition-colors ${
+                          k.isActive
+                            ? "text-black font-black"
+                            : isMiddleC
+                            ? "text-cyan-700 font-extrabold drop-shadow-[0_1px_0_rgba(255,255,255,0.9)]"
+                            : "text-zinc-500 font-bold drop-shadow-[0_1px_0_rgba(255,255,255,0.9)]"
+                        }`}
+                      >
+                        C{octaveNum}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Cheek Block Derecho */}
+            <div className="w-2 sm:w-3 bg-gradient-to-l from-[#0c0d10] to-[#060608] border-l border-black/90 shadow-[inset_-1px_0_0_rgba(255,255,255,0.03),inset_2px_0_4px_rgba(0,0,0,0.8)] shrink-0 z-30" />
+          </div>
+        </div>
+      )}
+
+      {/* Bahía Acoplada de Expansión / Secuenciador y Docking Footer */}
+      {children}
+    </div>
+  );
+};
