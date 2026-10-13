@@ -68,6 +68,12 @@ pub fn scan_soundfonts() -> Vec<SoundFontInfo> {
                         "Texturas analógicas de cinta magnética, cuerdas vintage, metales y coros.".to_string(),
                         "Tape Synth / Strings".to_string(),
                     )
+                } else if filename.to_lowercase().contains("rx7") {
+                    (
+                        "Yamaha RX7 Drum Machine".to_string(),
+                        "Caja de ritmos digital PCM vintage de 1987. Baterías y percusión icónica ochentera.".to_string(),
+                        "Drum Machine / Rhythm".to_string(),
+                    )
                 } else {
                     (
                         filename.replace(".sf2", ""),

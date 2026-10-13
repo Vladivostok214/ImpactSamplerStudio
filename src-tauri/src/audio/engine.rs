@@ -36,6 +36,7 @@ pub struct AudioEngine {
     pub shared_pad_engine_mode: Arc<Mutex<PadEngineMode>>,
     pub shared_drum_soundfont: Arc<Mutex<Option<Arc<SoundFont>>>>,
     pub shared_drum_patch: Arc<AtomicI32>,
+    pub shared_drum_pad_notes: Arc<Mutex<[i32; 8]>>,
     // Fase 4: FX Rack & Knobs
     pub shared_fx_rack: Arc<Mutex<AudioFxRack>>,
     pub shared_fx_routing: Arc<Mutex<FxRouting>>,
@@ -45,20 +46,6 @@ pub struct AudioEngine {
 
 unsafe impl Send for AudioEngine {}
 unsafe impl Sync for AudioEngine {}
-
-fn get_drum_note_for_pad(pad_index: usize) -> i32 {
-    match pad_index {
-        0 => 36, // Kick (C1)
-        1 => 38, // Snare (D1)
-        2 => 42, // Closed Hat (F#1)
-        3 => 46, // Open Hat (A#1)
-        4 => 39, // Clap (D#1)
-        5 => 45, // Low Tom (A1)
-        6 => 48, // High Tom (C2)
-        7 => 49, // Crash Cymbal (C#2)
-        _ => 36,
-    }
-}
 
 fn load_factory_pad_samples(target_sample_rate: u32) -> [Option<Arc<PadSampleData>>; 8] {
     let mut slots: [Option<Arc<PadSampleData>>; 8] = std::array::from_fn(|_| None);
@@ -138,13 +125,16 @@ struct AudioRenderState {
     // Fase 3: Pad Sampler y Drum Kit
     pad_sampler: PadSampler,
     pad_engine_mode: PadEngineMode,
-    drum_synthesizer: Option<Synthesizer>,
+    drum_synthesizers: [Option<Synthesizer>; 8],
+    pad_gains: [f32; 8],
     shared_pad_samples: Arc<Mutex<[Option<Arc<PadSampleData>>; 8]>>,
     shared_pad_modes: Arc<Mutex<[PadPlaybackMode; 8]>>,
     shared_pad_gains: Arc<Mutex<[f32; 8]>>,
     shared_pad_engine_mode: Arc<Mutex<PadEngineMode>>,
     shared_drum_soundfont: Arc<Mutex<Option<Arc<SoundFont>>>>,
     shared_drum_patch: Arc<AtomicI32>,
+    drum_pad_notes: [i32; 8],
+    shared_drum_pad_notes: Arc<Mutex<[i32; 8]>>,
     drum_left_buf: Vec<f32>,
     drum_right_buf: Vec<f32>,
     pad_left_buf: Vec<f32>,
@@ -158,6 +148,9 @@ struct AudioRenderState {
     sequencer: StepSequencer,
     shared_sequencer: Arc<Mutex<StepSequencer>>,
     shared_app_handle: Arc<Mutex<Option<AppHandle>>>,
+    // MIDI Learn: Mapeos dinámicos CC
+    midi_fader_ccs: [u8; 9],
+    midi_knob_ccs: [u8; 8],
 }
 
 impl AudioRenderState {
@@ -174,12 +167,14 @@ impl AudioRenderState {
         shared_pad_engine_mode: Arc<Mutex<PadEngineMode>>,
         shared_drum_soundfont: Arc<Mutex<Option<Arc<SoundFont>>>>,
         shared_drum_patch: Arc<AtomicI32>,
+        shared_drum_pad_notes: Arc<Mutex<[i32; 8]>>,
         shared_fx_rack: Arc<Mutex<AudioFxRack>>,
         shared_fx_routing: Arc<Mutex<FxRouting>>,
         shared_sequencer: Arc<Mutex<StepSequencer>>,
         shared_app_handle: Arc<Mutex<Option<AppHandle>>>,
     ) -> Self {
         let mut pad_sampler = PadSampler::new(sample_rate_f);
+        let drum_pad_notes = *shared_drum_pad_notes.lock().unwrap();
 
         // Inicializar slots de pad con el estado compartido
         if let Ok(samples_guard) = shared_pad_samples.lock() {
@@ -194,23 +189,28 @@ impl AudioRenderState {
                 pad_sampler.set_mode(i, m);
             }
         }
+        let mut pad_gains = [64.0 / 127.0; 8];
         if let Ok(gains_guard) = shared_pad_gains.lock() {
             for (i, &g) in gains_guard.iter().enumerate() {
-                pad_sampler.set_gain(i, g);
+                let clamped = g.clamp(0.0, 1.0);
+                pad_sampler.set_gain(i, clamped);
+                pad_gains[i] = clamped;
             }
         }
 
         let pad_engine_mode = *shared_pad_engine_mode.lock().unwrap();
 
-        // Inicializar sintetizador de batería si hay SoundFont cargado
-        let mut drum_synthesizer = None;
+        // Inicializar sintetizadores de batería independientes (1 por pad) si hay SoundFont cargado
+        let mut drum_synthesizers: [Option<Synthesizer>; 8] = Default::default();
         if let Ok(sf_guard) = shared_drum_soundfont.lock() {
             if let Some(sf) = sf_guard.as_ref() {
                 let settings = SynthesizerSettings::new(sample_rate_f as i32);
-                if let Ok(mut synth) = Synthesizer::new(sf, &settings) {
-                    let patch = shared_drum_patch.load(Ordering::SeqCst);
-                    synth.process_midi_message(9, 0xC0, patch, 0); // Canal 10
-                    drum_synthesizer = Some(synth);
+                let patch = shared_drum_patch.load(Ordering::SeqCst);
+                for slot in drum_synthesizers.iter_mut() {
+                    if let Ok(mut synth) = Synthesizer::new(sf, &settings) {
+                        synth.process_midi_message(9, 0xC0, patch, 0); // Canal 10
+                        *slot = Some(synth);
+                    }
                 }
             }
         }
@@ -239,7 +239,7 @@ impl AudioRenderState {
                 release: false,
                 envelope: 0.0,
             }),
-            master_gain: 0.85,
+            master_gain: 100.0 / 127.0,
             pitch_bend_ratio: 1.0,
             sample_rate_f,
             channels,
@@ -252,13 +252,16 @@ impl AudioRenderState {
             right_buf: vec![0.0; 4096],
             pad_sampler,
             pad_engine_mode,
-            drum_synthesizer,
+            drum_synthesizers,
+            pad_gains,
             shared_pad_samples,
             shared_pad_modes,
             shared_pad_gains,
             shared_pad_engine_mode,
             shared_drum_soundfont,
             shared_drum_patch,
+            drum_pad_notes,
+            shared_drum_pad_notes,
             drum_left_buf: vec![0.0; 4096],
             drum_right_buf: vec![0.0; 4096],
             pad_left_buf: vec![0.0; 4096],
@@ -270,6 +273,8 @@ impl AudioRenderState {
             sequencer,
             shared_sequencer,
             shared_app_handle,
+            midi_fader_ccs: [38, 39, 40, 41, 42, 43, 44, 45, 46],
+            midi_knob_ccs: [56, 57, 58, 59, 60, 61, 62, 63],
         }
     }
 
@@ -278,6 +283,10 @@ impl AudioRenderState {
             if let Some(consumer) = cons_guard.as_mut() {
                 while let Ok(cmd) = consumer.pop() {
                     match cmd {
+                        AudioEngineCommand::SetMidiLearnCcMappings { faders, knobs } => {
+                            self.midi_fader_ccs = faders;
+                            self.midi_knob_ccs = knobs;
+                        }
                         AudioEngineCommand::LoadSoundFont { sound_font, patch_number } => {
                             let settings = SynthesizerSettings::new(self.sample_rate_f as i32);
                             if let Ok(mut synth) = Synthesizer::new(&sound_font, &settings) {
@@ -338,27 +347,36 @@ impl AudioRenderState {
                             }
                         }
                         AudioEngineCommand::ControlChange { controller, value } => {
-                            // 1. Master Volume (Fader 9 / CC 7 / CC 46)
-                            if controller == 7 || controller == 46 {
+                            // 1. Master Volume (Fader 9 / CC configurado / CC 46 / CC 7)
+                            if controller == self.midi_fader_ccs[8] || controller == 7 || controller == 46 {
                                 self.master_gain = value.clamp(0.0, 1.0);
                                 if let Ok(mut g_guard) = self.shared_master_gain.try_lock() {
                                     *g_guard = self.master_gain;
                                 }
                             }
 
-                            // 2. Knobs K1..K8 (CC 56..63 o GM: 74, 71, 5, 84, 78, 76, 77, 10)
-                            let knob_idx = match controller {
-                                56..=63 => Some((controller - 56) as usize),
-                                74 => Some(0),
-                                71 => Some(1),
-                                5 => Some(2),
-                                84 => Some(3),
-                                78 => Some(4),
-                                76 => Some(5),
-                                77 => Some(6),
-                                10 => Some(7),
-                                _ => None,
-                            };
+                            // 2. Knobs K1..K8 (CC dinámico configurado o preset LX49+ / GM)
+                            let mut knob_idx = None;
+                            for (i, &cc) in self.midi_knob_ccs.iter().enumerate() {
+                                if cc == controller {
+                                    knob_idx = Some(i);
+                                    break;
+                                }
+                            }
+                            if knob_idx.is_none() {
+                                knob_idx = match controller {
+                                    56..=63 => Some((controller - 56) as usize),
+                                    74 => Some(0),
+                                    71 => Some(1),
+                                    5 => Some(2),
+                                    84 => Some(3),
+                                    78 => Some(4),
+                                    76 => Some(5),
+                                    77 => Some(6),
+                                    10 => Some(7),
+                                    _ => None,
+                                };
+                            }
                             if let Some(idx) = knob_idx {
                                 self.fx_rack.set_knob_value(idx, value);
                                 if let Ok(mut fx) = self.shared_fx_rack.try_lock() {
@@ -366,21 +384,31 @@ impl AudioRenderState {
                                 }
                             }
 
-                            // 3. Faders de Pads F1..F8 (CC 38..45 o GM: 73, 75, 72, 91, 92, 93, 94, 95)
-                            let pad_fader_idx = match controller {
-                                38..=45 => Some((controller - 38) as usize),
-                                73 => Some(0),
-                                75 => Some(1),
-                                72 => Some(2),
-                                91 => Some(3),
-                                92 => Some(4),
-                                93 => Some(5),
-                                94 => Some(6),
-                                95 => Some(7),
-                                _ => None,
-                            };
+                            // 3. Faders de Pads F1..F8 (CC dinámico configurado o preset LX49+ / GM)
+                            let mut pad_fader_idx = None;
+                            for (i, &cc) in self.midi_fader_ccs[..8].iter().enumerate() {
+                                if cc == controller {
+                                    pad_fader_idx = Some(i);
+                                    break;
+                                }
+                            }
+                            if pad_fader_idx.is_none() {
+                                pad_fader_idx = match controller {
+                                    38..=45 => Some((controller - 38) as usize),
+                                    73 => Some(0),
+                                    75 => Some(1),
+                                    72 => Some(2),
+                                    91 => Some(3),
+                                    92 => Some(4),
+                                    93 => Some(5),
+                                    94 => Some(6),
+                                    95 => Some(7),
+                                    _ => None,
+                                };
+                            }
                             if let Some(idx) = pad_fader_idx {
-                                let pad_gain = value * 1.5;
+                                let pad_gain = value.clamp(0.0, 1.0);
+                                self.pad_gains[idx] = pad_gain;
                                 self.pad_sampler.set_gain(idx, pad_gain);
                                 if let Ok(mut gains) = self.shared_pad_gains.try_lock() {
                                     gains[idx] = pad_gain;
@@ -430,9 +458,11 @@ impl AudioRenderState {
                                     self.pad_sampler.trigger(pad_index, full_velocity_f);
                                 }
                                 PadEngineMode::DrumKitSf2 => {
-                                    if let Some(synth) = &mut self.drum_synthesizer {
-                                        let note = get_drum_note_for_pad(pad_index);
-                                        synth.note_on(9, note, vel_7bit);
+                                    if pad_index < 8 {
+                                        if let Some(synth) = &mut self.drum_synthesizers[pad_index] {
+                                            let note = self.drum_pad_notes[pad_index];
+                                            synth.note_on(9, note, vel_7bit);
+                                        }
                                     }
                                 }
                             }
@@ -443,9 +473,11 @@ impl AudioRenderState {
                                     self.pad_sampler.release(pad_index);
                                 }
                                 PadEngineMode::DrumKitSf2 => {
-                                    if let Some(synth) = &mut self.drum_synthesizer {
-                                        let note = get_drum_note_for_pad(pad_index);
-                                        synth.note_off(9, note);
+                                    if pad_index < 8 {
+                                        if let Some(synth) = &mut self.drum_synthesizers[pad_index] {
+                                            let note = self.drum_pad_notes[pad_index];
+                                            synth.note_off(9, note);
+                                        }
                                     }
                                 }
                             }
@@ -475,10 +507,14 @@ impl AudioRenderState {
                             }
                         }
                         AudioEngineCommand::SetPadGain { pad_index, gain } => {
-                            self.pad_sampler.set_gain(pad_index, gain);
+                            let clamped_gain = gain.clamp(0.0, 1.0);
+                            if pad_index < 8 {
+                                self.pad_gains[pad_index] = clamped_gain;
+                                self.pad_sampler.set_gain(pad_index, clamped_gain);
+                            }
                             if let Ok(mut gains) = self.shared_pad_gains.lock() {
                                 if pad_index < 8 {
-                                    gains[pad_index] = gain;
+                                    gains[pad_index] = clamped_gain;
                                 }
                             }
                         }
@@ -488,11 +524,21 @@ impl AudioRenderState {
                                 *m = mode;
                             }
                         }
+                        AudioEngineCommand::SetDrumPadNote { pad_index, note } => {
+                            if pad_index < 8 {
+                                self.drum_pad_notes[pad_index] = note;
+                                if let Ok(mut notes) = self.shared_drum_pad_notes.lock() {
+                                    notes[pad_index] = note;
+                                }
+                            }
+                        }
                         AudioEngineCommand::LoadDrumKitSoundFont { sound_font, patch_number } => {
                             let settings = SynthesizerSettings::new(self.sample_rate_f as i32);
-                            if let Ok(mut synth) = Synthesizer::new(&sound_font, &settings) {
-                                synth.process_midi_message(9, 0xC0, patch_number, 0);
-                                self.drum_synthesizer = Some(synth);
+                            for slot in self.drum_synthesizers.iter_mut() {
+                                if let Ok(mut synth) = Synthesizer::new(&sound_font, &settings) {
+                                    synth.process_midi_message(9, 0xC0, patch_number, 0);
+                                    *slot = Some(synth);
+                                }
                             }
                             if let Ok(mut sf_guard) = self.shared_drum_soundfont.lock() {
                                 *sf_guard = Some(sound_font);
@@ -818,10 +864,12 @@ impl AudioRenderState {
                                 self.pad_sampler.trigger(pad_idx, vel);
                             }
                             PadEngineMode::DrumKitSf2 => {
-                                if let Some(drum_synth) = &mut self.drum_synthesizer {
-                                    let note = get_drum_note_for_pad(pad_idx);
-                                    let vel_7bit = (vel * 127.0).round().clamp(1.0, 127.0) as i32;
-                                    drum_synth.note_on(9, note, vel_7bit);
+                                if pad_idx < 8 {
+                                    if let Some(drum_synth) = &mut self.drum_synthesizers[pad_idx] {
+                                        let note = self.drum_pad_notes[pad_idx];
+                                        let vel_7bit = (vel * 127.0).round().clamp(1.0, 127.0) as i32;
+                                        drum_synth.note_on(9, note, vel_7bit);
+                                    }
                                 }
                             }
                         }
@@ -852,27 +900,41 @@ impl AudioRenderState {
                 self.pad_sampler.render_mix(pl, pr, num_frames);
             }
             PadEngineMode::DrumKitSf2 => {
-                if let Some(drum_synth) = &mut self.drum_synthesizer {
-                    if self.drum_left_buf.len() < num_frames {
-                        self.drum_left_buf.resize(num_frames, 0.0);
-                        self.drum_right_buf.resize(num_frames, 0.0);
-                    }
-                    let d_l = &mut self.drum_left_buf[..num_frames];
-                    let d_r = &mut self.drum_right_buf[..num_frames];
-                    drum_synth.render(d_l, d_r);
+                let pl = &mut self.pad_left_buf[..num_frames];
+                let pr = &mut self.pad_right_buf[..num_frames];
+                if self.drum_left_buf.len() < num_frames {
+                    self.drum_left_buf.resize(num_frames, 0.0);
+                    self.drum_right_buf.resize(num_frames, 0.0);
+                }
+                for pad_idx in 0..8 {
+                    if let Some(drum_synth) = &mut self.drum_synthesizers[pad_idx] {
+                        let d_l = &mut self.drum_left_buf[..num_frames];
+                        let d_r = &mut self.drum_right_buf[..num_frames];
+                        drum_synth.render(d_l, d_r);
 
-                    let pl = &mut self.pad_left_buf[..num_frames];
-                    let pr = &mut self.pad_right_buf[..num_frames];
-                    for i in 0..num_frames {
-                        pl[i] += d_l[i];
-                        pr[i] += d_r[i];
+                        let gain = self.pad_gains[pad_idx];
+                        for i in 0..num_frames {
+                            pl[i] += d_l[i] * gain;
+                            pr[i] += d_r[i] * gain;
+                        }
                     }
                 }
             }
         }
 
-        // 3. Procesar FX Rack según el ruteo seleccionado (Keys, Pads o Both)
+        // 3. Procesar FX Rack según el ruteo seleccionado (Off, Keys, Pads o Both)
         match self.fx_routing {
+            FxRouting::Off => {
+                // Bypass total: sumar buffers secos directamente sin procesar FX (0% CPU)
+                let kl = &mut self.left_buf[..num_frames];
+                let kr = &mut self.right_buf[..num_frames];
+                let pl = &self.pad_left_buf[..num_frames];
+                let pr = &self.pad_right_buf[..num_frames];
+                for i in 0..num_frames {
+                    kl[i] += pl[i];
+                    kr[i] += pr[i];
+                }
+            }
             FxRouting::Keys => {
                 // Solo Teclas: procesar FX en left_buf/right_buf y luego sumar pads limpios (dry)
                 let kl = &mut self.left_buf[..num_frames];
@@ -1029,6 +1091,7 @@ fn build_and_start_stream(
     shared_pad_engine_mode: Arc<Mutex<PadEngineMode>>,
     shared_drum_soundfont: Arc<Mutex<Option<Arc<SoundFont>>>>,
     shared_drum_patch: Arc<AtomicI32>,
+    shared_drum_pad_notes: Arc<Mutex<[i32; 8]>>,
     shared_fx_rack: Arc<Mutex<AudioFxRack>>,
     shared_fx_routing: Arc<Mutex<FxRouting>>,
     shared_sequencer: Arc<Mutex<StepSequencer>>,
@@ -1055,6 +1118,7 @@ fn build_and_start_stream(
         shared_pad_engine_mode,
         shared_drum_soundfont,
         shared_drum_patch,
+        shared_drum_pad_notes,
         shared_fx_rack,
         shared_fx_routing,
         shared_sequencer,
@@ -1123,17 +1187,18 @@ impl AudioEngine {
             command_consumer: Arc::new(Mutex::new(None)),
             shared_soundfont: Arc::new(Mutex::new(None)),
             shared_patch: Arc::new(AtomicI32::new(0)),
-            shared_master_gain: Arc::new(Mutex::new(0.85)),
+            shared_master_gain: Arc::new(Mutex::new(100.0 / 127.0)),
             app_handle: Arc::new(Mutex::new(None)),
             watchdog_started: Arc::new(AtomicBool::new(false)),
             shared_pad_samples: Arc::new(Mutex::new(factory_samples)),
             shared_pad_modes: Arc::new(Mutex::new([PadPlaybackMode::OneShot; 8])),
-            shared_pad_gains: Arc::new(Mutex::new([0.85; 8])),
+            shared_pad_gains: Arc::new(Mutex::new([64.0 / 127.0; 8])),
             shared_pad_engine_mode: Arc::new(Mutex::new(PadEngineMode::WavSampler)),
             shared_drum_soundfont: Arc::new(Mutex::new(default_drum_sf)),
             shared_drum_patch: Arc::new(AtomicI32::new(0)),
+            shared_drum_pad_notes: Arc::new(Mutex::new([36, 38, 42, 46, 39, 45, 48, 49])),
             shared_fx_rack: Arc::new(Mutex::new(AudioFxRack::new(48000.0))),
-            shared_fx_routing: Arc::new(Mutex::new(FxRouting::Both)),
+            shared_fx_routing: Arc::new(Mutex::new(FxRouting::Off)),
             shared_sequencer: Arc::new(Mutex::new(StepSequencer::new(48000.0))),
         }
     }
@@ -1257,6 +1322,7 @@ impl AudioEngine {
             self.shared_pad_engine_mode.clone(),
             self.shared_drum_soundfont.clone(),
             self.shared_drum_patch.clone(),
+            self.shared_drum_pad_notes.clone(),
             self.shared_fx_rack.clone(),
             self.shared_fx_routing.clone(),
             self.shared_sequencer.clone(),
@@ -1298,6 +1364,7 @@ impl AudioEngine {
         let shared_pad_engine_mode = self.shared_pad_engine_mode.clone();
         let shared_drum_soundfont = self.shared_drum_soundfont.clone();
         let shared_drum_patch = self.shared_drum_patch.clone();
+        let shared_drum_pad_notes = self.shared_drum_pad_notes.clone();
         let shared_fx_rack = self.shared_fx_rack.clone();
         let shared_fx_routing = self.shared_fx_routing.clone();
         let shared_sequencer = self.shared_sequencer.clone();
@@ -1340,6 +1407,7 @@ impl AudioEngine {
                                         shared_pad_engine_mode.clone(),
                                         shared_drum_soundfont.clone(),
                                         shared_drum_patch.clone(),
+                                        shared_drum_pad_notes.clone(),
                                         shared_fx_rack.clone(),
                                         shared_fx_routing.clone(),
                                         shared_sequencer.clone(),

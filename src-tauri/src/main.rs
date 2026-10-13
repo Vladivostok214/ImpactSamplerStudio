@@ -23,6 +23,11 @@ use soundfont::{load_soundfont_from_file, scan_soundfonts, SoundFontInfo};
 use state::{AppState, AudioStatusInfo};
 
 #[tauri::command]
+fn show_main_window(window: tauri::WebviewWindow) {
+    let _ = window.show();
+}
+
+#[tauri::command]
 fn list_soundfonts() -> Vec<SoundFontInfo> {
     scan_soundfonts()
 }
@@ -76,6 +81,18 @@ fn select_midi_port(
 fn connect_midi(app_handle: AppHandle, state: State<'_, AppState>) -> Result<Vec<MidiPortInfo>, String> {
     let mut midi_mgr = state.midi_manager.lock().unwrap();
     midi_mgr.start_auto_connect(app_handle, state.audio_producer.clone())
+}
+
+#[tauri::command]
+fn rescan_midi_ports(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<MidiPortInfo>, String> {
+    let mut midi_mgr = state.midi_manager.lock().unwrap();
+    if !midi_mgr.is_connected() {
+        let _ = midi_mgr.start_auto_connect(app_handle, state.audio_producer.clone());
+    }
+    Ok(midi_mgr.list_ports())
 }
 
 #[tauri::command]
@@ -418,6 +435,51 @@ fn set_pad_slot_gain(pad_index: usize, gain: f32, state: State<'_, AppState>) ->
     }
     if let Ok(mut gains) = engine.shared_pad_gains.lock() {
         gains[pad_index] = gain;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_drum_pad_note(pad_index: usize, note: i32, state: State<'_, AppState>) -> Result<(), String> {
+    if pad_index >= 8 {
+        return Err("Índice de pad inválido".to_string());
+    }
+    if let Ok(mut prod) = state.audio_producer.lock() {
+        let _ = prod.push(AudioEngineCommand::SetDrumPadNote { pad_index, note });
+    }
+    let engine = state.audio_engine.lock().unwrap();
+    if let Ok(mut notes) = engine.shared_drum_pad_notes.lock() {
+        notes[pad_index] = note;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_drum_pad_notes(state: State<'_, AppState>) -> [i32; 8] {
+    let engine = state.audio_engine.lock().unwrap();
+    if let Ok(notes) = engine.shared_drum_pad_notes.lock() {
+        *notes
+    } else {
+        [36, 38, 42, 46, 39, 45, 48, 49]
+    }
+}
+
+#[tauri::command]
+fn set_midi_learn_mappings(
+    faders: [u8; 9],
+    knobs: [u8; 8],
+    pads: [i32; 8],
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if let Ok(mut prod) = state.audio_producer.lock() {
+        let _ = prod.push(AudioEngineCommand::SetMidiLearnCcMappings { faders, knobs });
+        for (i, &note) in pads.iter().enumerate() {
+            let _ = prod.push(AudioEngineCommand::SetDrumPadNote { pad_index: i, note });
+        }
+    }
+    let engine = state.audio_engine.lock().unwrap();
+    if let Ok(mut pad_notes) = engine.shared_drum_pad_notes.lock() {
+        *pad_notes = pads;
     }
     Ok(())
 }
@@ -814,6 +876,8 @@ fn main() {
             clear_pad_slot,
             set_pad_slot_mode,
             set_pad_slot_gain,
+            set_drum_pad_note,
+            get_drum_pad_notes,
             // Fase 4: Knobs & FX
             get_knob_mappings,
             set_knob_mapping,
@@ -840,13 +904,34 @@ fn main() {
             sequencer_set_selected_pad,
             sequencer_clear_selected_track,
             sequencer_clear_track,
+            show_main_window,
+            set_midi_learn_mappings,
+            rescan_midi_ports,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
             let state = app.state::<AppState>();
             let mut midi_mgr = state.midi_manager.lock().unwrap();
             let _ = midi_mgr.start_auto_connect(app_handle.clone(), state.audio_producer.clone());
+            drop(midi_mgr);
+
+            // Iniciar MIDI Watchdog de baja frecuencia para auto-recovery en caliente (0% CPU)
+            MidiManager::start_watchdog(
+                state.midi_manager.clone(),
+                app_handle.clone(),
+                state.audio_producer.clone(),
+            );
+
             state.audio_engine.lock().unwrap().set_app_handle(app_handle);
+
+            // Fallback de seguridad: asegurar que la ventana se muestre en máximo 1.5s si el frontend tarda
+            if let Some(win) = app.get_webview_window("main") {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                    let _ = win.show();
+                });
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())

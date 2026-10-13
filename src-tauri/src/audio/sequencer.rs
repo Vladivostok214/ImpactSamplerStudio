@@ -135,6 +135,7 @@ impl StepSequencer {
         self.recalculate_samples_per_step();
     }
 
+    #[allow(dead_code)]
     pub fn toggle_resolution(&mut self) {
         let next = match self.resolution {
             StepResolution::Eighth => StepResolution::Sixteenth,

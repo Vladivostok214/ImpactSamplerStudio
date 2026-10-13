@@ -18,10 +18,19 @@ pub struct MidiPortInfo {
     pub is_connected: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MidiStatusEvent {
+    pub connected: bool,
+    pub port_name: Option<String>,
+    pub ports: Vec<MidiPortInfo>,
+}
+
 pub struct MidiManager {
     _connections: Vec<MidiInputConnection<()>>,
     pub connected_port_index: Option<usize>,
     pub connected_port_name: Option<String>,
+    pub preferred_port_name: Option<String>,
 }
 
 impl MidiManager {
@@ -30,7 +39,18 @@ impl MidiManager {
             _connections: Vec::new(),
             connected_port_index: None,
             connected_port_name: None,
+            preferred_port_name: None,
         }
+    }
+
+    pub fn disconnect(&mut self) {
+        self._connections.clear();
+        self.connected_port_index = None;
+        self.connected_port_name = None;
+    }
+
+    pub fn is_connected(&self) -> bool {
+        !self._connections.is_empty() && self.connected_port_name.is_some()
     }
 
     pub fn list_ports(&self) -> Vec<MidiPortInfo> {
@@ -44,7 +64,8 @@ impl MidiManager {
                         || name.to_lowercase().contains("nektar"))
                         && !name.to_lowercase().contains("midiin2")
                         && !name.to_lowercase().contains("daw");
-                    let is_connected = self.connected_port_index == Some(idx);
+                    let is_connected = self.is_connected()
+                        && self.connected_port_name.as_deref() == Some(&name);
                     result.push(MidiPortInfo {
                         index: idx,
                         name,
@@ -210,11 +231,44 @@ impl MidiManager {
         ).map_err(|e| format!("Error al conectar al puerto MIDI '{}': {}", port_name, e))?;
 
         println!("[MIDI OK] Conectado exitosamente al puerto [{}]: '{}'", target_idx, port_name);
-        self._connections.push(conn);
+        self.preferred_port_name = Some(port_name.clone());
         self.connected_port_index = Some(target_idx);
         self.connected_port_name = Some(port_name);
+        self._connections.push(conn);
 
         Ok(self.list_ports())
+    }
+
+    pub fn find_best_port_index(&self, port_names: &[String]) -> Option<usize> {
+        if port_names.is_empty() {
+            return None;
+        }
+
+        // 1. Si hay un puerto preferido previo (ej. el que el usuario seleccionó antes de desenchufar)
+        if let Some(ref pref) = self.preferred_port_name {
+            if let Some(idx) = port_names.iter().position(|n| n == pref) {
+                return Some(idx);
+            }
+        }
+
+        // 2. Si hay un puerto Impact LX49+ / Nektar que no sea secundario (DAW/MIDIIN2)
+        for (idx, name) in port_names.iter().enumerate() {
+            let nl = name.to_lowercase();
+            let is_impact = nl.contains("impact") || nl.contains("lx49") || nl.contains("nektar");
+            let is_secondary = nl.contains("midiin2") || nl.contains("daw") || nl.contains("ctrl");
+            if is_impact && !is_secondary {
+                return Some(idx);
+            }
+        }
+
+        // 3. Primer puerto que no sea secundario
+        for (idx, name) in port_names.iter().enumerate() {
+            if !name.to_lowercase().contains("midiin2") {
+                return Some(idx);
+            }
+        }
+
+        Some(0)
     }
 
     pub fn start_auto_connect(
@@ -227,42 +281,85 @@ impl MidiManager {
 
         let in_ports = midi_scan.ports();
         if in_ports.is_empty() {
+            self.disconnect();
             return Err("No se encontraron puertos MIDI de entrada en el sistema".to_string());
         }
 
-        // Seleccionar preferentemente el puerto Impact LX49+ que no sea MIDIIN2 ni DAW
-        let mut target_idx = 0;
-        let mut found_preferred = false;
-
-        for (idx, port) in in_ports.iter().enumerate() {
-            if let Ok(name) = midi_scan.port_name(port) {
-                let name_lower = name.to_lowercase();
-                let is_impact = name_lower.contains("impact")
-                    || name_lower.contains("lx49")
-                    || name_lower.contains("nektar");
-                let is_secondary = name_lower.contains("midiin2")
-                    || name_lower.contains("daw")
-                    || name_lower.contains("ctrl");
-
-                if is_impact && !is_secondary {
-                    target_idx = idx;
-                    found_preferred = true;
-                    break;
-                }
+        let mut port_names = Vec::new();
+        for p in &in_ports {
+            if let Ok(name) = midi_scan.port_name(p) {
+                port_names.push(name);
             }
         }
 
-        if !found_preferred {
-            for (idx, port) in in_ports.iter().enumerate() {
-                if let Ok(name) = midi_scan.port_name(port) {
-                    if !name.to_lowercase().contains("midiin2") {
-                        target_idx = idx;
-                        break;
+        let target_idx = self.find_best_port_index(&port_names).unwrap_or(0);
+        self.connect_to_port(target_idx, app_handle, audio_producer)
+    }
+
+    pub fn start_watchdog(
+        manager_arc: Arc<Mutex<MidiManager>>,
+        app_handle: AppHandle,
+        audio_producer: Arc<Mutex<Producer<AudioEngineCommand>>>,
+    ) {
+        std::thread::Builder::new()
+            .name("midi-watchdog".to_string())
+            .spawn(move || {
+                loop {
+                    // Dormir 1200ms: 0.00% de CPU
+                    std::thread::sleep(std::time::Duration::from_millis(1200));
+
+                    let midi_probe = match MidiInput::new("ImpactSampler WatchdogProbe") {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
+
+                    let in_ports = midi_probe.ports();
+                    let mut port_names = Vec::new();
+                    for p in &in_ports {
+                        if let Ok(name) = midi_probe.port_name(p) {
+                            port_names.push(name);
+                        }
+                    }
+
+                    let mut mgr = match manager_arc.lock() {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
+
+                    // CASO 1: Estaba marcado como conectado
+                    if mgr.is_connected() {
+                        let active_name = mgr.connected_port_name.clone().unwrap_or_default();
+                        let is_still_present = port_names.iter().any(|n| n == &active_name);
+
+                        if !is_still_present {
+                            // ¡El dispositivo fue desconectado físicamente!
+                            println!("[MIDI Watchdog] Dispositivo desconectado: '{}'", active_name);
+                            mgr.disconnect();
+                            let ports_list = mgr.list_ports();
+                            let _ = app_handle.emit("midi-status-changed", MidiStatusEvent {
+                                connected: false,
+                                port_name: None,
+                                ports: ports_list,
+                            });
+                        }
+                    }
+                    // CASO 2: Estaba desconectado pero hay puertos disponibles
+                    else if !port_names.is_empty() {
+                        if let Some(target_idx) = mgr.find_best_port_index(&port_names) {
+                            let target_name = port_names[target_idx].clone();
+                            println!("[MIDI Watchdog] Detectado puerto disponible: '{}'. Reconectando automáticamente...", target_name);
+                            if let Ok(ports_list) = mgr.connect_to_port(target_idx, app_handle.clone(), audio_producer.clone()) {
+                                println!("[MIDI Watchdog] ¡Reconexión automática exitosa a '{}'!", target_name);
+                                let _ = app_handle.emit("midi-status-changed", MidiStatusEvent {
+                                    connected: true,
+                                    port_name: Some(target_name),
+                                    ports: ports_list,
+                                });
+                            }
+                        }
                     }
                 }
-            }
-        }
-
-        self.connect_to_port(target_idx, app_handle, audio_producer)
+            })
+            .expect("Error al iniciar hilo midi-watchdog");
     }
 }

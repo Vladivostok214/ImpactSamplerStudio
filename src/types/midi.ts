@@ -5,6 +5,12 @@ export interface MidiPortInfo {
   isConnected: boolean;
 }
 
+export interface MidiStatusEvent {
+  connected: boolean;
+  portName?: string | null;
+  ports?: MidiPortInfo[];
+}
+
 export type MidiEventType =
   | { type: "NoteOn"; note: number; velocity: number; noteName: string; padIndex?: number }
   | { type: "NoteOff"; note: number; velocity: number; noteName: string; padIndex?: number }

@@ -205,35 +205,58 @@ flowchart TD
 
 ---
 
-### Fase 5.2: Refinamientos de Diseño & Extensiones de Secuenciación (En Desarrollo 🚀)
-* **Objetivo:** Nuevas mejoras estéticas, micro-interacciones de hardware y afinación de flujos de trabajo en el secuenciador y la consola general.
-* **Ajustes Implementados:**
+### Fase 5.2: Refinamientos de Diseño, MIDI Learn & Blindaje de Hardware ✅ [COMPLETADA]
+* **Objetivo:** Perfeccionamiento estético y atmosférico de la consola, integración de nuevos instrumentos de estudio, implementación del sistema universal de MIDI Learn sin contaminación visual y blindaje total de la conexión MIDI ante desconexiones físicas en caliente (Hot-Plug).
+* **Entregables y Mejoras Implementadas:**
   1. **Centrado Ergonómico de Consola ("Floating Masterpiece"):**
-     - Se eliminó la sensación de "espacio negro muerto" en modo `KEYS`.
-     - El contenedor principal de la aplicación (`<main>`) ahora centra la consola de hardware tanto horizontal como verticalmente (`justify-center items-center my-auto`).
-  2. **Atmósfera Noir-Tech & Estética Glassmorphism:**
-     - **Fondo Negro Profundo:** Canvas en `#000000` puro, otorgando el máximo contraste y sobriedad para que el hardware destaque con total solidez analógica.
-     - **Header Glassmorphic Minimalista:** Barra superior limpia dedicada a la identidad de marca `IMPACT SAMPLER`, con el monitor de flujo MIDI y el botón de ajustes (Settings) en su extremo derecho.
-     - **SubHeaderToolbar Glassmorphic Minimalista:** Barra intermedia traslúcida que agrupa de manera ergonómica y limpia:
-       * Monitores flotantes de hardware a la izquierda (`MIDI: Impact LX49+` y motor `WASAPI 48kHz • ≤ 5.3 ms`) sin cajas de fondo.
-       * Slider y porcentaje de Volumen Máster a la derecha.
-     - **Display OLED Hardware de Instrumentos & Presets (`HardwareSkeleton.tsx`):**
-       * Pantalla empotrada directamente en el chasis superior del hardware, alineada sobre la matriz de 8 Knobs con marco sobrio de hardware oscuro (`border-white/10`).
-       * Muestra el instrumento melódico activo (`INST: YAMAHA GRAND PIANO`, `MELLOTRON M400`, etc.) con LED esmeralda neón y acceso interactivo al catálogo de SoundFonts.
-       * Muestra el selector de preset analógico (`PATCH: 001 - FLUTE`) con LED ámbar cuando el instrumento posee múltiples programas (como el Mellotron).
-     - **Sombra Multicapa en Chasis:** Biselado y sombreado perimetral reforzado en `HardwareSkeleton` para simular volumen y separación física real sobre el fondo.
-* **Ítems Propuestos / Backlog Siguiente:**
-  1. **Micro-interacciones y Animaciones Táctiles:**
-     - Efectos de retroiluminación y fade suave en botones mecánicos TR al reproducir patrones con velocity diferenciada.
-     - Retroalimentación háptica/visual al arrastrar y soltar muestras WAV sobre los pads de silicona.
-  2. **Personalización y Ajustes de Pistas:**
-     - Mute / Solo rápido por pista de pad en el secuenciador.
-     - Control individual de afinación (Pitch) y decaimiento (Decay) por pad o acceso contextual directo.
-  3. **Perfeccionamiento Visual Global:**
-     - Ajustes de tipografía, serigrafía y texturas de carcasa para cohesión total entre pantallas de alta densidad (Retina/4K) y resoluciones estándar de laptop.
+     - Eliminación de áreas muertas en modo `KEYS`.
+     - Contenedor principal (`<main>`) centrado vertical y horizontalmente (`justify-center items-center my-auto`), otorgando presencia de consola de hardware flotante.
+  2. **Atmósfera Noir-Tech Multicapa (Fondo de Estudio):**
+     - **Canvas Base:** Negro puro `#050507` / `#070709` de máximo contraste.
+     - **Iluminación Cenital (*Studio Overhead Spotlight*):** Gradiente radial blanco sutil en el borde superior emulando iluminación real de sala de control.
+     - **Micro-Malla Acústica (*Precision Dot Matrix*):** Patrón de micro-perforaciones acústicas de 1.2px espaciadas a 28px con máscara elíptica de alta definición.
+     - **Aura Reactiva Dinámica al Instrumento Activo:** Resplandor ambiental de fondo que cambia de color según el timbre seleccionado:
+       * 🎹 *Grand Piano:* Ámbar dorado cálido (`rgba(245, 158, 11, 0.20)`).
+       * ⚡ *Rhodes Mark I:* Cian electro-mecánico (`rgba(6, 182, 212, 0.20)`).
+       * 📼 *Mellotron M400:* Rosa vintage cinta magnética (`rgba(244, 63, 94, 0.20)`).
+       * 🥁 *Yamaha RX7:* Púrpura neón digital (`rgba(168, 85, 247, 0.22)`).
+     - **Viñeta Perimetral Profunda:** Enmarcado óptico que enfoca la atención del usuario en el hardware central.
+  3. **Splash Screen Inicial Cinematográfico & Presentación Atómica:**
+     - Pantalla de bienvenida en negro puro con el logotipo `IMPACT SAMPLER` en tipografía de alta fidelidad y acento esmeralda neón.
+     - Temporizado cinematográfico de 3 segundos con transición fade-out fluida (`opacity-0 scale-110 blur-sm`) de 700 ms hacia la consola.
+     - **Solución definitiva al destello/flicker gris de WebView2:** La ventana de Tauri se configura para iniciar invisible (`visible: false` en `tauri.conf.json`) y se revela atómicamente mediante el comando nativo `show_main_window` una vez que el DOM negro del splash está 100% montado y renderizado, garantizando un arranque impecable y profesional.
+  4. **Catálogo Fotográfico PNG en el Selector Modal de Instrumentos (`InstrumentSelectModal.tsx`):**
+     - Integración de renders fotográficos de estudio en alta resolución con fondo transparente para cada instrumento:
+       * 🎹 **Grand Piano:** Fotografía de piano de cola acústico de concierto (`piano.png`).
+       * ⚡ **Rhodes Mark I:** Fotografía de piano electro-mecánico vintage de los años 70 (`rhodes.png`).
+       * 📼 **Mellotron M400:** Fotografía de reproductor de cintas analógicas de culto (`melotron.png`).
+       * 🥁 **Yamaha RX7:** Fotografía de la mítica caja de ritmos digital PCM de 1987 (`yamaharx7.png`).
+     - Tarjetas interactivas con iluminación perimetral, escala suave al pasar el cursor (*hover micro-interaction*) y halo luminoso dinámico según el instrumento.
+     - **Comportamiento inteligente de flujo:** Al seleccionar el Yamaha RX7, la consola conmuta automáticamente al modo Secuenciador (`SEQ`), permitiendo empezar a programar ritmos de inmediato sin clics adicionales.
+  5. **Display OLED Hardware de Instrumentos & Presets (`HardwareSkeleton.tsx`):**
+     - Pantalla empotrada en el chasis superior sobre la matriz de 8 Knobs con marco sobrio de hardware oscuro (`border-white/10`).
+     - Muestra el instrumento activo (`INST: YAMAHA GRAND PIANO`, `MELLOTRON M400`, etc.) con LED esmeralda neón y acceso directo al catálogo de SoundFonts.
+     - Selector de parches analógico (`PATCH: 001 - FLUTE`) con LED ámbar para bancos multi-instrumento.
+  6. **Depuración Serigráfica y Controles Táctiles:**
+     - Eliminación de etiquetas redundantes y ampliación del área vertical de faders a `h-28` (112px).
+     - Reseteo a valores nominales por **doble clic** en faders y knobs (ganancia unitaria, paneo central y volumen al 80%).
+     - Fader Master 9 con borde e iluminación cian dedicada.
+     - Tipografía de alta gama Geist Sans y Geist Mono con cifras tabulares (`tabular-nums`) para 0 jitter horizontal.
+  7. **Sistema Universal de MIDI Learn Minimalista:**
+     - **Botón `MIDI LEARN` en el Header:** Botón limpio que al activarse resplandece en ámbar dorado con LED pulsante, sin banners invasivos ni desplazamiento de elementos.
+     - **Faders 1–8 y Master Fader 9:** Resplandor de contorno ámbar en reposo (`border-amber-500/50`) y halo pulsante brillante (`border-2 border-amber-400 animate-pulse`) al seleccionarse para escucha de CC, manteniendo los números de valor limpios sin etiquetas `CC ..` sobrecargadas.
+     - **Knobs 1–8:** Halo perimetral ámbar reactivo que pulsa al esperar movimiento de perilla física en cualquier controlador.
+     - **Pads 1–8 en Secuenciador Rítmico:** Los slots de las pistas adquieren contorno ámbar elegante; al hacer clic, pulsan esperando la nota/pad del hardware externo sin tapar los nombres de las muestras.
+     - **Sincronización Lock-Free en Rust:** Asignaciones de CC transferidas directamente al hilo de audio (`set_midi_learn_mappings`) a 0% CPU.
+     - **Persistencia en `localStorage` & Restablecimiento de Fábrica:** Mapeos guardados automáticamente en el navegador y opción «Restablecer de Fábrica» ubicada de manera ordenada en el modal de Configuración (`AudioSettingsModal.tsx`), devolviendo instantáneamente el sistema a los estándares del Nektar LX49+.
+  8. **Blindaje de Hardware en Caliente (MIDI Hot-Plug Watchdog):**
+     - **Hilo Guardián `midi-watchdog` (0.00% CPU):** Hilo en segundo plano en Rust suspendido con `std::thread::sleep(1200ms)`. Al despertar, realiza una lectura ultra-rápida de 20 nanosegundos en el subsistema PnP de Windows.
+     - **Detección Inmediata de Desconexión:** Al desconectar físicamente el cable USB, destruye de inmediato las conexiones huérfanas en Windows y notifica a la UI (`midi-status-changed`), cambiando el monitor del Header a **ámbar** (*«Desconectado»*).
+     - **Reconexión Automática Transparente:** En cuanto el cable USB se reenchufa, el watchdog detecta el puerto, limpia los manejadores, reconecta de inmediato sin bloqueos y devuelve el monitor a **verde esmeralda** (*«Impact LX49+»*).
+     - **Re-escaneo Activo:** Comando `rescan_midi_ports` vinculado al botón «Re-escanear» de Settings para forzar reconexión manual si se desea.
 
 ---
 
 ## 3. Próximo Paso Inmediato
-Fases 1 a 5.1 completadas con éxito. Listo para abordar las prioridades de diseño y funcionalidades que se definan para la Fase 5.2.
+Fases 1 a 5.2 completadas al 100%. La plataforma cuenta con motor melódico SoundFont, motor de percusión PCM / Drum SF2, secuenciador por pasos TR-style, rack de efectos modular, sistema universal de MIDI Learn y blindaje de audio y MIDI ante desconexiones. Listo para definir las prioridades de la **Fase 6** (ej. exportación de audio/loops WAV, controles de Mute/Solo por pista, afinación/decay por pad o nuevas expansiones de instrumentos).
 

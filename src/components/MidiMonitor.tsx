@@ -1,6 +1,6 @@
 import React from "react";
 import { NormalizedMidiEvent } from "../types/midi";
-import { Terminal, Zap, Trash2 } from "lucide-react";
+import { Terminal, Trash2 } from "lucide-react";
 
 interface MidiMonitorProps {
   events: NormalizedMidiEvent[];
@@ -32,9 +32,8 @@ export const MidiMonitor: React.FC<MidiMonitorProps> = ({ events, onClear }) => 
 
       <div className="flex-1 overflow-y-auto space-y-1.5 font-mono text-[11px] pr-1">
         {events.length === 0 ? (
-          <div className="h-32 flex flex-col items-center justify-center text-slate-400 text-xs gap-1">
-            <Zap size={18} className="animate-pulse text-amber-500" />
-            <span>Esperando actividad del controlador...</span>
+          <div className="h-24 flex items-center justify-center text-zinc-600 text-[10px] uppercase font-mono tracking-wider select-none">
+            Sin eventos
           </div>
         ) : (
           events.map((ev, i) => {
@@ -76,13 +75,13 @@ export const MidiMonitor: React.FC<MidiMonitorProps> = ({ events, onClear }) => 
                 className="flex items-center justify-between px-2.5 py-1 rounded bg-studio-950/70 border border-studio-800/60 hover:border-studio-700 transition"
               >
                 <div className="flex items-center space-x-2">
-                  <span className="text-[9px] px-1 py-0.5 rounded bg-studio-800 text-slate-300 uppercase">
+                  <span className="text-[9.5px] px-1 py-0.5 rounded bg-studio-800 text-slate-300 uppercase font-semibold tracking-wider">
                     {badge}
                   </span>
-                  <span className="text-slate-400">Ch {channel}</span>
+                  <span className="text-slate-400 font-medium tabular-nums">Ch {channel}</span>
                   <span className={color}>{details}</span>
                 </div>
-                <span className="text-[9px] text-slate-400 truncate max-w-[120px]">
+                <span className="text-[9.5px] text-slate-400 truncate max-w-[120px] font-medium">
                   {portName}
                 </span>
               </div>

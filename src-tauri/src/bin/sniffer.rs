@@ -65,7 +65,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn decode_midi_message(port_name: &str, timestamp: u64, msg: &[u8]) {
+fn decode_midi_message(port_name: &str, _timestamp: u64, msg: &[u8]) {
     if msg.is_empty() {
         return;
     }

@@ -1,4 +1,6 @@
 import ReactDOM from "react-dom/client";
+import "@fontsource/geist-sans/latin.css";
+import "@fontsource/geist-mono/latin.css";
 import App from "./App";
 import "./index.css";
 

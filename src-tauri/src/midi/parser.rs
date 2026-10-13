@@ -141,19 +141,12 @@ pub fn parse_midi_message(port_name: &str, bytes: &[u8]) -> Option<NormalizedMid
 }
 
 pub fn get_pad_index(note: u8, channel: u8) -> Option<u8> {
-    // Solo los mensajes del Canal 10 (canal estándar de pads de batería del Nektar) activan pads.
+    // Solo los mensajes del Canal 10 (canal estándar de pads de batería del Nektar Impact LX49+) activan pads.
     // Esto garantiza que el teclado melódico (Canal 1 u otros) toque las notas graves 36..43 sin secuestro.
+    // Los pads físicos van estrictamente consecutivos: PAD1 (36) -> PAD8 (43).
     if channel == 10 {
         match note {
-            36 => Some(1), // Pad 1 (Kick)
-            38 => Some(2), // Pad 2 (Snare)
-            42 => Some(3), // Pad 3 (Closed Hat)
-            46 => Some(4), // Pad 4 (Open Hat)
-            37 | 40 => Some(5), // Pad 5 (Clap / Side Stick)
-            41 | 45 => Some(6), // Pad 6 (Low Tom)
-            48 | 47 => Some(7), // Pad 7 (Mid / High Tom)
-            49 | 51 => Some(8), // Pad 8 (Crash / Ride)
-            n @ 36..=43 => Some(n - 35),
+            36..=43 => Some(note - 35),
             _ => None,
         }
     } else {

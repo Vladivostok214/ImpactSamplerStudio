@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Header, AudioStatusInfo } from "./components/Header";
-import { SubHeaderToolbar } from "./components/SubHeaderToolbar";
 import { HardwareSkeleton } from "./components/HardwareSkeleton";
 import { AudioSettingsModal } from "./components/AudioSettingsModal";
 import { InstrumentSelectModal } from "./components/InstrumentSelectModal";
@@ -26,6 +25,7 @@ import {
 export default function App() {
   const {
     events,
+    clearEvents,
     ports,
     activeNotes,
     activePads,
@@ -42,6 +42,12 @@ export default function App() {
     triggerVirtualKnob,
     triggerVirtualPitchBend,
     triggerVirtualModWheel,
+    isMidiLearnActive,
+    toggleMidiLearn,
+    selectedLearnTarget,
+    setSelectedLearnTarget,
+    midiLearnMapping,
+    resetMidiMappings,
   } = useMidiStream();
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -61,7 +67,7 @@ export default function App() {
 
   // Estados de Knobs Matrix y FX Rack (Fase 4)
   const [knobMappings, setKnobMappings] = useState<KnobMappingInfo[]>([]);
-  const [fxRouting, setFxRouting] = useState<FxRouting>("both");
+  const [fxRouting, setFxRouting] = useState<FxRouting>("off");
 
   // Estados del Secuenciador Rítmico (Fase 5 - 16 Pasos, Bancos A/B y Clic Hardware)
   const [sequencerState, setSequencerState] = useState<SequencerStateInfo>({
@@ -77,8 +83,26 @@ export default function App() {
     pattern: Array.from({ length: 8 }, () => Array(16).fill(0)),
   });
 
-  const [isVisualMetronomeVisible, setIsVisualMetronomeVisible] = useState<boolean>(true);
+  const [isVisualMetronomeVisible, setIsVisualMetronomeVisible] = useState<boolean>(false);
   const [workstationMode, setWorkstationMode] = useState<"keys" | "seq">("keys");
+
+  // Splash inicial de 3 segundos con revelado cinematográfico
+  const [isBooting, setIsBooting] = useState<boolean>(true);
+  const [bootFadeOut, setBootFadeOut] = useState<boolean>(false);
+
+  useEffect(() => {
+    // Revelar la ventana inmediatamente una vez montado el splash negro, evitando cualquier destello gris de WebView2
+    invoke("show_main_window").catch(() => {});
+
+    // 3 segundos exactos para apreciar el logotipo de IMPACT SAMPLER
+    const timer = setTimeout(() => {
+      setBootFadeOut(true);
+      setTimeout(() => {
+        setIsBooting(false);
+      }, 700);
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, []);
 
   const [currentBeat, setCurrentBeat] = useState<{ beat: number; maxBeats: number }>({
     beat: 1,
@@ -104,14 +128,16 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    // 1. Obtener lista de soundfonts disponibles
+    // 1. Obtener lista de soundfonts disponibles (Piano, Rhodes, Mellotron, Yamaha RX7)
     invoke<SoundFontInfo[]>("list_soundfonts")
       .then((sfs) => {
-        // Filtrar soundfonts melódicos (Piano, Rhodes, Mellotron) para el selector de teclado
-        const melodicOnly = sfs.filter(
-          (s) => !s.filename.toLowerCase().includes("rx7") && !s.filename.toLowerCase().includes("drum")
-        );
-        setAvailableSoundfonts(melodicOnly.length > 0 ? melodicOnly : sfs);
+        const order = ["piano", "rhodes", "mellotron", "rx7"];
+        const sorted = [...sfs].sort((a, b) => {
+          const idxA = order.findIndex((k) => a.filename.toLowerCase().includes(k));
+          const idxB = order.findIndex((k) => b.filename.toLowerCase().includes(k));
+          return (idxA === -1 ? 99 : idxA) - (idxB === -1 ? 99 : idxB);
+        });
+        setAvailableSoundfonts(sorted.length > 0 ? sorted : sfs);
       })
       .catch(console.error);
 
@@ -217,6 +243,14 @@ export default function App() {
       setCurrentSoundfont(info);
       setActivePresetIndex(0);
       setHasSelectedInitialInstrument(true);
+
+      // Si el instrumento seleccionado es Yamaha RX7, abrir directamente en modo secuenciador y activar pads de batería
+      if (filename.toLowerCase().includes("rx7")) {
+        setWorkstationMode("seq");
+        await handleChangePadEngineMode("drumKitSf2");
+      } else {
+        setWorkstationMode("keys");
+      }
     } catch (err) {
       console.error("Error al cargar SoundFont:", err);
       throw err;
@@ -576,8 +610,23 @@ export default function App() {
     ports.find((p) => p.isConnected)?.name ||
     (connected ? "Impact LX49+" : "");
 
+  // Iluminación ambiental reactiva al instrumento seleccionado (con presencia visible y contraste elegante)
+  const getAmbientGlow = () => {
+    const fn = currentSoundfont?.filename.toLowerCase() || "";
+    if (fn.includes("piano") && !fn.includes("rhodes")) {
+      return "radial-gradient(ellipse 85% 65% at 50% 45%, rgba(245, 158, 11, 0.20) 0%, rgba(245, 158, 11, 0.07) 45%, transparent 75%)";
+    } else if (fn.includes("rhodes")) {
+      return "radial-gradient(ellipse 85% 65% at 50% 45%, rgba(6, 182, 212, 0.20) 0%, rgba(6, 182, 212, 0.07) 45%, transparent 75%)";
+    } else if (fn.includes("mellotron")) {
+      return "radial-gradient(ellipse 85% 65% at 50% 45%, rgba(244, 63, 94, 0.20) 0%, rgba(244, 63, 94, 0.07) 45%, transparent 75%)";
+    } else if (fn.includes("rx7")) {
+      return "radial-gradient(ellipse 85% 65% at 50% 45%, rgba(168, 85, 247, 0.22) 0%, rgba(168, 85, 247, 0.08) 45%, transparent 75%)";
+    }
+    return "radial-gradient(ellipse 85% 65% at 50% 45%, rgba(16, 185, 129, 0.16) 0%, rgba(16, 185, 129, 0.05) 45%, transparent 75%)";
+  };
+
   return (
-    <div className="h-screen w-screen flex flex-col bg-black text-slate-100 select-none overflow-hidden relative">
+    <div className="h-screen w-screen flex flex-col bg-[#050507] text-slate-100 select-none overflow-hidden relative">
       {/* Overlay Radical de Números Gigantes sincronizados con el Reloj Rust (Fase 5) */}
       <GiantMetronomeOverlay
         isPlaying={sequencerState.isPlaying}
@@ -587,23 +636,61 @@ export default function App() {
         resolution={sequencerState.resolution}
       />
 
-      {/* Header Minimalista (Logo + Monitor MIDI + Ajustes) */}
+      {/* Header Unificado de Estudio (Logo + Monitores Telemetría + Monitor MIDI DIN + Ajustes + Master Volume + MIDI Learn) */}
       <Header
         onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenInstrumentSelect={() => setIsInstrumentModalOpen(true)}
         midiEvents={events}
-      />
-
-      {/* Barra de Monitoreo & Control Superior Glassmorphic */}
-      <SubHeaderToolbar
+        onClearMidiEvents={clearEvents}
         connected={connected}
         activePortName={activePortName}
         audioStatus={audioStatus}
         masterGain={masterGain}
         onMasterGainChange={handleMasterGainChange}
+        isMidiLearnActive={isMidiLearnActive}
+        onToggleMidiLearn={toggleMidiLearn}
       />
 
       {/* Contenido Principal: Hardware Monolítico Flotante y Centrado Ergonómicamente sobre Negro Profundo */}
-      <main className="flex-1 p-2 sm:p-4 flex flex-col justify-center items-center overflow-y-auto overflow-x-hidden bg-[#000000] relative">
+      <main className="flex-1 p-2 sm:p-4 flex flex-col justify-center items-center overflow-y-auto overflow-x-hidden bg-[#070709] relative">
+        {/* Capas de Fondo de Estudio Noir (Iluminación Cenital + Micro-Malla + Aura Reactiva) */}
+        <div className="absolute inset-0 pointer-events-none z-0 overflow-hidden">
+          {/* 1. Iluminación Cenital Definida (Studio Overhead Spotlight) */}
+          <div
+            className="absolute inset-0"
+            style={{
+              background: "radial-gradient(ellipse 80% 50% at 50% 0%, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.03) 50%, transparent 75%)",
+            }}
+          />
+
+          {/* 2. Micro-Malla Acústica de Estudio (Precision Dot Matrix con alta nitidez) */}
+          <div
+            className="absolute inset-0"
+            style={{
+              backgroundImage: "radial-gradient(circle, rgba(255, 255, 255, 0.22) 1.2px, transparent 1.2px)",
+              backgroundSize: "28px 28px",
+              maskImage: "radial-gradient(ellipse 85% 75% at 50% 50%, black 40%, transparent 95%)",
+              WebkitMaskImage: "radial-gradient(ellipse 85% 75% at 50% 50%, black 40%, transparent 95%)",
+            }}
+          />
+
+          {/* 3. Aura Reactiva al Instrumento Activo con Presencia Notoria y Transición Suave */}
+          <div
+            className="absolute inset-0 transition-all duration-1000 ease-out"
+            style={{
+              background: getAmbientGlow(),
+            }}
+          />
+
+          {/* 4. Viñeta Perimetral Profunda para Enmarcar la Consola */}
+          <div
+            className="absolute inset-0"
+            style={{
+              background: "radial-gradient(ellipse 95% 85% at 50% 50%, transparent 65%, rgba(0, 0, 0, 0.85) 100%)",
+            }}
+          />
+        </div>
+
         <div className="studio-console flex flex-col w-full max-w-6xl my-auto relative z-10 transition-all duration-200">
           {/* Consola de Estudio Monolítica Unificada (Controlador Hardware + Docking Multimodal) */}
           <HardwareSkeleton
@@ -622,9 +709,10 @@ export default function App() {
             onSetKnobMapping={handleSetKnobMapping}
             fxRouting={fxRouting}
             onChangeFxRouting={handleSetFxRouting}
+            availableSoundfonts={availableSoundfonts}
             currentSoundfont={currentSoundfont}
             activePresetIndex={activePresetIndex}
-            onOpenInstrumentSelect={() => setIsInstrumentModalOpen(true)}
+            onSelectSoundfont={handleSelectSoundfont}
             onSelectPreset={handleSelectPreset}
             onTriggerNote={(note, velocity) => triggerVirtualNote(note, velocity, true)}
             onReleaseNote={(note) => triggerVirtualNote(note, 0, false)}
@@ -633,6 +721,10 @@ export default function App() {
             onChangePitchBend={triggerVirtualPitchBend}
             onChangeModWheel={triggerVirtualModWheel}
             hideKeyboard={workstationMode === "seq"}
+            isMidiLearnActive={isMidiLearnActive}
+            selectedLearnTarget={selectedLearnTarget}
+            onSelectLearnTarget={setSelectedLearnTarget}
+            midiLearnMapping={midiLearnMapping}
           >
             {/* Bahía Acoplada de Expansión: Secuenciador Rítmico TR-Style & Barra de Docking Maestra */}
             <StepSequencer
@@ -668,6 +760,10 @@ export default function App() {
               onSelectPad={handleSequencerSelectPad}
               isVisualMetronomeVisible={isVisualMetronomeVisible}
               onToggleVisualMetronome={handleToggleVisualMetronome}
+              isMidiLearnActive={isMidiLearnActive}
+              selectedLearnTarget={selectedLearnTarget}
+              onSelectLearnTarget={setSelectedLearnTarget}
+              midiLearnMapping={midiLearnMapping}
             />
           </HardwareSkeleton>
         </div>
@@ -690,7 +786,27 @@ export default function App() {
         ports={ports}
         onRefreshMidi={refreshPorts}
         onSelectPort={selectPort}
+        onResetMidiMappings={resetMidiMappings}
       />
+
+      {/* Splash Inicial de 3 Segundos Noir con Revelado Cinematográfico */}
+      {isBooting && (
+        <div
+          className={`fixed inset-0 z-[100] bg-black flex items-center justify-center select-none transition-all duration-700 ease-out ${
+            bootFadeOut
+              ? "opacity-0 pointer-events-none scale-110 blur-sm"
+              : "opacity-100 scale-100 blur-0"
+          }`}
+          style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif' }}
+        >
+          <h1
+            className="text-3xl sm:text-4xl md:text-5xl font-black tracking-widest text-white flex items-center drop-shadow-[0_0_35px_rgba(255,255,255,0.18)]"
+            style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif' }}
+          >
+            IMPACT<span className="text-emerald-400 drop-shadow-[0_0_24px_rgba(16,185,129,0.75)]">SAMPLER</span>
+          </h1>
+        </div>
+      )}
     </div>
   );
 }

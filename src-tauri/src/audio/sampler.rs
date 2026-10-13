@@ -201,7 +201,7 @@ impl PadSlot {
         Self {
             sample: None,
             mode: PadPlaybackMode::OneShot,
-            gain: 0.85,
+            gain: 64.0 / 127.0, // 50% de volumen nominal de salida
             voice: PadVoice::new(sample_rate_f),
         }
     }
@@ -282,7 +282,15 @@ impl PadSampler {
 
     pub fn set_gain(&mut self, pad_index: usize, gain: f32) {
         if pad_index < 8 {
-            self.slots[pad_index].gain = gain.clamp(0.0, 2.0);
+            self.slots[pad_index].gain = gain.clamp(0.0, 1.0);
+        }
+    }
+
+    pub fn get_gain(&self, pad_index: usize) -> f32 {
+        if pad_index < 8 {
+            self.slots[pad_index].gain
+        } else {
+            64.0 / 127.0
         }
     }
 

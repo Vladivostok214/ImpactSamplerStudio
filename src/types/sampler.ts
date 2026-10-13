@@ -1,6 +1,6 @@
 export type PadPlaybackMode = "oneShot" | "gate";
 export type PadEngineMode = "wavSampler" | "drumKitSf2";
-export type FxRouting = "keys" | "both" | "pads";
+export type FxRouting = "off" | "keys" | "both" | "pads";
 
 export interface PadSlotInfo {
   index: number;

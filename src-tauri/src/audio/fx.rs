@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FxRouting {
+    Off,
     Keys,
     Both,
     Pads,
@@ -402,17 +403,17 @@ impl AudioFxRack {
             delay: StereoDelay::new(sample_rate_f),
             reverb: StereoReverb::new(sample_rate_f),
             chorus: StereoChorus::new(sample_rate_f),
-            cutoff_val: 1.0,       // Abierto por defecto
-            resonance_val: 0.1,    // Resonancia suave
-            drive_val: 0.0,        // Sin distorsión
-            reverb_mix_val: 0.25,  // Reverb ligera
-            delay_time_val: 0.35,  // ~350ms
-            delay_feedback_val: 0.35, // Repeticiones moderadas
-            delay_mix_val: 0.0,    // Delay apagado por defecto
-            chorus_mix_val: 0.0,   // Chorus apagado
-            pan_val: 0.5,          // Centro (0.5 = 0.0 pan)
+            cutoff_val: 64.0 / 127.0,       // Posición central 64
+            resonance_val: 64.0 / 127.0,    // Posición central 64
+            drive_val: 0.0,                 // 0
+            reverb_mix_val: 0.0,            // 0 (Dry)
+            delay_time_val: 0.0,            // 0
+            delay_feedback_val: 0.0,        // 0
+            delay_mix_val: 0.0,             // 0 (Dry)
+            chorus_mix_val: 0.0,            // 0 (Dry)
+            pan_val: 0.5,                   // Centro 64/127 (0.0 pan)
             knob_mappings,
-            knob_values: [1.0, 0.1, 0.0, 0.25, 0.35, 0.35, 0.0, 0.5],
+            knob_values: [64.0 / 127.0, 64.0 / 127.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5],
         };
         rack.sync_knob_values();
         rack

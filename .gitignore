@@ -33,9 +33,13 @@ target/
 *.png
 *.jpg
 *.jpeg
+!src/assets/**
 scratch/
 
 # SoundFonts pesados (>100MB superan el límite de GitHub)
 # Coloca tus archivos .sf2 directamente en la carpeta soundfonts/
 soundfonts/*.sf2
 !soundfonts/.gitkeep
+
+# Archivos de red / depuración temporales
+*.har

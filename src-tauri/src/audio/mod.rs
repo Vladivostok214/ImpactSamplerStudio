@@ -35,7 +35,9 @@ pub enum AudioEngineCommand {
     SetPadMode { pad_index: usize, mode: PadPlaybackMode },
     SetPadGain { pad_index: usize, gain: f32 },
     SetPadEngineMode { mode: PadEngineMode },
+    SetDrumPadNote { pad_index: usize, note: i32 },
     LoadDrumKitSoundFont { sound_font: Arc<SoundFont>, patch_number: i32 },
+    SetMidiLearnCcMappings { faders: [u8; 9], knobs: [u8; 8] },
     // Fase 4: Knob & FX Commands
     SetKnobValue { knob_index: usize, value: f32 },
     SetKnobMapping { knob_index: usize, target: KnobTarget },
@@ -62,6 +64,7 @@ pub enum AudioEngineCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AudioDeviceInfo {
     pub id: String,
     pub name: String,

@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from "react";
+import { Check } from "lucide-react";
 import { PadSlotInfo, KnobMappingInfo, KnobTarget, FxRouting } from "../types/sampler";
+import { MidiLearnTarget, MidiLearnMapping } from "../types/midiLearn";
 
 import { SoundFontInfo } from "../types/soundfont";
 
@@ -15,9 +17,10 @@ interface HardwareSkeletonProps {
   onSetKnobMapping?: (knobIndex: number, target: KnobTarget) => void;
   fxRouting?: FxRouting;
   onChangeFxRouting?: (routing: FxRouting) => void;
+  availableSoundfonts?: SoundFontInfo[];
   currentSoundfont?: SoundFontInfo | null;
   activePresetIndex?: number;
-  onOpenInstrumentSelect?: () => void;
+  onSelectSoundfont?: (filename: string) => void;
   onSelectPreset?: (patch: number, index: number) => void;
   onTriggerNote: (note: number, velocity: number) => void;
   onReleaseNote: (note: number) => void;
@@ -26,6 +29,10 @@ interface HardwareSkeletonProps {
   onChangePitchBend: (normalized: number) => void;
   onChangeModWheel: (value: number) => void;
   hideKeyboard?: boolean;
+  isMidiLearnActive?: boolean;
+  selectedLearnTarget?: MidiLearnTarget | null;
+  onSelectLearnTarget?: (target: MidiLearnTarget) => void;
+  midiLearnMapping?: MidiLearnMapping;
   children?: React.ReactNode;
 }
 
@@ -61,9 +68,10 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
   onSetKnobMapping,
   fxRouting = "both",
   onChangeFxRouting,
+  availableSoundfonts = [],
   currentSoundfont,
   activePresetIndex = 0,
-  onOpenInstrumentSelect,
+  onSelectSoundfont,
   onSelectPreset,
   onTriggerNote,
   onReleaseNote,
@@ -72,6 +80,10 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
   onChangePitchBend,
   onChangeModWheel,
   hideKeyboard = false,
+  isMidiLearnActive = false,
+  selectedLearnTarget = null,
+  onSelectLearnTarget,
+  midiLearnMapping,
   children,
 }) => {
   const [knobContextMenu, setKnobContextMenu] = useState<{
@@ -84,8 +96,17 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
     const handleClickOutside = () => {
       setKnobContextMenu(null);
     };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setKnobContextMenu(null);
+      }
+    };
     window.addEventListener("click", handleClickOutside);
-    return () => window.removeEventListener("click", handleClickOutside);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("click", handleClickOutside);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
   }, []);
 
   const AVAILABLE_KNOB_TARGETS: { target: KnobTarget; label: string; desc: string }[] = [
@@ -99,6 +120,35 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
     { target: "chorusMix", label: "CHORUS", desc: "Chorus Modulación Estéreo" },
     { target: "pan", label: "PAN", desc: "Panorámica L/R Máster" },
   ];
+
+  const DEFAULT_KNOB_TARGETS: KnobTarget[] = [
+    "cutoff",
+    "resonance",
+    "drive",
+    "reverbMix",
+    "delayTime",
+    "delayFeedback",
+    "delayMix",
+    "pan",
+  ];
+
+  const getKnobDefaultValue = (target: KnobTarget): number => {
+    switch (target) {
+      case "cutoff":
+      case "resonance":
+      case "pan":
+        return 64;
+      case "drive":
+      case "reverbMix":
+      case "delayTime":
+      case "delayFeedback":
+      case "delayMix":
+      case "chorusMix":
+        return 0;
+      default:
+        return 64;
+    }
+  };
 
   // Generar las 49 teclas (C1 / nota 36 a C5 / nota 84)
   const keys: KeyItem[] = [];
@@ -241,7 +291,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
         <div className="flex items-center gap-2 pr-3 lg:pr-4 pb-3 lg:pb-0 border-b lg:border-b-0 lg:border-r border-white/[0.08] shrink-0">
           {/* Pitch Wheel */}
           <div className="flex flex-col items-center">
-            <span className="text-[9px] font-mono text-zinc-400 mb-1 font-semibold">PITCH</span>
+            <span className="text-[9.5px] font-mono text-zinc-400 mb-1 font-bold tracking-wider">PITCH</span>
             <div
               onPointerDown={handlePitchWheelPointerDown}
               className="w-6 h-28 bg-[#08080a] rounded-lg border border-white/[0.08] relative overflow-hidden flex items-center justify-center cursor-ns-resize shadow-[inset_0_2px_6px_rgba(0,0,0,0.9)] hover:border-white/20 transition"
@@ -266,14 +316,14 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                 }}
               />
             </div>
-            <span className="text-[8px] font-mono text-zinc-500 mt-1 font-medium">
+            <span className="text-[9.5px] font-mono text-zinc-400 mt-1 font-medium tabular-nums">
               {pitchBend >= 0 ? `+${pitchBend}` : pitchBend}
             </span>
           </div>
 
           {/* Modulation Wheel */}
           <div className="flex flex-col items-center">
-            <span className="text-[9px] font-mono text-zinc-400 mb-1 font-semibold">MOD</span>
+            <span className="text-[9.5px] font-mono text-zinc-400 mb-1 font-bold tracking-wider">MOD</span>
             <div
               onPointerDown={handleModWheelPointerDown}
               className="w-6 h-28 bg-[#08080a] rounded-lg border border-white/[0.08] relative overflow-hidden flex items-end cursor-ns-resize shadow-[inset_0_2px_6px_rgba(0,0,0,0.9)] hover:border-white/20 transition"
@@ -295,44 +345,74 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                 }}
               />
             </div>
-            <span className="text-[8px] font-mono text-zinc-500 mt-1 font-medium">{modWheel}</span>
+            <span className="text-[9.5px] font-mono text-zinc-400 mt-1 font-medium tabular-nums">{modWheel}</span>
           </div>
         </div>
 
         {/* Sección Faders Matrix (F1 a F9) */}
         <div className="w-full lg:w-[340px] shrink-0 pr-0 lg:pr-4 pb-3 lg:pb-0 border-b lg:border-b-0 lg:border-r border-white/[0.08]">
-          <div className="flex justify-between items-center mb-1.5 px-0.5">
-            <span className="text-[9px] font-mono uppercase tracking-wider text-zinc-400 font-semibold">
-              Faders Matrix (F1 - F9)
+          <div className="flex justify-between items-center mb-2 px-0.5">
+            <span className="text-[9.5px] font-mono uppercase tracking-wider text-zinc-400 font-bold">
+              Faders Matrix
             </span>
-            <span className="text-[8px] font-mono text-cyan-400 font-bold flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_6px_#22d3ee]" />
-              F9: Master
+            <span className="text-[9px] font-mono text-cyan-400 font-bold tracking-wide">
+              F9 Master
             </span>
           </div>
           <div className="flex justify-between items-center gap-1">
             {faders.map((val, idx) => {
               const isMaster = idx === 8;
               const heightPct = (val / 127) * 100;
-              const padLabel = idx < 8 ? `P${idx + 1}` : "M";
               const padSample = idx < 8 ? padSlots[idx]?.sampleName : null;
               const colorTheme = FADER_PAD_COLORS[idx] || FADER_PAD_COLORS[0];
+              const defaultFaderVal = isMaster ? 100 : 64;
+
+              const isTargetSelected =
+                isMidiLearnActive &&
+                selectedLearnTarget?.type === "fader" &&
+                selectedLearnTarget?.index === idx;
+              const mappedCc = midiLearnMapping?.faders[idx] ?? (isMaster ? 46 : 38 + idx);
+
+              const handleFaderReset = (e: React.MouseEvent) => {
+                e.stopPropagation();
+                if (!isMidiLearnActive) {
+                  onChangeFader(idx, defaultFaderVal);
+                }
+              };
+
+              const handleFaderContainerClick = (e: React.MouseEvent) => {
+                if (isMidiLearnActive) {
+                  e.stopPropagation();
+                  onSelectLearnTarget?.({ type: "fader", index: idx });
+                }
+              };
 
               return (
-                <div key={idx} className="flex-1 flex flex-col items-center">
-                  <div className="flex items-center gap-0.5 mb-1">
-                    <span className={`w-1 h-1 rounded-full ${isMaster ? "bg-cyan-400" : colorTheme.dot}`} />
-                    <span className="text-[7.5px] font-mono text-zinc-400 font-semibold truncate max-w-full text-center">
-                      {padLabel}
-                    </span>
-                  </div>
+                <div
+                  key={idx}
+                  onClick={handleFaderContainerClick}
+                  onDoubleClick={handleFaderReset}
+                  className="flex-1 flex flex-col items-center cursor-pointer transition-all rounded-lg p-0.5"
+                >
                   <div
-                    onPointerDown={(e) => handleFaderPointerDown(idx, e)}
-                    className="w-full h-24 bg-[#08080a] rounded-lg border border-white/[0.08] relative flex items-center justify-center p-0.5 cursor-ns-resize hover:border-white/20 transition shadow-[inset_0_2px_6px_rgba(0,0,0,0.9)] overflow-hidden group/fader"
+                    onPointerDown={(e) => {
+                      if (!isMidiLearnActive) handleFaderPointerDown(idx, e);
+                    }}
+                    className={`w-full h-28 bg-[#08080a] rounded-lg relative flex items-center justify-center p-0.5 cursor-ns-resize transition shadow-[inset_0_2px_6px_rgba(0,0,0,0.9)] overflow-hidden group/fader ${
+                      isTargetSelected
+                        ? "border-2 border-amber-400 shadow-[0_0_18px_rgba(245,158,11,0.9)] ring-2 ring-amber-400/50 animate-pulse"
+                        : isMidiLearnActive
+                        ? "border-2 border-amber-500/60 shadow-[0_0_12px_rgba(245,158,11,0.35)] hover:border-amber-400 hover:shadow-[0_0_16px_rgba(245,158,11,0.6)]"
+                        : isMaster
+                        ? "border-2 border-cyan-400/90 shadow-[0_0_12px_rgba(34,211,238,0.35),inset_0_2px_6px_rgba(0,0,0,0.9)] hover:border-cyan-300"
+                        : "border border-white/[0.08] hover:border-white/20"
+                    }`}
                     title={
-                      isMaster
-                        ? `Master Volume: ${val}`
-                        : `Pad ${idx + 1}${padSample ? ` (${padSample})` : ""} Ganancia: ${(val / 127 * 1.5).toFixed(2)}x (${val})`
+                      isMidiLearnActive
+                        ? `MIDI Learn: Fader ${idx + 1} (CC ${mappedCc}). Haz clic para reasignar.`
+                        : isMaster
+                        ? `Master Volume: ${val} | Doble clic para restablecer al 80% (100)`
+                        : `Pad ${idx + 1}${padSample ? ` (${padSample})` : ""} Volumen: ${Math.round((val / 127) * 100)}% (${val}) | Doble clic para restablecer al 50% (64)`
                     }
                   >
                     {/* Ranura vertical metálica del chasis (Fader Track Slot) */}
@@ -342,7 +422,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                     <div
                       className={`absolute left-1/2 -translate-x-1/2 w-[2px] bottom-1 rounded-full transition-all duration-75 ${
                         isMaster
-                          ? "bg-cyan-400/70 shadow-[0_0_6px_rgba(34,211,238,0.5)]"
+                          ? "bg-cyan-400/80 shadow-[0_0_6px_rgba(34,211,238,0.6)]"
                           : `${colorTheme.dot} opacity-60`
                       }`}
                       style={{ height: `${Math.max(0, heightPct * 0.78)}%` }}
@@ -359,7 +439,19 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                       <div className={`w-[75%] h-[2px] rounded-full ${isMaster ? "bg-cyan-400 shadow-[0_0_6px_#22d3ee]" : colorTheme.line}`} />
                     </div>
                   </div>
-                  <span className="text-[8px] font-mono text-zinc-400 mt-1 font-medium">
+
+                  {/* Indicador de Valor numérico limpio */}
+                  <span
+                    className={`text-[9.5px] font-mono mt-1.5 tabular-nums transition-colors ${
+                      isTargetSelected
+                        ? "text-amber-300 font-bold"
+                        : isMidiLearnActive
+                        ? "text-amber-400/80 font-medium"
+                        : isMaster
+                        ? "text-cyan-300 font-bold"
+                        : "text-zinc-300 font-medium"
+                    }`}
+                  >
                     {val}
                   </span>
                 </div>
@@ -374,32 +466,45 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
         <div className="flex-1 min-w-0 pr-0 lg:pr-4 pb-3 lg:pb-0 border-b lg:border-b-0 lg:border-r border-white/[0.08] flex flex-col justify-between">
           {/* Pantalla OLED de Selección de Instrumento Melódico y Patch / Preset */}
           <div className="mb-2 p-1 bg-[#040406] border border-white/10 rounded-lg shadow-[inset_0_2px_4px_rgba(0,0,0,0.9),0_1px_0_rgba(255,255,255,0.05)] flex items-center justify-between gap-2 flex-wrap">
-            {/* Display Principal del Instrumento */}
-            <button
-              type="button"
-              onClick={onOpenInstrumentSelect}
-              className="flex-1 min-w-[180px] h-7 px-2.5 bg-[#0a0c10] hover:bg-[#121620] border border-white/10 hover:border-white/25 rounded-md flex items-center justify-between transition-all group cursor-pointer shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]"
-              title="Clic para cambiar instrumento melódico (SoundFont)"
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#10b981]" />
-                <span className="text-[8px] font-mono uppercase font-black tracking-widest text-zinc-500">
-                  INST:
-                </span>
-                <span className="font-mono text-[10px] font-black text-emerald-300 group-hover:text-emerald-200 transition truncate drop-shadow-[0_0_8px_rgba(16,185,129,0.4)]">
-                  {currentSoundfont ? currentSoundfont.displayName.toUpperCase() : "SELECCIONAR INSTRUMENTO..."}
-                </span>
-              </div>
-              <span className="text-zinc-500 group-hover:text-emerald-400 text-[10px] font-bold ml-1">
-                ▾
+            {/* Selector de Instrumento Melódico (Coherente 1:1 con PATCH) */}
+            <div className="flex-1 min-w-[170px] h-7 px-2 bg-[#0a0c10] border border-white/10 hover:border-white/25 rounded-md flex items-center gap-1.5 transition-all shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#10b981] shrink-0" />
+              <span className="text-[9.5px] font-mono uppercase font-bold tracking-wider text-zinc-400 shrink-0">
+                INST:
               </span>
-            </button>
+              <select
+                value={currentSoundfont?.filename || ""}
+                onChange={(e) => {
+                  if (e.target.value && onSelectSoundfont) {
+                    onSelectSoundfont(e.target.value);
+                  }
+                }}
+                className="bg-transparent text-emerald-300 font-mono text-[10.5px] font-bold focus:outline-none cursor-pointer w-full truncate pr-1"
+                title="Seleccionar instrumento melódico"
+              >
+                {availableSoundfonts.length > 0 ? (
+                  availableSoundfonts.map((sf) => (
+                    <option
+                      key={sf.filename}
+                      value={sf.filename}
+                      className="bg-zinc-950 text-zinc-200 font-mono text-xs"
+                    >
+                      {sf.displayName.toUpperCase()}
+                    </option>
+                  ))
+                ) : (
+                  <option value={currentSoundfont?.filename || ""} className="bg-zinc-950 text-zinc-200 font-mono text-xs">
+                    {currentSoundfont ? currentSoundfont.displayName.toUpperCase() : "CARGANDO..."}
+                  </option>
+                )}
+              </select>
+            </div>
 
             {/* Selector de Preset (visible cuando el soundfont tiene más de 1 preset, ej. Mellotron) */}
             {currentSoundfont && currentSoundfont.presets.length > 1 && (
               <div className="h-7 px-2 bg-[#0a0c10] border border-white/10 hover:border-white/25 rounded-md flex items-center gap-1.5 transition-all shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]">
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shadow-[0_0_6px_#f59e0b]" />
-                <span className="text-[8px] font-mono uppercase font-black tracking-wider text-zinc-500">
+                <span className="text-[9.5px] font-mono uppercase font-bold tracking-wider text-zinc-400 shrink-0">
                   PATCH:
                 </span>
                 <select
@@ -409,7 +514,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                     const patch = currentSoundfont.presets[idx]?.patch ?? 0;
                     onSelectPreset?.(patch, idx);
                   }}
-                  className="bg-transparent text-amber-300 font-mono text-[9.5px] font-bold focus:outline-none cursor-pointer pr-1"
+                  className="bg-transparent text-amber-300 font-mono text-[10.5px] font-bold focus:outline-none cursor-pointer pr-1"
                 >
                   {currentSoundfont.presets.map((p, idx) => (
                     <option key={idx} value={idx} className="bg-zinc-950 text-zinc-200 font-mono text-xs">
@@ -436,27 +541,60 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
               const arcLength = 65.97;
               const activeDash = (val / 127) * arcLength;
 
+              const target = mapping ? mapping.target : DEFAULT_KNOB_TARGETS[idx] || "cutoff";
+              const defaultKnobVal = getKnobDefaultValue(target);
+              const isFxBypassed = fxRouting === "off";
+
+              const isKnobTargetSelected =
+                isMidiLearnActive &&
+                selectedLearnTarget?.type === "knob" &&
+                selectedLearnTarget?.index === idx;
+              const mappedKnobCc = midiLearnMapping?.knobs[idx] ?? (56 + idx);
+
+              const handleKnobReset = (e: React.MouseEvent) => {
+                e.stopPropagation();
+                if (!isMidiLearnActive) {
+                  onChangeKnob(idx, defaultKnobVal);
+                }
+              };
+
+              const handleKnobContainerClick = (e: React.MouseEvent) => {
+                if (isMidiLearnActive) {
+                  e.stopPropagation();
+                  onSelectLearnTarget?.({ type: "knob", index: idx });
+                }
+              };
+
               return (
                 <div
                   key={idx}
-                  className="flex flex-col items-center cursor-pointer group py-1 rounded-lg hover:bg-white/[0.03] transition-colors"
+                  onClick={handleKnobContainerClick}
+                  onDoubleClick={handleKnobReset}
+                  className={`flex flex-col items-center cursor-pointer group py-1 px-1 rounded-lg transition-all ${
+                    isKnobTargetSelected
+                      ? "border-2 border-amber-400 bg-amber-500/20 shadow-[0_0_18px_rgba(245,158,11,0.85)] ring-2 ring-amber-400/50 animate-pulse"
+                      : isMidiLearnActive
+                      ? "border border-amber-500/50 bg-amber-950/20 shadow-[0_0_10px_rgba(245,158,11,0.3)] hover:border-amber-400 hover:shadow-[0_0_14px_rgba(245,158,11,0.55)]"
+                      : "border border-transparent hover:bg-white/[0.03]"
+                  }`}
                   onContextMenu={(e) => {
+                    if (isMidiLearnActive) return;
                     e.preventDefault();
                     e.stopPropagation();
                     const x = Math.min(e.clientX, window.innerWidth - 260);
                     const y = Math.min(e.clientY, window.innerHeight - 340);
                     setKnobContextMenu({ knobIdx: idx, x, y });
                   }}
-                  title={`K${idx + 1}: ${activeLabel} (${displayName}) | Valor: ${val} | Clic derecho para reasignar`}
+                  title={
+                    isMidiLearnActive
+                      ? `MIDI Learn: Knob ${idx + 1} (CC ${mappedKnobCc}). Haz clic para reasignar.`
+                      : `Knob ${idx + 1}: ${activeLabel} (${displayName}) | Valor: ${val} | Doble clic para restablecer (${defaultKnobVal}) | Clic en etiqueta o clic derecho para reasignar`
+                  }
                 >
-                  <div className="text-[8px] font-mono text-zinc-500 font-semibold mb-1">
-                    K{idx + 1}
-                  </div>
-
                   {/* Knob con Anillo de Progreso Circular */}
                   <div
                     onPointerDown={(e) => handleKnobPointerDown(idx, e)}
-                    className="relative w-9 h-9 flex items-center justify-center cursor-ns-resize"
+                    className="relative w-9 h-9 flex items-center justify-center cursor-ns-resize mt-0.5"
                   >
                     {/* Anillo de Medición SVG (Arc Gauge de 270 grados) */}
                     <svg className="w-9 h-9 rotate-[135deg] pointer-events-none" viewBox="0 0 36 36">
@@ -471,17 +609,21 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                         strokeDasharray={`${arcLength} ${circ}`}
                         strokeLinecap="round"
                       />
-                      {/* Pista activa luminosa */}
+                      {/* Pista activa luminosa (ámbar si está activo, atenuada si FX está en bypass) */}
                       <circle
                         cx="18"
                         cy="18"
                         r="14"
                         fill="none"
-                        stroke="#fbbf24"
+                        stroke={isFxBypassed ? "#3f3f46" : "#f59e0b"}
                         strokeWidth="2.5"
                         strokeDasharray={`${activeDash} ${circ}`}
                         strokeLinecap="round"
-                        className="transition-all duration-75 drop-shadow-[0_0_5px_rgba(251,191,36,0.85)]"
+                        className={
+                          isFxBypassed
+                            ? "transition-all duration-75 opacity-60"
+                            : "transition-all duration-75 drop-shadow-[0_0_5px_rgba(251,191,36,0.85)]"
+                        }
                       />
                     </svg>
 
@@ -489,16 +631,49 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                     <div className="absolute w-6 h-6 rounded-full bg-gradient-to-b from-[#34373e] via-[#1e2025] to-[#121316] border border-white/15 shadow-[0_2px_5px_rgba(0,0,0,0.8),inset_0_1px_0_rgba(255,255,255,0.25)] flex items-center justify-center group-hover:border-amber-400/60 transition">
                       {/* Aguja del knob */}
                       <div
-                        className="absolute w-[1.5px] h-2.5 bg-amber-400 rounded-full origin-bottom bottom-1/2 shadow-[0_0_6px_#fbbf24]"
+                        className={`absolute w-[1.5px] h-2.5 rounded-full origin-bottom bottom-1/2 transition-all ${
+                          isFxBypassed
+                            ? "bg-zinc-500 shadow-none"
+                            : "bg-amber-400 shadow-[0_0_6px_#fbbf24]"
+                        }`}
                         style={{ transform: `rotate(${rotDeg}deg)` }}
                       />
                     </div>
                   </div>
 
-                  <span className="text-[8px] font-mono font-bold text-amber-400/90 mt-1 truncate max-w-[56px] text-center leading-tight">
-                    {activeLabel}
-                  </span>
-                  <span className="text-[7.5px] font-mono text-zinc-400 mt-0.5 font-medium">
+                  {/* Etiqueta / Selector de Destino Clickable */}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const x = Math.min(rect.left, window.innerWidth - 260);
+                      const y = Math.min(rect.bottom + 4, window.innerHeight - 340);
+                      setKnobContextMenu({ knobIdx: idx, x, y });
+                    }}
+                    title={`Clic para reasignar destino de ${activeLabel} | Clic derecho también disponible`}
+                    className={`text-[9.5px] font-mono font-bold mt-1.5 truncate max-w-[58px] text-center leading-tight tracking-wider px-1 py-0.5 rounded transition-all flex items-center justify-center gap-0.5 ${
+                      isFxBypassed
+                        ? "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04]"
+                        : "text-amber-300 hover:text-amber-200 hover:bg-amber-400/10"
+                    }`}
+                  >
+                    <span className="truncate">{activeLabel}</span>
+                    <span className="text-[7.5px] opacity-70">▾</span>
+                  </button>
+
+                  <span
+                    className={`text-[9.5px] font-mono mt-0.5 font-medium tabular-nums transition-colors ${
+                      isKnobTargetSelected
+                        ? "text-amber-300 font-bold"
+                        : isMidiLearnActive
+                        ? "text-amber-400/80 font-semibold"
+                        : isFxBypassed
+                        ? "text-zinc-600"
+                        : "text-zinc-300"
+                    }`}
+                  >
                     {val}
                   </span>
                 </div>
@@ -507,48 +682,89 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
           </div>
         </div>
 
-        {/* Sección Selector Vertical FX Route (Switch de 3 Posiciones: KEYS / BOTH / PADS) */}
-        <div className="w-full lg:w-20 shrink-0 flex flex-col items-center justify-between">
-          <div className="text-[8.5px] font-mono uppercase tracking-wider text-zinc-400 font-semibold mb-1.5 text-center">
+        {/* Sección Selector Vertical FX Route (2 Toggles Independientes: KEYS y PADS con detección OFF / BOTH) */}
+        <div className="w-full lg:w-24 shrink-0 flex flex-col items-center justify-between">
+          <div className="text-[9.5px] font-mono uppercase tracking-wider text-zinc-400 font-bold mb-1.5 text-center">
             FX Route
           </div>
 
-          {/* Torre / Switch Empotrado de 3 Posiciones con LEDs de estado */}
-          <div className="w-full h-24 bg-[#08080a] rounded-lg border border-white/[0.08] p-1 flex flex-col justify-between shadow-[inset_0_2px_6px_rgba(0,0,0,0.9)] relative overflow-hidden">
-            {[
-              { id: "keys", label: "KEYS", title: "FX procesa solo Teclado Melódico" },
-              { id: "both", label: "BOTH", title: "FX procesa Mezcla Completa (Teclado + Pads)" },
-              { id: "pads", label: "PADS", title: "FX procesa solo Pads Rítmicos" },
-            ].map((opt) => {
-              const isActive = fxRouting === opt.id;
-              return (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={() => onChangeFxRouting?.(opt.id as FxRouting)}
-                  title={opt.title}
-                  className={`flex-1 w-full rounded flex items-center justify-between px-2 font-mono text-[8px] font-bold transition-all active:scale-95 ${
-                    isActive
-                      ? "bg-amber-500/20 text-amber-300 border border-amber-400/60 shadow-[0_0_8px_rgba(245,158,11,0.35),inset_0_1px_0_rgba(255,255,255,0.15)] font-black"
-                      : "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.03] border border-transparent"
-                  }`}
-                >
-                  <span>{opt.label}</span>
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full transition-all ${
-                      isActive
-                        ? "bg-amber-400 shadow-[0_0_6px_#f59e0b]"
-                        : "bg-zinc-700/60"
-                    }`}
-                  />
-                </button>
-              );
-            })}
+          {/* Torre / Consola Empotrada con pulsadores independientes KEYS y PADS */}
+          <div className="w-full h-24 bg-[#08080a] rounded-lg border border-white/[0.08] p-1.5 flex flex-col justify-between shadow-[inset_0_2px_6px_rgba(0,0,0,0.9)] relative overflow-hidden">
+            {/* Pulsador KEYS */}
+            <button
+              type="button"
+              onClick={() => {
+                const hasKeys = fxRouting === "keys" || fxRouting === "both";
+                const hasPads = fxRouting === "pads" || fxRouting === "both";
+                if (hasKeys) {
+                  onChangeFxRouting?.(hasPads ? "pads" : "off");
+                } else {
+                  onChangeFxRouting?.(hasPads ? "both" : "keys");
+                }
+              }}
+              title="Activar o desactivar efectos en el Teclado Melódico"
+              className={`flex-1 w-full rounded flex items-center justify-between px-2 font-mono text-[9.5px] font-bold tracking-wider transition-all mb-1 active:scale-95 ${
+                fxRouting === "keys" || fxRouting === "both"
+                  ? "bg-amber-500/20 text-amber-300 border border-amber-400/60 shadow-[0_0_8px_rgba(245,158,11,0.35),inset_0_1px_0_rgba(255,255,255,0.15)] font-black"
+                  : "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.03] border border-transparent"
+              }`}
+            >
+              <span>KEYS</span>
+              <span
+                className={`w-1.5 h-1.5 rounded-full transition-all ${
+                  fxRouting === "keys" || fxRouting === "both"
+                    ? "bg-amber-400 shadow-[0_0_6px_#f59e0b]"
+                    : "bg-zinc-700/60"
+                }`}
+              />
+            </button>
+
+            {/* Pulsador PADS */}
+            <button
+              type="button"
+              onClick={() => {
+                const hasKeys = fxRouting === "keys" || fxRouting === "both";
+                const hasPads = fxRouting === "pads" || fxRouting === "both";
+                if (hasPads) {
+                  onChangeFxRouting?.(hasKeys ? "keys" : "off");
+                } else {
+                  onChangeFxRouting?.(hasKeys ? "both" : "pads");
+                }
+              }}
+              title="Activar o desactivar efectos en los Pads Rítmicos"
+              className={`flex-1 w-full rounded flex items-center justify-between px-2 font-mono text-[9.5px] font-bold tracking-wider transition-all active:scale-95 ${
+                fxRouting === "pads" || fxRouting === "both"
+                  ? "bg-amber-500/20 text-amber-300 border border-amber-400/60 shadow-[0_0_8px_rgba(245,158,11,0.35),inset_0_1px_0_rgba(255,255,255,0.15)] font-black"
+                  : "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.03] border border-transparent"
+              }`}
+            >
+              <span>PADS</span>
+              <span
+                className={`w-1.5 h-1.5 rounded-full transition-all ${
+                  fxRouting === "pads" || fxRouting === "both"
+                    ? "bg-amber-400 shadow-[0_0_6px_#f59e0b]"
+                    : "bg-zinc-700/60"
+                }`}
+              />
+            </button>
           </div>
 
-          <span className="text-[7.5px] font-mono text-zinc-500 mt-1 uppercase font-semibold text-center">
-            {fxRouting}
-          </span>
+          {/* Badge de Estado Dinámico */}
+          <div className="mt-1 text-center w-full flex items-center justify-center">
+            {fxRouting === "off" ? (
+              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded border border-zinc-800 bg-zinc-900/60 text-zinc-500 font-bold uppercase tracking-wider">
+                BYPASS
+              </span>
+            ) : fxRouting === "both" ? (
+              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 font-bold uppercase tracking-wider shadow-[0_0_6px_rgba(245,158,11,0.2)]">
+                KEYS+PADS
+              </span>
+            ) : (
+              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-400 font-bold uppercase tracking-wider">
+                {fxRouting?.toUpperCase()}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -593,7 +809,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                     </span>
                   </div>
                   {isSelected && (
-                    <span className="text-amber-400 text-xs font-bold ml-2">✓</span>
+                    <Check size={12} className="text-amber-400 ml-2 shrink-0" />
                   )}
                 </button>
               );
@@ -693,9 +909,9 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                     {/* Marcador de Octava en teclas C (C1 a C5) con grabado láser */}
                     {isCKey && (
                       <span
-                        className={`absolute bottom-2.5 left-1/2 -translate-x-1/2 font-mono text-[9px] font-black tracking-tight select-none pointer-events-none transition-colors ${
+                        className={`absolute bottom-2.5 left-1/2 -translate-x-1/2 font-mono text-[9.5px] font-bold tracking-tight select-none pointer-events-none transition-colors ${
                           k.isActive
-                            ? "text-black font-black"
+                            ? "text-black font-extrabold"
                             : isMiddleC
                             ? "text-cyan-700 font-extrabold drop-shadow-[0_1px_0_rgba(255,255,255,0.9)]"
                             : "text-zinc-500 font-bold drop-shadow-[0_1px_0_rgba(255,255,255,0.9)]"
@@ -716,7 +932,9 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
       )}
 
       {/* Bahía Acoplada de Expansión / Secuenciador y Docking Footer */}
-      {children}
+      <div className="relative z-40">
+        {children}
+      </div>
     </div>
   );
 };

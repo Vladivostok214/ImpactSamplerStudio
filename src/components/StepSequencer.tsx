@@ -1,5 +1,151 @@
 import React, { useState, useRef, useEffect } from "react";
+import { ChevronDown, ChevronRight, Check, FolderOpen, RotateCcw, Eraser, Trash2, Music } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { PadSlotInfo, PadEngineMode, SequencerStateInfo, StepResolution } from "../types/sampler";
+import { MidiLearnTarget, MidiLearnMapping, getMidiNoteName } from "../types/midiLearn";
+
+export interface Sf2DrumSample {
+  note: number;
+  name: string;
+}
+
+export interface Sf2DrumCategory {
+  id: string;
+  name: string;
+  samples: Sf2DrumSample[];
+}
+
+export const SF2_DRUM_CATEGORIES: Sf2DrumCategory[] = [
+  {
+    id: "bombo",
+    name: "BOMBO",
+    samples: [
+      { note: 36, name: "Bass Kick 1" },
+      { note: 35, name: "Acoustic Kick" },
+      { note: 10, name: "Bass Kick 2" },
+      { note: 11, name: "Bass Kick 3" },
+      { note: 12, name: "Bass Kick 4" },
+      { note: 13, name: "Bass Kick 5" },
+      { note: 14, name: "Bass Kick 6" },
+      { note: 15, name: "Bass Kick 7" },
+      { note: 16, name: "Bass Kick 8" },
+      { note: 25, name: "Reverse Kick" },
+    ],
+  },
+  {
+    id: "caja",
+    name: "CAJA",
+    samples: [
+      { note: 38, name: "Acoustic Snare" },
+      { note: 40, name: "Electric Snare" },
+      { note: 37, name: "Sidestick / Rim" },
+      { note: 0, name: "Snare 1" },
+      { note: 1, name: "Snare 2" },
+      { note: 2, name: "Snare 3" },
+      { note: 3, name: "Snare 4" },
+      { note: 4, name: "Snare 5" },
+      { note: 5, name: "Snare 6" },
+      { note: 6, name: "Snare 7" },
+      { note: 7, name: "Snare 8" },
+      { note: 8, name: "Snare 9" },
+      { note: 32, name: "Reverse Snare" },
+    ],
+  },
+  {
+    id: "hihat",
+    name: "HI-HAT",
+    samples: [
+      { note: 42, name: "Closed Hat" },
+      { note: 46, name: "Open Hat" },
+      { note: 44, name: "Pedal Hat" },
+      { note: 24, name: "Pedal Hat 2" },
+    ],
+  },
+  {
+    id: "platillo",
+    name: "PLATILLO",
+    samples: [
+      { note: 49, name: "Crash Cymbal" },
+      { note: 51, name: "Ride Cymbal" },
+      { note: 53, name: "Ride Bell" },
+      { note: 52, name: "Chinese Cymbal" },
+      { note: 29, name: "FM Synth Crash" },
+      { note: 26, name: "Reverse Cymbal" },
+      { note: 27, name: "Reverse Bell Ride" },
+    ],
+  },
+  {
+    id: "toms",
+    name: "TOMS",
+    samples: [
+      { note: 50, name: "High Tom 1" },
+      { note: 48, name: "High-Mid Tom 1" },
+      { note: 47, name: "Low-Mid Tom 1" },
+      { note: 45, name: "Low Tom 1" },
+      { note: 17, name: "Heavy Tom 1" },
+      { note: 19, name: "Heavy Tom 2" },
+      { note: 22, name: "High Tom 2" },
+      { note: 20, name: "High-Mid Tom 2" },
+      { note: 18, name: "Low-Mid Tom 2" },
+      { note: 21, name: "Low Tom 2" },
+      { note: 23, name: "High Tom 3" },
+      { note: 43, name: "High-Mid Tom 3" },
+      { note: 41, name: "Low-Mid Tom 3" },
+      { note: 73, name: "High Electro Tom" },
+      { note: 81, name: "High-Mid Electro Tom" },
+      { note: 80, name: "Low-Mid Electro Tom" },
+      { note: 74, name: "Low Electro Tom" },
+      { note: 33, name: "Reverse Tom" },
+      { note: 28, name: "Reverse Electro Tom" },
+    ],
+  },
+  {
+    id: "percusion",
+    name: "PERCUSION",
+    samples: [
+      { note: 39, name: "Handclap" },
+      { note: 56, name: "Cowbell" },
+      { note: 54, name: "Tambourine" },
+      { note: 69, name: "Cabasa" },
+      { note: 60, name: "Hi Bongo" },
+      { note: 61, name: "Low Bongo" },
+      { note: 62, name: "Mute Conga" },
+      { note: 63, name: "Conga" },
+      { note: 64, name: "Low Conga" },
+      { note: 65, name: "Hi Timbale" },
+      { note: 66, name: "Low Timbale" },
+      { note: 67, name: "Hi Agogo" },
+      { note: 68, name: "Low Agogo" },
+      { note: 75, name: "Claves" },
+      { note: 79, name: "Cuica" },
+      { note: 85, name: "Castanet" },
+      { note: 58, name: "Vibraslap" },
+      { note: 71, name: "Short Whistle" },
+      { note: 72, name: "Long Whistle" },
+      { note: 84, name: "Belltree" },
+    ],
+  },
+  {
+    id: "fx",
+    name: "FX Y VOCES",
+    samples: [
+      { note: 59, name: "Get Funky!" },
+      { note: 77, name: "Hey!" },
+      { note: 76, name: "Ha!" },
+      { note: 88, name: "Ow!" },
+      { note: 34, name: "Bom" },
+      { note: 87, name: "Gunshot" },
+      { note: 86, name: "Glass Shatter" },
+      { note: 55, name: "Camera Shutter" },
+      { note: 57, name: "Shutter" },
+      { note: 9, name: "Timpani" },
+      { note: 30, name: "FM Synth Drum 1" },
+      { note: 31, name: "FM Synth Drum 2" },
+      { note: 82, name: "FM 1" },
+      { note: 83, name: "FM 2" },
+    ],
+  },
+];
 
 interface StepSequencerProps {
   viewMode?: "keys" | "seq";
@@ -36,6 +182,10 @@ interface StepSequencerProps {
   onToggleVisualMetronome?: () => void;
   isCollapsed?: boolean;
   onToggleCollapse?: () => void;
+  isMidiLearnActive?: boolean;
+  selectedLearnTarget?: MidiLearnTarget | null;
+  onSelectLearnTarget?: (target: MidiLearnTarget) => void;
+  midiLearnMapping?: MidiLearnMapping;
 }
 
 const DRUM_KIT_NAMES = [
@@ -166,8 +316,12 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
   onClearSelectedTrack,
   onClearTrack,
   onSelectPad,
-  isVisualMetronomeVisible = true,
+  isVisualMetronomeVisible = false,
   onToggleVisualMetronome,
+  isMidiLearnActive = false,
+  selectedLearnTarget = null,
+  onSelectLearnTarget,
+  midiLearnMapping,
 }) => {
   const {
     isPlaying,
@@ -189,7 +343,51 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
     x: number;
     y: number;
   } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+  const [isSf2MenuOpen, setIsSf2MenuOpen] = useState(false);
+  const [activeSf2Category, setActiveSf2Category] = useState<string | null>(null);
+  const [drumNotes, setDrumNotes] = useState<number[]>([36, 38, 42, 46, 39, 45, 48, 49]);
+  const [customDrumNames, setCustomDrumNames] = useState<Record<number, string>>({});
   const [localDragOverPad, setLocalDragOverPad] = useState<number | null>(null);
+
+  // Cargar notas de batería activas desde el backend
+  useEffect(() => {
+    invoke<number[]>("get_drum_pad_notes")
+      .then((notes) => {
+        if (Array.isArray(notes) && notes.length === 8) {
+          setDrumNotes(notes);
+        }
+      })
+      .catch(console.error);
+  }, []);
+
+  // Cerrar menú contextual al hacer clic fuera o pulsar Escape
+  useEffect(() => {
+    if (!contextMenu) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
+        setContextMenu(null);
+        setIsSf2MenuOpen(false);
+        setActiveSf2Category(null);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setContextMenu(null);
+        setIsSf2MenuOpen(false);
+        setActiveSf2Category(null);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [contextMenu]);
 
   // Menú selector de Kits
   const [isKitMenuOpen, setIsKitMenuOpen] = useState(false);
@@ -209,11 +407,38 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
     };
   }, [isKitMenuOpen]);
 
+  const handleAssignSf2Drum = (padIdx: number, note: number, sampleName: string) => {
+    invoke("set_drum_pad_note", { padIndex: padIdx, note }).catch(console.error);
+    setDrumNotes((prev) => {
+      const next = [...prev];
+      next[padIdx] = note;
+      return next;
+    });
+    setCustomDrumNames((prev) => ({
+      ...prev,
+      [padIdx]: sampleName,
+    }));
+    if (padEngineMode !== "drumKitSf2") {
+      onChangePadEngineMode?.("drumKitSf2");
+    }
+    setContextMenu(null);
+    setIsSf2MenuOpen(false);
+    setActiveSf2Category(null);
+  };
+
   // Mapeo MIDI de notas por pad
   const PAD_MIDI_NOTES = [36, 37, 38, 39, 40, 41, 42, 43];
 
   const getPadName = (padIdx: number): string => {
     if (padEngineMode === "drumKitSf2") {
+      if (customDrumNames[padIdx]) {
+        return customDrumNames[padIdx];
+      }
+      const note = drumNotes[padIdx];
+      for (const cat of SF2_DRUM_CATEGORIES) {
+        const found = cat.samples.find((s) => s.note === note);
+        if (found) return found.name;
+      }
       return DRUM_KIT_NAMES[padIdx] || `Drum ${padIdx + 1}`;
     }
     const slot = padSlots[padIdx];
@@ -236,7 +461,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
   const isSeqOpen = viewMode === "seq";
 
   return (
-    <div className="w-full flex flex-col bg-[#050507] border-t border-white/[0.08] select-none">
+    <div className="w-full flex flex-col bg-[#050507] border-t border-white/[0.08] select-none relative z-40">
       {/* 1. Bahía de Secuenciación Rítmica TR-Style (Visible únicamente en modo SEQ) */}
       {isSeqOpen && (
         <div className="p-3 sm:p-3.5 flex flex-col gap-1.5 animate-in fade-in duration-150">
@@ -247,10 +472,10 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
             const isSelected = selectedPad === padIdx;
             const isHit = activePads.has(padNum);
             const vel = activePads.get(padNum) || 0;
-            const slot = padSlots ? padSlots[padIdx] : undefined;
             const isDragging = dragOverSlot === padIdx || localDragOverPad === padNum;
-            const midiNote = PAD_MIDI_NOTES[padIdx];
+            const midiNote = midiLearnMapping ? midiLearnMapping.pads[padIdx] : PAD_MIDI_NOTES[padIdx];
             const theme = PAD_ROLE_THEMES[padIdx] || PAD_ROLE_THEMES[0];
+            const isLearnSelected = isMidiLearnActive && selectedLearnTarget?.type === "pad" && selectedLearnTarget.index === padIdx;
 
             return (
               <div key={`seq-row-${padIdx}`} className="flex items-center gap-1.5 group">
@@ -259,6 +484,12 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                   data-pad-slot={padIdx}
                   onMouseDown={(e) => {
                     if (e.button === 0) {
+                      if (isMidiLearnActive) {
+                        if (onSelectLearnTarget) {
+                          onSelectLearnTarget({ type: "pad", index: padIdx });
+                        }
+                        return;
+                      }
                       if (onSelectPad) onSelectPad(padIdx);
                       if (onTriggerPadWithNote) {
                         onTriggerPadWithNote(padNum, midiNote);
@@ -280,9 +511,11 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                   onContextMenu={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    const x = Math.min(e.clientX, window.innerWidth - 200);
-                    const y = Math.min(e.clientY, window.innerHeight - 200);
-                    setContextMenu({ padIdx, x, y });
+                    const x = Math.min(e.clientX, window.innerWidth - 450);
+                    const y = Math.min(e.clientY, window.innerHeight - 320);
+                    setContextMenu({ padIdx, x: Math.max(10, x), y: Math.max(10, y) });
+                    setIsSf2MenuOpen(false);
+                    setActiveSf2Category(null);
                   }}
                   onDragOver={(e) => {
                     e.preventDefault();
@@ -303,9 +536,17 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                       }
                     }
                   }}
-                  title={`Pad ${padNum}: ${padName}. Clic para tocar/seleccionar | Clic derecho para opciones | Arrastra WAV aquí.`}
+                  title={
+                    isMidiLearnActive
+                      ? `Pad ${padNum}: Clic para aprender MIDI Note (actual: ${getMidiNoteName(midiNote)} / ${midiNote})`
+                      : `Pad ${padNum}: ${padName}. Clic para tocar/seleccionar | Clic derecho para opciones | Arrastra WAV aquí.`
+                  }
                   className={`w-36 sm:w-40 mr-2 h-9 sm:h-9.5 rounded-lg flex items-center justify-center transition-all shrink-0 cursor-pointer select-none border relative overflow-hidden active:scale-[0.98] ${
-                    isHit
+                    isLearnSelected
+                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_20px_rgba(245,158,11,0.85)] ring-2 ring-amber-400/60 animate-pulse text-amber-100"
+                      : isMidiLearnActive
+                      ? "border-2 border-amber-500/60 shadow-[0_0_12px_rgba(245,158,11,0.35)] hover:border-amber-400 hover:shadow-[0_0_16px_rgba(245,158,11,0.6)] bg-gradient-to-b from-[#18140e] to-[#0c0a07] text-amber-200"
+                      : isHit
                       ? theme.hit
                       : isDragging
                       ? "bg-cyan-950/80 border-2 border-cyan-400 text-cyan-200 scale-[1.02] shadow-[0_0_20px_rgba(34,211,238,0.9)]"
@@ -324,15 +565,8 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
 
                   {/* Indicador de velocidad al golpear */}
                   {isHit && (
-                    <span className="absolute bottom-0.5 left-1.5 text-[7px] font-mono text-black font-black">
+                    <span className="absolute bottom-0.5 left-1.5 text-[8.5px] font-mono text-black font-extrabold tabular-nums">
                       v:{vel || 127}
-                    </span>
-                  )}
-
-                  {/* Modo GATE si está activo */}
-                  {slot?.mode === "gate" && padEngineMode === "wavSampler" && (
-                    <span className="absolute top-0.5 right-1 text-[6.5px] font-mono font-bold text-amber-300 bg-black/90 px-1 py-0.2 rounded border border-amber-500/40 uppercase">
-                      GATE
                     </span>
                   )}
                 </div>
@@ -401,7 +635,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
       )}
 
       {/* 2. Barra de Docking Inferior Maestro (Siempre visible, conmutador de modos, kit, y controles de transporte) */}
-      <div className="px-3 py-2 sm:px-4 bg-gradient-to-b from-[#101115] via-[#0b0c0f] to-[#060709] border-t border-white/[0.08] flex items-center justify-between gap-2.5 flex-nowrap overflow-x-auto">
+      <div className="px-3 py-2 sm:px-4 bg-gradient-to-b from-[#101115] via-[#0b0c0f] to-[#060709] border-t border-white/[0.08] flex items-center justify-between gap-2.5 flex-nowrap relative z-50 overflow-visible">
         {/* Lado Izquierdo: [ KEYS ] / [ SEQ ] + Kit + Banco A/B + Resolución + Extras */}
         <div className="flex items-center gap-2 shrink-0">
           {/* Conmutador Físico de Modo Compacto KEYS / SEQ */}
@@ -435,7 +669,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
           <div className="h-4 w-[1px] bg-white/10 mx-0.5" />
 
           {/* Selector de Kit reubicado en la barra */}
-          <div ref={kitMenuRef} className="relative">
+          <div ref={kitMenuRef} className="relative z-50">
             <button
               type="button"
               onClick={() => setIsKitMenuOpen(!isKitMenuOpen)}
@@ -443,7 +677,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
               title="Cambiar Kit de Batería"
             >
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#10b981]" />
-              <span className="text-[8.5px] uppercase font-bold text-zinc-400">KIT:</span>
+              <span className="text-[9.5px] uppercase font-bold tracking-wider text-zinc-400">KIT:</span>
               <span className="font-bold text-zinc-100 group-hover:text-emerald-400 transition max-w-[90px] truncate">
                 {padEngineMode === "drumKitSf2" ? "Yamaha RX7" : "Custom WAV"}
               </span>
@@ -459,10 +693,10 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
               </svg>
             </button>
 
-            {/* Menú Desplegable Flotante de Kits (hacia arriba) */}
+            {/* Menú Desplegable Flotante de Kits (hacia arriba, sobre el teclado) */}
             {isKitMenuOpen && (
-              <div className="absolute bottom-8 left-0 z-50 w-48 bg-[#121318] border border-white/20 rounded-lg shadow-2xl py-1 text-xs font-mono text-zinc-200 animate-in fade-in zoom-in-95 duration-100">
-                <div className="px-3 py-1 text-[8.5px] uppercase font-bold text-zinc-400 border-b border-white/10 mb-1">
+              <div className="absolute bottom-full mb-2 left-0 z-50 w-52 bg-[#0d0e12] border border-white/20 rounded-xl shadow-[0_15px_40px_rgba(0,0,0,0.95),0_0_1px_1px_rgba(255,255,255,0.08)] py-1 text-xs font-mono text-zinc-200 animate-in fade-in zoom-in-95 duration-100">
+                <div className="px-3 py-1 text-[9.5px] uppercase font-bold tracking-wider text-zinc-400 border-b border-white/10 mb-1">
                   Kits de Batería
                 </div>
                 <button
@@ -478,7 +712,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                   }`}
                 >
                   <span>Yamaha RX7 (SF2)</span>
-                  {padEngineMode === "drumKitSf2" && <span className="text-emerald-400 font-bold">✓</span>}
+                  {padEngineMode === "drumKitSf2" && <Check size={12} className="text-emerald-400" />}
                 </button>
                 <button
                   type="button"
@@ -493,7 +727,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                   }`}
                 >
                   <span>Custom WAV (Pads)</span>
-                  {padEngineMode === "wavSampler" && <span className="text-emerald-400 font-bold">✓</span>}
+                  {padEngineMode === "wavSampler" && <Check size={12} className="text-emerald-400" />}
                 </button>
               </div>
             )}
@@ -504,13 +738,13 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
             type="button"
             onClick={onToggleBank}
             title={`Cambiar Banco (Actual: ${currentBank.toUpperCase()})`}
-            className={`h-7 px-2.5 rounded-md text-[9.5px] font-mono font-black border transition-all active:scale-95 shadow-[inset_0_1px_0_rgba(255,255,255,0.1),0_2px_4px_rgba(0,0,0,0.5)] cursor-pointer flex items-center gap-1 ${
+            className={`h-7 px-2.5 rounded-md text-[9.5px] font-mono font-bold tracking-wider border transition-all active:scale-95 shadow-[inset_0_1px_0_rgba(255,255,255,0.1),0_2px_4px_rgba(0,0,0,0.5)] cursor-pointer flex items-center gap-1.5 ${
               currentBank === "b"
                 ? "bg-purple-900/40 text-purple-200 border-purple-500/60 shadow-[0_0_8px_rgba(168,85,247,0.4)]"
                 : "bg-cyan-950/40 text-cyan-200 border-cyan-500/60 shadow-[0_0_8px_rgba(6,182,212,0.4)]"
             }`}
           >
-            <span className="text-zinc-400 font-medium text-[8px]">BANK</span>
+            <span className="text-zinc-400 font-semibold text-[9px] tracking-wider">BANK</span>
             <span>{currentBank.toUpperCase()}</span>
           </button>
 
@@ -528,11 +762,11 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                 onChangeResolution(nextRes);
               }}
               title="Resolución de tiempo (Clic para alternar 1/8, 1/16, 1/32)"
-              className="h-7 px-2.5 bg-[#040406] hover:bg-[#121318] border border-white/15 rounded-md text-[9.5px] font-mono font-bold text-emerald-400 flex items-center gap-1 shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)] cursor-pointer transition"
+              className="h-7 px-2.5 bg-[#040406] hover:bg-[#121318] border border-white/15 rounded-md text-[9.5px] font-mono font-bold text-emerald-400 flex items-center gap-1.5 shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)] cursor-pointer transition"
             >
-              <span className="text-zinc-500 text-[8px] font-medium">GRID</span>
+              <span className="text-zinc-400 text-[9px] font-semibold tracking-wider">GRID</span>
               <span>{resolution === "eighth" ? "1/8" : resolution === "sixteenth" ? "1/16" : "1/32"}</span>
-              <span className="text-zinc-500 text-[8px]">▾</span>
+              <ChevronDown size={11} className="text-zinc-400" />
             </button>
           </div>
 
@@ -542,7 +776,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
               type="button"
               onClick={onToggleSwing}
               title="Groove Swing MPC 58% ON/OFF"
-              className={`h-7 px-2 rounded-md text-[9px] font-mono font-bold border transition-all flex items-center gap-1 active:scale-95 cursor-pointer ${
+              className={`h-7 px-2 rounded-md text-[9.5px] font-mono font-bold tracking-wider border transition-all flex items-center gap-1 active:scale-95 cursor-pointer ${
                 isSwingEnabled
                   ? "bg-pink-950/40 text-pink-300 border-pink-500/60 shadow-[0_0_8px_rgba(236,72,153,0.4)]"
                   : "bg-white/[0.03] text-zinc-400 border-white/10 hover:text-white"
@@ -559,7 +793,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
               type="button"
               onClick={onToggleClick}
               title="Clic Metrónomo ON/OFF"
-              className={`h-7 px-2 rounded-md text-[9px] font-mono font-bold border transition-all flex items-center gap-1 active:scale-95 cursor-pointer ${
+              className={`h-7 px-2 rounded-md text-[9.5px] font-mono font-bold tracking-wider border transition-all flex items-center gap-1 active:scale-95 cursor-pointer ${
                 isClickEnabled
                   ? "bg-amber-950/40 text-amber-300 border-amber-500/60 shadow-[0_0_8px_rgba(245,158,11,0.4)]"
                   : "bg-white/[0.03] text-zinc-400 border-white/10 hover:text-white"
@@ -602,7 +836,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                       setBpmInput(bpm.toString());
                     }
                   }}
-                  className="w-12 text-center bg-black border border-emerald-400 rounded text-emerald-300 font-mono text-xs font-black outline-none px-0.5"
+                  className="w-12 text-center bg-black border border-emerald-400 rounded text-emerald-300 font-mono text-xs font-bold outline-none px-0.5 tabular-nums"
                 />
               ) : (
                 <span
@@ -611,12 +845,12 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                     setIsEditingBpm(true);
                   }}
                   title="Clic para editar tempo"
-                  className="font-mono text-xs font-black text-emerald-400 tracking-wider cursor-pointer hover:brightness-125 transition select-none drop-shadow-[0_0_6px_rgba(16,185,129,0.5)]"
+                  className="font-mono text-xs font-bold text-emerald-400 tracking-wider cursor-pointer hover:brightness-125 transition select-none drop-shadow-[0_0_6px_rgba(16,185,129,0.5)] tabular-nums"
                 >
                   {Math.round(bpm)}
                 </span>
               )}
-              <span className="text-[8px] font-mono font-bold text-zinc-500 uppercase ml-1">BPM</span>
+              <span className="text-[9px] font-mono font-bold text-zinc-400 uppercase tracking-wider ml-1">BPM</span>
             </div>
 
             <button
@@ -632,7 +866,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
               type="button"
               onClick={onTapTempo}
               title="Tap Tempo"
-              className="px-2 py-1 ml-1 text-[9px] font-mono font-black uppercase tracking-wider rounded bg-white/[0.06] hover:bg-emerald-500 hover:text-black text-zinc-300 border border-white/10 transition active:scale-95 cursor-pointer"
+              className="px-2 py-1 ml-1 text-[9.5px] font-mono font-bold uppercase tracking-wider rounded bg-white/[0.06] hover:bg-emerald-500 hover:text-black text-zinc-300 border border-white/10 transition active:scale-95 cursor-pointer"
             >
               TAP
             </button>
@@ -659,7 +893,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
               type="button"
               onClick={onTogglePlay}
               title="Play / Pause"
-              className={`px-4 py-1.5 rounded-lg text-[10.5px] font-mono font-black uppercase tracking-wider flex items-center gap-1.5 transition active:scale-95 border cursor-pointer ${
+              className={`px-4 py-1.5 rounded-lg text-[11px] font-mono font-bold uppercase tracking-wider flex items-center gap-1.5 transition active:scale-95 border cursor-pointer ${
                 isPlaying
                   ? "bg-gradient-to-b from-emerald-400 to-emerald-600 text-black border-emerald-300 shadow-[0_0_16px_rgba(16,185,129,0.7),inset_0_1px_0_rgba(255,255,255,0.6)]"
                   : "bg-[#18191e] hover:bg-[#24262d] text-zinc-200 hover:text-white border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_2px_6px_rgba(0,0,0,0.6)]"
@@ -687,7 +921,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
               type="button"
               onClick={onToggleRecord}
               title="Overdub Record"
-              className={`px-3 py-1.5 rounded-lg text-[10.5px] font-mono font-bold flex items-center gap-1.5 transition border active:scale-95 cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_2px_4px_rgba(0,0,0,0.5)] ${
+              className={`px-3 py-1.5 rounded-lg text-[11px] font-mono font-bold uppercase tracking-wider flex items-center gap-1.5 transition border active:scale-95 cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_2px_4px_rgba(0,0,0,0.5)] ${
                 isRecording
                   ? "bg-red-500/25 border-red-500 text-red-300 shadow-[0_0_14px_rgba(239,68,68,0.6)] animate-pulse"
                   : "bg-[#18191e] border-white/15 text-zinc-400 hover:text-zinc-200 hover:bg-[#24262d]"
@@ -710,7 +944,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
               type="button"
               onClick={onToggleVisualMetronome}
               title="Metrónomo Visual Overlay ON/OFF"
-              className={`px-2.5 py-1.5 rounded-md text-[9.5px] font-mono font-bold border transition flex items-center gap-1 active:scale-95 cursor-pointer ${
+              className={`px-2.5 py-1.5 rounded-md text-[9.5px] font-mono font-bold tracking-wider border transition flex items-center gap-1.5 active:scale-95 cursor-pointer ${
                 isVisualMetronomeVisible
                   ? "bg-emerald-950/40 text-emerald-300 border-emerald-500/50 shadow-[0_0_6px_rgba(16,185,129,0.3)]"
                   : "bg-white/[0.03] text-zinc-400 border-white/10 hover:text-white"
@@ -743,74 +977,162 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
       {/* Menú Contextual Noir para Pads (Clic Derecho) */}
       {contextMenu && (
         <div
-          className="fixed z-50 bg-[#121214] border border-white/10 rounded-xl shadow-2xl py-1 w-48 text-xs font-mono text-slate-200 animate-in fade-in zoom-in-95 duration-100"
+          ref={contextMenuRef}
+          className="fixed z-50 flex items-start animate-in fade-in zoom-in-95 duration-100 select-none"
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="px-3 py-1.5 text-[10px] uppercase font-bold text-slate-400 border-b border-white/5 mb-1 flex items-center justify-between">
-            <span>Pad {contextMenu.padIdx + 1}</span>
-            <span className="text-[9px] text-emerald-400 font-semibold">Config</span>
-          </div>
-          <button
-            type="button"
-            className="w-full text-left px-3 py-1.5 hover:bg-white/10 hover:text-white flex items-center justify-between transition-colors cursor-pointer"
-            onClick={() => {
-              const idx = contextMenu.padIdx;
-              setContextMenu(null);
-              onPickPadSample?.(idx);
-            }}
-          >
-            <span>Cargar sample WAV...</span>
-            <span className="text-[10px] text-slate-400">📁</span>
-          </button>
-          {padEngineMode === "wavSampler" && (
+          {/* Menú Principal */}
+          <div className="bg-[#0e0e12]/95 backdrop-blur-2xl border border-white/10 rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.08)] py-1 w-52 text-xs font-mono text-zinc-200">
+            <div className="px-3 py-1.5 text-[10px] uppercase font-bold tracking-wider text-zinc-400 border-b border-white/5 mb-1 flex items-center justify-between">
+              <span>Pad {contextMenu.padIdx + 1}</span>
+              <span className="text-[9.5px] text-emerald-400 font-bold">Config</span>
+            </div>
+
             <button
               type="button"
-              className="w-full text-left px-3 py-1.5 hover:bg-white/10 hover:text-white flex items-center justify-between transition-colors cursor-pointer"
+              className="w-full text-left px-3 py-1.5 hover:bg-white/10 hover:text-white flex items-center justify-between transition-colors cursor-pointer text-[11px]"
               onClick={() => {
                 const idx = contextMenu.padIdx;
                 setContextMenu(null);
-                onTogglePadMode?.(idx);
+                setIsSf2MenuOpen(false);
+                setActiveSf2Category(null);
+                onPickPadSample?.(idx);
               }}
             >
-              <span>
-                Modo: {padSlots?.[contextMenu.padIdx]?.mode === "gate" ? "One-Shot" : "Gate"}
-              </span>
-              <span className="text-[10px] text-slate-400">🔁</span>
+              <span>Cargar sample WAV...</span>
+              <FolderOpen size={13} className="text-zinc-400 shrink-0" />
             </button>
+
+            {/* Asignar instrumento SF2 con submenú en cascada */}
+            <button
+              type="button"
+              className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors cursor-pointer text-[11px] ${
+                isSf2MenuOpen ? "bg-white/10 text-white" : "hover:bg-white/10 hover:text-white"
+              }`}
+              onMouseEnter={() => setIsSf2MenuOpen(true)}
+              onClick={() => setIsSf2MenuOpen((prev) => !prev)}
+            >
+              <div className="flex items-center gap-1.5">
+                <Music size={12} className="text-emerald-400 shrink-0" />
+                <span>Asignar sonido SF2</span>
+              </div>
+              <ChevronRight size={12} className="text-zinc-400 shrink-0" />
+            </button>
+
+            {padEngineMode === "wavSampler" && (
+              <button
+                type="button"
+                className="w-full text-left px-3 py-1.5 hover:bg-white/10 hover:text-white flex items-center justify-between transition-colors cursor-pointer text-[11px]"
+                onClick={() => {
+                  const idx = contextMenu.padIdx;
+                  setContextMenu(null);
+                  setIsSf2MenuOpen(false);
+                  setActiveSf2Category(null);
+                  onTogglePadMode?.(idx);
+                }}
+              >
+                <span>
+                  Modo: {padSlots?.[contextMenu.padIdx]?.mode === "gate" ? "One-Shot" : "Gate"}
+                </span>
+                <RotateCcw size={13} className="text-zinc-400 shrink-0" />
+              </button>
+            )}
+
+            {/* Opción para limpiar la pista de notas de este Pad en el patrón */}
+            <button
+              type="button"
+              className="w-full text-left px-3 py-1.5 hover:bg-amber-950/50 hover:text-amber-300 text-amber-400 flex items-center justify-between transition-colors border-t border-white/5 cursor-pointer text-[11px]"
+              onClick={() => {
+                const idx = contextMenu.padIdx;
+                setContextMenu(null);
+                setIsSf2MenuOpen(false);
+                setActiveSf2Category(null);
+                if (onClearTrack) {
+                  onClearTrack(idx);
+                } else if (onClearSelectedTrack) {
+                  onSelectPad?.(idx);
+                  onClearSelectedTrack(idx);
+                }
+              }}
+            >
+              <span>Limpiar notas de pista</span>
+              <Eraser size={13} className="text-amber-400/90 shrink-0" />
+            </button>
+
+            <button
+              type="button"
+              className="w-full text-left px-3 py-1.5 hover:bg-red-950/60 hover:text-red-300 text-red-400 flex items-center justify-between transition-colors border-t border-white/5 cursor-pointer text-[11px]"
+              onClick={() => {
+                const idx = contextMenu.padIdx;
+                setContextMenu(null);
+                setIsSf2MenuOpen(false);
+                setActiveSf2Category(null);
+                onClearPadSlot?.(idx);
+              }}
+            >
+              <span>Vaciar slot</span>
+              <Trash2 size={13} className="text-red-400/90 shrink-0" />
+            </button>
+          </div>
+
+          {/* Submenú Nivel 1: Categorías (Sin emojis, nombres concisos en mayúsculas) */}
+          {isSf2MenuOpen && (
+            <div className="ml-1 bg-[#0e0e12]/95 backdrop-blur-2xl border border-white/10 rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.08)] py-1 w-36 text-xs font-mono text-zinc-200 animate-in fade-in duration-100">
+              <div className="px-2.5 py-1 text-[9.5px] uppercase font-bold tracking-wider text-zinc-400 border-b border-white/5 mb-1 font-sans">
+                CATEGORÍAS
+              </div>
+              {SF2_DRUM_CATEGORIES.map((cat) => {
+                const isActive = activeSf2Category === cat.id;
+                return (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    className={`w-full text-left px-2.5 py-1.5 flex items-center justify-between transition-colors cursor-pointer text-[10px] font-sans font-medium uppercase tracking-wider ${
+                      isActive
+                        ? "bg-emerald-500/20 text-emerald-300 font-bold"
+                        : "text-zinc-300 hover:bg-white/[0.06] hover:text-white"
+                    }`}
+                    onMouseEnter={() => setActiveSf2Category(cat.id)}
+                    onClick={() => setActiveSf2Category(cat.id)}
+                  >
+                    <span>{cat.name}</span>
+                    <ChevronRight size={11} className={isActive ? "text-emerald-400" : "text-zinc-500"} />
+                  </button>
+                );
+              })}
+            </div>
           )}
 
-          {/* Opción para limpiar la pista de notas de este Pad en el patrón */}
-          <button
-            type="button"
-            className="w-full text-left px-3 py-1.5 hover:bg-amber-950/50 hover:text-amber-300 text-amber-400 flex items-center justify-between transition-colors border-t border-white/5 cursor-pointer"
-            onClick={() => {
-              const idx = contextMenu.padIdx;
-              setContextMenu(null);
-              if (onClearTrack) {
-                onClearTrack(idx);
-              } else if (onClearSelectedTrack) {
-                onSelectPad?.(idx);
-                onClearSelectedTrack(idx);
-              }
-            }}
-          >
-            <span>Limpiar notas de pista</span>
-            <span className="text-[10px] text-amber-400/80">🧹</span>
-          </button>
-
-          <button
-            type="button"
-            className="w-full text-left px-3 py-1.5 hover:bg-red-950/60 hover:text-red-300 text-red-400 flex items-center justify-between transition-colors border-t border-white/5 cursor-pointer"
-            onClick={() => {
-              const idx = contextMenu.padIdx;
-              setContextMenu(null);
-              onClearPadSlot?.(idx);
-            }}
-          >
-            <span>Vaciar slot</span>
-            <span className="text-[10px] text-red-400/80">🗑️</span>
-          </button>
+          {/* Submenú Nivel 2: Lista de Sonidos de la Categoría Seleccionada */}
+          {isSf2MenuOpen && activeSf2Category && (
+            <div className="ml-1 bg-[#0e0e12]/95 backdrop-blur-2xl border border-white/10 rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.08)] py-1 w-48 text-xs font-mono text-zinc-200 animate-in fade-in duration-100 max-h-72 overflow-y-auto">
+              <div className="px-2.5 py-1 text-[9.5px] uppercase font-bold tracking-wider text-emerald-400 border-b border-white/5 mb-1 font-sans">
+                {SF2_DRUM_CATEGORIES.find((c) => c.id === activeSf2Category)?.name}
+              </div>
+              {SF2_DRUM_CATEGORIES.find((c) => c.id === activeSf2Category)?.samples.map((sample) => {
+                const isCurrentNote = drumNotes[contextMenu.padIdx] === sample.note;
+                return (
+                  <button
+                    key={sample.note}
+                    type="button"
+                    className={`w-full text-left px-2.5 py-1.5 flex items-center justify-between transition-colors cursor-pointer text-[10.5px] font-sans ${
+                      isCurrentNote
+                        ? "bg-emerald-500/15 text-emerald-300 font-semibold"
+                        : "text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+                    }`}
+                    onClick={() => handleAssignSf2Drum(contextMenu.padIdx, sample.note, sample.name)}
+                  >
+                    <span className="truncate pr-1">{sample.name}</span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <span className="text-[9px] font-mono text-zinc-500 tabular-nums">[{sample.note}]</span>
+                      {isCurrentNote && <Check size={11} className="text-emerald-400" />}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
     </div>

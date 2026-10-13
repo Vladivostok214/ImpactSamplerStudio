@@ -1,41 +1,168 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { MidiPortInfo, NormalizedMidiEvent } from "../types/midi";
+import { MidiPortInfo, NormalizedMidiEvent, MidiStatusEvent } from "../types/midi";
+import {
+  MidiLearnTarget,
+  MidiLearnMapping,
+  DEFAULT_MIDI_LEARN_MAPPING,
+  loadSavedMidiMapping,
+  saveMidiMapping,
+} from "../types/midiLearn";
 
 export function useMidiStream() {
   const [events, setEvents] = useState<NormalizedMidiEvent[]>([]);
   const [ports, setPorts] = useState<MidiPortInfo[]>([]);
   const [activeNotes, setActiveNotes] = useState<Map<number, number>>(new Map()); // note -> velocity
   const [activePads, setActivePads] = useState<Map<number, number>>(new Map()); // padIndex (1-8) -> velocity
-  const [faders, setFaders] = useState<number[]>([64, 64, 64, 64, 64, 64, 64, 64, 100]); // F1-F9 (0-127)
-  const [knobs, setKnobs] = useState<number[]>([64, 64, 64, 64, 64, 64, 64, 64]); // K1-K8 (0-127)
+  const [faders, setFaders] = useState<number[]>([64, 64, 64, 64, 64, 64, 64, 64, 100]); // F1-F9 (0-127, F9 Master al 80%)
+  const [knobs, setKnobs] = useState<number[]>([64, 64, 0, 0, 0, 0, 0, 64]); // K1-K8
   const [pitchBend, setPitchBend] = useState<number>(0); // -8192 to 8191
   const [modWheel, setModWheel] = useState<number>(0); // 0 to 127
   const [connected, setConnected] = useState<boolean>(false);
 
+  // Estados de MIDI Learn
+  const [isMidiLearnActive, setIsMidiLearnActive] = useState<boolean>(false);
+  const [selectedLearnTarget, setSelectedLearnTarget] = useState<MidiLearnTarget | null>(null);
+  const [midiLearnMapping, setMidiLearnMapping] = useState<MidiLearnMapping>(loadSavedMidiMapping);
+  const [lastLearnedInfo, setLastLearnedInfo] = useState<{ label: string; detail: string } | null>(null);
+
+  // Ref de sincronización para evitar cierres obsoletos en el listener de Tauri
+  const learnStateRef = useRef({
+    isActive: isMidiLearnActive,
+    target: selectedLearnTarget,
+    mapping: midiLearnMapping,
+  });
+
   useEffect(() => {
-    // 1. Cargar lista de puertos
+    learnStateRef.current = {
+      isActive: isMidiLearnActive,
+      target: selectedLearnTarget,
+      mapping: midiLearnMapping,
+    };
+  }, [isMidiLearnActive, selectedLearnTarget, midiLearnMapping]);
+
+  // Sincronizar mapeos activos con el motor de audio en Rust
+  const syncMappingsToRust = (mapping: MidiLearnMapping) => {
+    const fadersArr = [0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => mapping.faders[i] ?? (i === 8 ? 46 : 38 + i));
+    const knobsArr = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => mapping.knobs[i] ?? 56 + i);
+    const padsArr = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => mapping.pads[i] ?? [36, 38, 42, 46, 39, 45, 48, 49][i]);
+    invoke("set_midi_learn_mappings", {
+      faders: fadersArr,
+      knobs: knobsArr,
+      pads: padsArr,
+    }).catch(console.error);
+  };
+
+  // Sincronizar mapeos guardados al montar la aplicación
+  useEffect(() => {
+    syncMappingsToRust(midiLearnMapping);
+  }, []);
+
+  // Limpiar mensaje de notificación de aprendizaje después de 3.5 segundos
+  useEffect(() => {
+    if (lastLearnedInfo) {
+      const t = setTimeout(() => setLastLearnedInfo(null), 3500);
+      return () => clearTimeout(t);
+    }
+  }, [lastLearnedInfo]);
+
+  useEffect(() => {
+    // 1. Cargar lista de puertos con estado de conexión real
     invoke<MidiPortInfo[]>("list_midi_ports")
       .then((p) => {
         setPorts(p);
-        if (p.length > 0) setConnected(true);
+        setConnected(p.some((x) => x.isConnected));
       })
       .catch(console.error);
 
-    // 2. Escuchar stream de eventos MIDI en tiempo real desde Rust
-    let unlistenFn: (() => void) | null = null;
+    let unlistenMidiFn: (() => void) | null = null;
+    let unlistenStatusFn: (() => void) | null = null;
     let isSubscribed = true;
 
+    // 2. Escuchar cambios de estado del hardware en caliente (Hot-Plug Watchdog)
+    listen<MidiStatusEvent>("midi-status-changed", (eventPayload) => {
+      const { connected: isConn, ports: updatedPorts } = eventPayload.payload;
+      setConnected(isConn);
+      if (updatedPorts && updatedPorts.length > 0) {
+        setPorts(updatedPorts);
+      } else if (!isConn) {
+        setPorts((prev) => prev.map((p) => ({ ...p, isConnected: false })));
+      }
+    }).then((unlisten) => {
+      if (!isSubscribed) {
+        unlisten();
+      } else {
+        unlistenStatusFn = unlisten;
+      }
+    });
+
+    // 3. Escuchar stream de eventos MIDI en tiempo real desde Rust
     listen<NormalizedMidiEvent>("midi-event", (eventPayload) => {
       const midiEvent = eventPayload.payload;
-
       setEvents((prev) => [midiEvent, ...prev.slice(0, 49)]);
 
       const { event } = midiEvent;
       const ev = event as any;
       const eventType = (event.type || "").toLowerCase();
 
+      const { isActive, target, mapping } = learnStateRef.current;
+
+      // --- MODO MIDI LEARN: CAPTURA ACTIVA DE MENSAJE MIDI ---
+      if (isActive && target) {
+        if (target.type === "fader" && eventType === "controlchange") {
+          const cc = ev.controller;
+          const idx = target.index;
+          setMidiLearnMapping((prev) => {
+            const next = { ...prev, faders: { ...prev.faders, [idx]: cc } };
+            saveMidiMapping(next);
+            syncMappingsToRust(next);
+            return next;
+          });
+          setLastLearnedInfo({
+            label: idx === 8 ? "Master Volume (F9)" : `Fader ${idx + 1}`,
+            detail: `Asignado a CC ${cc}`,
+          });
+          setSelectedLearnTarget(null);
+          return;
+        }
+
+        if (target.type === "knob" && eventType === "controlchange") {
+          const cc = ev.controller;
+          const idx = target.index;
+          setMidiLearnMapping((prev) => {
+            const next = { ...prev, knobs: { ...prev.knobs, [idx]: cc } };
+            saveMidiMapping(next);
+            syncMappingsToRust(next);
+            return next;
+          });
+          setLastLearnedInfo({
+            label: `Knob ${idx + 1}`,
+            detail: `Asignado a CC ${cc}`,
+          });
+          setSelectedLearnTarget(null);
+          return;
+        }
+
+        if (target.type === "pad" && eventType === "noteon") {
+          const note = ev.note;
+          const idx = target.index;
+          setMidiLearnMapping((prev) => {
+            const next = { ...prev, pads: { ...prev.pads, [idx]: note } };
+            saveMidiMapping(next);
+            syncMappingsToRust(next);
+            return next;
+          });
+          setLastLearnedInfo({
+            label: `Pad ${idx + 1}`,
+            detail: `Asignado a Nota ${ev.noteName || note} (#${note})`,
+          });
+          setSelectedLearnTarget(null);
+          return;
+        }
+      }
+
+      // --- OPERACIÓN MUSICAL NORMAL (O CUANDO NO ESTÁ EN ESCUCHA ACTIVA) ---
       if (eventType === "noteon") {
         setActiveNotes((prev) => {
           const next = new Map(prev);
@@ -43,10 +170,21 @@ export function useMidiStream() {
           return next;
         });
 
-        if (ev.padIndex) {
+        // Buscar si la nota entrante corresponde a un pad mapeado
+        let mappedPadNum = ev.padIndex;
+        if (!mappedPadNum) {
+          for (let pIdx = 0; pIdx < 8; pIdx++) {
+            if (mapping.pads[pIdx] === ev.note) {
+              mappedPadNum = pIdx + 1;
+              break;
+            }
+          }
+        }
+
+        if (mappedPadNum) {
           setActivePads((prev) => {
             const next = new Map(prev);
-            next.set(ev.padIndex, ev.velocity);
+            next.set(mappedPadNum, ev.velocity);
             return next;
           });
         }
@@ -57,42 +195,73 @@ export function useMidiStream() {
           return next;
         });
 
-        if (ev.padIndex) {
+        let mappedPadNum = ev.padIndex;
+        if (!mappedPadNum) {
+          for (let pIdx = 0; pIdx < 8; pIdx++) {
+            if (mapping.pads[pIdx] === ev.note) {
+              mappedPadNum = pIdx + 1;
+              break;
+            }
+          }
+        }
+
+        if (mappedPadNum) {
           setActivePads((prev) => {
             const next = new Map(prev);
-            next.delete(ev.padIndex);
+            next.delete(mappedPadNum);
             return next;
           });
         }
       } else if (eventType === "controlchange") {
         const controller = ev.controller;
         const value = ev.value;
-        // Mapeo Faders
-        const faderMap: Record<number, number> = {
-          // Bloque correlativo Nektar LX49+ (F1 - F9)
-          38: 0, 39: 1, 40: 2, 41: 3, 42: 4, 43: 5, 44: 6, 45: 7, 46: 8,
-          // Preset alternativo General MIDI
-          73: 0, 75: 1, 72: 2, 91: 3, 92: 4, 93: 5, 94: 6, 95: 7, 7: 8,
-        };
-        if (faderMap[controller] !== undefined) {
+
+        // 1. Mapeo dinámico de Faders (con fallback a LX49+ de fábrica y GM)
+        let matchedFaderIdx: number | null = null;
+        for (let fIdx = 0; fIdx < 9; fIdx++) {
+          if (mapping.faders[fIdx] === controller) {
+            matchedFaderIdx = fIdx;
+            break;
+          }
+        }
+        if (matchedFaderIdx === null) {
+          const defaultFaderFallback: Record<number, number> = {
+            38: 0, 39: 1, 40: 2, 41: 3, 42: 4, 43: 5, 44: 6, 45: 7, 46: 8,
+            73: 0, 75: 1, 72: 2, 91: 3, 92: 4, 93: 5, 94: 6, 95: 7, 7: 8,
+          };
+          if (defaultFaderFallback[controller] !== undefined) {
+            matchedFaderIdx = defaultFaderFallback[controller];
+          }
+        }
+        if (matchedFaderIdx !== null) {
           setFaders((prev) => {
             const next = [...prev];
-            next[faderMap[controller]] = value;
+            next[matchedFaderIdx!] = value;
             return next;
           });
         }
 
-        // Mapeo Knobs
-        const knobMap: Record<number, number> = {
-          // Bloque correlativo Nektar LX49+ (K1 - K8)
-          56: 0, 57: 1, 58: 2, 59: 3, 60: 4, 61: 5, 62: 6, 63: 7,
-          // Preset alternativo General MIDI
-          74: 0, 71: 1, 5: 2, 84: 3, 78: 4, 76: 5, 77: 6, 10: 7,
-        };
-        if (knobMap[controller] !== undefined) {
+        // 2. Mapeo dinámico de Knobs (con fallback a LX49+ de fábrica y GM)
+        let matchedKnobIdx: number | null = null;
+        for (let kIdx = 0; kIdx < 8; kIdx++) {
+          if (mapping.knobs[kIdx] === controller) {
+            matchedKnobIdx = kIdx;
+            break;
+          }
+        }
+        if (matchedKnobIdx === null) {
+          const defaultKnobFallback: Record<number, number> = {
+            56: 0, 57: 1, 58: 2, 59: 3, 60: 4, 61: 5, 62: 6, 63: 7,
+            74: 0, 71: 1, 5: 2, 84: 3, 78: 4, 76: 5, 77: 6, 10: 7,
+          };
+          if (defaultKnobFallback[controller] !== undefined) {
+            matchedKnobIdx = defaultKnobFallback[controller];
+          }
+        }
+        if (matchedKnobIdx !== null) {
           setKnobs((prev) => {
             const next = [...prev];
-            next[knobMap[controller]] = value;
+            next[matchedKnobIdx!] = value;
             return next;
           });
         }
@@ -108,21 +277,24 @@ export function useMidiStream() {
       if (!isSubscribed) {
         unlisten();
       } else {
-        unlistenFn = unlisten;
+        unlistenMidiFn = unlisten;
       }
     });
 
     return () => {
       isSubscribed = false;
-      if (unlistenFn) {
-        unlistenFn();
+      if (unlistenMidiFn) {
+        unlistenMidiFn();
+      }
+      if (unlistenStatusFn) {
+        unlistenStatusFn();
       }
     };
   }, []);
 
   const refreshPorts = async () => {
     try {
-      const p = await invoke<MidiPortInfo[]>("list_midi_ports");
+      const p = await invoke<MidiPortInfo[]>("rescan_midi_ports");
       setPorts(p);
       setConnected(p.some((x) => x.isConnected));
     } catch (err) {
@@ -216,8 +388,33 @@ export function useMidiStream() {
     }).catch(console.error);
   };
 
+  const clearEvents = () => {
+    setEvents([]);
+  };
+
+  const toggleMidiLearn = () => {
+    setIsMidiLearnActive((prev) => {
+      const next = !prev;
+      if (!next) {
+        setSelectedLearnTarget(null);
+      }
+      return next;
+    });
+  };
+
+  const resetMidiMappings = () => {
+    setMidiLearnMapping(DEFAULT_MIDI_LEARN_MAPPING);
+    saveMidiMapping(DEFAULT_MIDI_LEARN_MAPPING);
+    syncMappingsToRust(DEFAULT_MIDI_LEARN_MAPPING);
+    setLastLearnedInfo({
+      label: "Restablecido",
+      detail: "Valores de fábrica restaurados (Nektar LX49+)",
+    });
+  };
+
   return {
     events,
+    clearEvents,
     ports,
     activeNotes,
     activePads,
@@ -234,5 +431,13 @@ export function useMidiStream() {
     triggerVirtualKnob,
     triggerVirtualPitchBend,
     triggerVirtualModWheel,
+    // MIDI Learn
+    isMidiLearnActive,
+    toggleMidiLearn,
+    selectedLearnTarget,
+    setSelectedLearnTarget,
+    midiLearnMapping,
+    lastLearnedInfo,
+    resetMidiMappings,
   };
 }
