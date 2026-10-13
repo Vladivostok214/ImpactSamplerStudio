@@ -111,7 +111,7 @@ export const Header: React.FC<HeaderProps> = ({
             onClick={onOpenInstrumentSelect}
             className="text-sm font-black tracking-widest text-white flex items-center select-none hover:opacity-90 transition cursor-pointer group focus:outline-none shrink-0"
             style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif' }}
-            title="Abrir selección de instrumentos"
+            title="Instrumentos"
           >
             <h1>
               IMPACT<span className="text-emerald-400 group-hover:drop-shadow-[0_0_10px_rgba(16,185,129,0.7)] transition-all">SAMPLER</span>
@@ -169,7 +169,7 @@ export const Header: React.FC<HeaderProps> = ({
                   ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-[0_0_12px_rgba(16,185,129,0.3)]"
                   : "bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border-white/[0.08]"
               }`}
-              title="Monitor MIDI en Vivo"
+              title="Monitor MIDI"
             >
               <MidiDinIcon size={16} />
             </button>
@@ -191,7 +191,7 @@ export const Header: React.FC<HeaderProps> = ({
                 ? "bg-amber-500/20 text-amber-300 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.5)] font-bold"
                 : "bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border-white/[0.08]"
             }`}
-            title={isMidiLearnActive ? "Modo MIDI Learn ACTIVO. Clic para desactivar." : "Activar Modo MIDI Learn"}
+            title={isMidiLearnActive ? "Desactivar MIDI Learn" : "MIDI Learn"}
           >
             <span
               className={`w-2 h-2 rounded-full transition-all ${
@@ -208,7 +208,7 @@ export const Header: React.FC<HeaderProps> = ({
             type="button"
             onClick={onOpenSettings}
             className="p-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border border-white/[0.08] transition shadow-sm cursor-pointer"
-            title="Configuración de Audio y MIDI"
+            title="Ajustes de Audio / MIDI"
           >
             <Sliders size={16} />
           </button>
@@ -224,7 +224,7 @@ export const Header: React.FC<HeaderProps> = ({
                   ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-[0_0_12px_rgba(16,185,129,0.3)] font-semibold"
                   : "bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border-white/[0.08]"
               }`}
-              title={`Volumen Master: ${Math.round(masterGain * 100)}% (clic para fader)`}
+              title={`Volumen Master: ${Math.round(masterGain * 100)}%`}
             >
               {masterGain > 0 ? (
                 <Volume2 size={15} className="text-emerald-400 shrink-0" />
@@ -267,7 +267,7 @@ export const Header: React.FC<HeaderProps> = ({
                       WebkitAppearance: "slider-vertical",
                     }}
                     className="h-28 w-4 accent-emerald-400 cursor-pointer"
-                    title="Doble clic para restablecer al 80%"
+                    title="Doble clic: 80%"
                   />
                 </div>
 
@@ -281,7 +281,7 @@ export const Header: React.FC<HeaderProps> = ({
                         ? "bg-red-500/20 text-red-400 border-red-500/40"
                         : "bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-zinc-200 border-white/[0.06]"
                     }`}
-                    title={masterGain === 0 ? "Reactivar sonido" : "Silenciar (Mute)"}
+                    title={masterGain === 0 ? "Unmute" : "Mute"}
                   >
                     {masterGain === 0 ? "Muted" : "Mute"}
                   </button>

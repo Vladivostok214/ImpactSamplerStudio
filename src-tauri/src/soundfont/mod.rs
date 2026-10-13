@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use rustysynth::SoundFont;
 use serde::{Deserialize, Serialize};
 
@@ -25,13 +25,83 @@ pub struct SoundFontInfo {
     pub presets: Vec<SoundFontPresetInfo>,
 }
 
+static APP_RESOURCE_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn init_resource_dir(dir: Option<PathBuf>) {
+    if let Some(d) = dir {
+        let _ = APP_RESOURCE_DIR.set(d);
+    }
+}
+
 pub fn get_soundfonts_dir() -> PathBuf {
+    // 1. Directorio oficial resuelto por Tauri en runtime (bundle instalado)
+    if let Some(res_base) = APP_RESOURCE_DIR.get() {
+        let sf_sub = res_base.join("soundfonts");
+        if sf_sub.exists() {
+            return sf_sub;
+        }
+        if res_base.exists() && (res_base.join("Mellotron.sf2").exists() || res_base.join("Piano - Realtime.sf2").exists()) {
+            return res_base.clone();
+        }
+    }
+
+    // 2. Comprobación junto al binario ejecutable (Windows Installer / Portable)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let res_sub = parent.join("resources").join("soundfonts");
+            if res_sub.exists() {
+                return res_sub;
+            }
+            let portable_sub = parent.join("soundfonts");
+            if portable_sub.exists() {
+                return portable_sub;
+            }
+        }
+    }
+
+    // 3. Modo desarrollo (raíz del workspace o src-tauri)
     if Path::new("soundfonts").exists() {
         PathBuf::from("soundfonts")
     } else if Path::new("../soundfonts").exists() {
         PathBuf::from("../soundfonts")
     } else {
         PathBuf::from("soundfonts")
+    }
+}
+
+pub fn get_samples_dir() -> PathBuf {
+    // 1. Directorio oficial resuelto por Tauri en runtime (bundle instalado)
+    if let Some(res_base) = APP_RESOURCE_DIR.get() {
+        let sample_sub = res_base.join("samples");
+        if sample_sub.exists() {
+            return sample_sub;
+        }
+        if res_base.exists() && res_base.join("01_Kick.wav").exists() {
+            return res_base.clone();
+        }
+    }
+
+    // 2. Comprobación junto al binario ejecutable (Windows Installer / Portable)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let res_sub = parent.join("resources").join("samples");
+            if res_sub.exists() {
+                return res_sub;
+            }
+            let portable_sub = parent.join("samples");
+            if portable_sub.exists() {
+                return portable_sub;
+            }
+        }
+    }
+
+    // 3. Modo desarrollo (raíz del workspace o src-tauri)
+    if Path::new("samples").exists() {
+        PathBuf::from("samples")
+    } else if Path::new("../samples").exists() {
+        PathBuf::from("../samples")
+    } else {
+        PathBuf::from("samples")
     }
 }
 

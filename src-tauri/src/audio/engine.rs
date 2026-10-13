@@ -1,4 +1,3 @@
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -49,13 +48,10 @@ unsafe impl Sync for AudioEngine {}
 
 fn load_factory_pad_samples(target_sample_rate: u32) -> [Option<Arc<PadSampleData>>; 8] {
     let mut slots: [Option<Arc<PadSampleData>>; 8] = std::array::from_fn(|_| None);
-    let sample_dir = if Path::new("samples").exists() {
-        PathBuf::from("samples")
-    } else if Path::new("../samples").exists() {
-        PathBuf::from("../samples")
-    } else {
+    let sample_dir = crate::soundfont::get_samples_dir();
+    if !sample_dir.exists() {
         return slots;
-    };
+    }
 
     let sample_files = [
         "01_Kick.wav",
@@ -80,14 +76,7 @@ fn load_factory_pad_samples(target_sample_rate: u32) -> [Option<Arc<PadSampleDat
 }
 
 fn load_default_drum_soundfont() -> Option<Arc<SoundFont>> {
-    let dir = if Path::new("soundfonts").exists() {
-        PathBuf::from("soundfonts")
-    } else if Path::new("../soundfonts").exists() {
-        PathBuf::from("../soundfonts")
-    } else {
-        return None;
-    };
-
+    let dir = crate::soundfont::get_soundfonts_dir();
     let rx7_path = dir.join("Yamaha_RX7_Drums.sf2");
     if rx7_path.exists() {
         if let Ok(mut file) = std::fs::File::open(&rx7_path) {

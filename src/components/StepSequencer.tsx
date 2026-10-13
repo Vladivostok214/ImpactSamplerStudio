@@ -538,8 +538,8 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                   }}
                   title={
                     isMidiLearnActive
-                      ? `Pad ${padNum}: Clic para aprender MIDI Note (actual: ${getMidiNoteName(midiNote)} / ${midiNote})`
-                      : `Pad ${padNum}: ${padName}. Clic para tocar/seleccionar | Clic derecho para opciones | Arrastra WAV aquí.`
+                      ? `Pad ${padNum}: Asignar MIDI (${getMidiNoteName(midiNote)})`
+                      : `Pad ${padNum}: ${padName}`
                   }
                   className={`w-36 sm:w-40 mr-2 h-9 sm:h-9.5 rounded-lg flex items-center justify-center transition-all shrink-0 cursor-pointer select-none border relative overflow-hidden active:scale-[0.98] ${
                     isLearnSelected
@@ -556,10 +556,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                   }`}
                 >
                   {/* Nombre del Sample centrado */}
-                  <span
-                    title={`Pad ${padNum}: ${padName}`}
-                    className="font-mono text-[9px] sm:text-[9.5px] font-bold tracking-tight truncate max-w-full px-2.5 text-center select-none"
-                  >
+                  <span className="font-mono text-[9px] sm:text-[9.5px] font-bold tracking-tight truncate max-w-full px-2.5 text-center select-none">
                     {padName}
                   </span>
 
@@ -587,9 +584,6 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                         <button
                           type="button"
                           onClick={() => onToggleStep(padIdx, stepIdx)}
-                          title={`Pad ${padNum}, Paso ${stepIdx + 1}: ${
-                            isActive ? `Activo (Vel ${velocity})` : "Inactivo"
-                          }`}
                           className={`flex-1 min-w-[22px] sm:min-w-[26px] h-9 sm:h-9.5 rounded-[4px] font-mono text-[9.5px] transition-all relative overflow-hidden active:scale-95 cursor-pointer ${
                             isActive
                               ? isPlayhead
@@ -643,7 +637,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
             <button
               type="button"
               onClick={() => onChangeViewMode?.("keys")}
-              title="Mostrar Teclado de 49 Teclas"
+              title="Modo Teclado"
               className={`px-2.5 py-1 rounded font-mono text-[9.5px] font-bold tracking-wider transition-all cursor-pointer ${
                 !isSeqOpen
                   ? "bg-gradient-to-b from-cyan-400 to-cyan-600 text-black shadow-[0_0_12px_rgba(6,182,212,0.6)] font-black"
@@ -655,7 +649,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
             <button
               type="button"
               onClick={() => onChangeViewMode?.("seq")}
-              title="Abrir Secuenciador Rítmico de 16 Pasos"
+              title="Modo Secuenciador"
               className={`px-2.5 py-1 rounded font-mono text-[9.5px] font-bold tracking-wider transition-all cursor-pointer ${
                 isSeqOpen
                   ? "bg-gradient-to-b from-amber-400 to-amber-600 text-black shadow-[0_0_12px_rgba(245,158,11,0.6)] font-black"
@@ -674,7 +668,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
               type="button"
               onClick={() => setIsKitMenuOpen(!isKitMenuOpen)}
               className="h-7 px-2 bg-[#0e0f14] hover:bg-[#161820] border border-white/15 hover:border-emerald-500/60 rounded-md flex items-center gap-1.5 text-[9.5px] font-mono transition shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_2px_4px_rgba(0,0,0,0.6)] group select-none cursor-pointer"
-              title="Cambiar Kit de Batería"
+              title="Kit de Batería"
             >
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#10b981]" />
               <span className="text-[9.5px] uppercase font-bold tracking-wider text-zinc-400">KIT:</span>
@@ -761,7 +755,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                     : "eighth";
                 onChangeResolution(nextRes);
               }}
-              title="Resolución de tiempo (Clic para alternar 1/8, 1/16, 1/32)"
+              title="Resolución Grid"
               className="h-7 px-2.5 bg-[#040406] hover:bg-[#121318] border border-white/15 rounded-md text-[9.5px] font-mono font-bold text-emerald-400 flex items-center gap-1.5 shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)] cursor-pointer transition"
             >
               <span className="text-zinc-400 text-[9px] font-semibold tracking-wider">GRID</span>
@@ -775,7 +769,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
             <button
               type="button"
               onClick={onToggleSwing}
-              title="Groove Swing MPC 58% ON/OFF"
+              title="Swing MPC 58%"
               className={`h-7 px-2 rounded-md text-[9.5px] font-mono font-bold tracking-wider border transition-all flex items-center gap-1 active:scale-95 cursor-pointer ${
                 isSwingEnabled
                   ? "bg-pink-950/40 text-pink-300 border-pink-500/60 shadow-[0_0_8px_rgba(236,72,153,0.4)]"
@@ -792,7 +786,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
             <button
               type="button"
               onClick={onToggleClick}
-              title="Clic Metrónomo ON/OFF"
+              title="Metrónomo Sonoro"
               className={`h-7 px-2 rounded-md text-[9.5px] font-mono font-bold tracking-wider border transition-all flex items-center gap-1 active:scale-95 cursor-pointer ${
                 isClickEnabled
                   ? "bg-amber-950/40 text-amber-300 border-amber-500/60 shadow-[0_0_8px_rgba(245,158,11,0.4)]"
@@ -812,7 +806,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
             <button
               type="button"
               onClick={() => onAdjustBpm(-1)}
-              title="Disminuir Tempo"
+              title="Tempo -1"
               className="w-6 h-6 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 rounded font-mono font-bold text-xs transition cursor-pointer"
             >
               -
@@ -844,7 +838,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                     setBpmInput(Math.round(bpm).toString());
                     setIsEditingBpm(true);
                   }}
-                  title="Clic para editar tempo"
+                  title="Tempo BPM"
                   className="font-mono text-xs font-bold text-emerald-400 tracking-wider cursor-pointer hover:brightness-125 transition select-none drop-shadow-[0_0_6px_rgba(16,185,129,0.5)] tabular-nums"
                 >
                   {Math.round(bpm)}
@@ -856,7 +850,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
             <button
               type="button"
               onClick={() => onAdjustBpm(1)}
-              title="Aumentar Tempo"
+              title="Tempo +1"
               className="w-6 h-6 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 rounded font-mono font-bold text-xs transition cursor-pointer"
             >
               +
@@ -880,7 +874,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
             <button
               type="button"
               onClick={onStop}
-              title="Stop / Reset a paso 1"
+              title="Stop"
               className="p-2 rounded-lg bg-[#18191e] hover:bg-[#24262d] text-zinc-400 hover:text-white border border-white/15 transition active:scale-95 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_2px_4px_rgba(0,0,0,0.5)] cursor-pointer"
             >
               <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
@@ -892,7 +886,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
             <button
               type="button"
               onClick={onTogglePlay}
-              title="Play / Pause"
+              title="Play / Pause (Espacio)"
               className={`px-4 py-1.5 rounded-lg text-[11px] font-mono font-bold uppercase tracking-wider flex items-center gap-1.5 transition active:scale-95 border cursor-pointer ${
                 isPlaying
                   ? "bg-gradient-to-b from-emerald-400 to-emerald-600 text-black border-emerald-300 shadow-[0_0_16px_rgba(16,185,129,0.7),inset_0_1px_0_rgba(255,255,255,0.6)]"
@@ -920,7 +914,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
             <button
               type="button"
               onClick={onToggleRecord}
-              title="Overdub Record"
+              title="Grabar Overdub"
               className={`px-3 py-1.5 rounded-lg text-[11px] font-mono font-bold uppercase tracking-wider flex items-center gap-1.5 transition border active:scale-95 cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_2px_4px_rgba(0,0,0,0.5)] ${
                 isRecording
                   ? "bg-red-500/25 border-red-500 text-red-300 shadow-[0_0_14px_rgba(239,68,68,0.6)] animate-pulse"
@@ -943,7 +937,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
             <button
               type="button"
               onClick={onToggleVisualMetronome}
-              title="Metrónomo Visual Overlay ON/OFF"
+              title="Metrónomo Visual"
               className={`px-2.5 py-1.5 rounded-md text-[9.5px] font-mono font-bold tracking-wider border transition flex items-center gap-1.5 active:scale-95 cursor-pointer ${
                 isVisualMetronomeVisible
                   ? "bg-emerald-950/40 text-emerald-300 border-emerald-500/50 shadow-[0_0_6px_rgba(16,185,129,0.3)]"
@@ -959,7 +953,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
           <button
             type="button"
             onClick={onClear}
-            title="Limpiar patrón activo"
+            title="Borrar Patrón"
             className="p-2 rounded-lg bg-[#18191e] text-zinc-400 hover:text-red-400 hover:bg-[#24262d] border border-white/10 transition active:scale-95 cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_1px_3px_rgba(0,0,0,0.5)]"
           >
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

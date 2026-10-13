@@ -911,6 +911,12 @@ fn main() {
         .setup(|app| {
             let app_handle = app.handle().clone();
             let state = app.state::<AppState>();
+
+            // Inicializar directorio de recursos de Tauri para resolución de SoundFonts y Samples en producción
+            if let Ok(res_dir) = app.path().resource_dir() {
+                soundfont::init_resource_dir(Some(res_dir));
+            }
+
             let mut midi_mgr = state.midi_manager.lock().unwrap();
             let _ = midi_mgr.start_auto_connect(app_handle.clone(), state.audio_producer.clone());
             drop(midi_mgr);

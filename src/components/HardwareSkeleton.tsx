@@ -295,7 +295,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
             <div
               onPointerDown={handlePitchWheelPointerDown}
               className="w-6 h-28 bg-[#08080a] rounded-lg border border-white/[0.08] relative overflow-hidden flex items-center justify-center cursor-ns-resize shadow-[inset_0_2px_6px_rgba(0,0,0,0.9)] hover:border-white/20 transition"
-              title="Arrastra verticalmente para flexionar el tono (vuelve solo al centro)"
+              title="Pitch Bend"
             >
               {/* Estrías de goma física en la rueda */}
               <div className="absolute inset-0 flex flex-col justify-between py-2 pointer-events-none opacity-20">
@@ -327,7 +327,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
             <div
               onPointerDown={handleModWheelPointerDown}
               className="w-6 h-28 bg-[#08080a] rounded-lg border border-white/[0.08] relative overflow-hidden flex items-end cursor-ns-resize shadow-[inset_0_2px_6px_rgba(0,0,0,0.9)] hover:border-white/20 transition"
-              title="Arrastra verticalmente para modular"
+              title="Modulation (CC 1)"
             >
               {/* Estrías de goma física en la rueda */}
               <div className="absolute inset-0 flex flex-col justify-between py-2 pointer-events-none opacity-20 z-0">
@@ -409,10 +409,10 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                     }`}
                     title={
                       isMidiLearnActive
-                        ? `MIDI Learn: Fader ${idx + 1} (CC ${mappedCc}). Haz clic para reasignar.`
+                        ? `MIDI Learn: Fader ${idx + 1} (CC ${mappedCc})`
                         : isMaster
-                        ? `Master Volume: ${val} | Doble clic para restablecer al 80% (100)`
-                        : `Pad ${idx + 1}${padSample ? ` (${padSample})` : ""} Volumen: ${Math.round((val / 127) * 100)}% (${val}) | Doble clic para restablecer al 50% (64)`
+                        ? `Master: ${val}`
+                        : `Pad ${idx + 1}${padSample ? ` (${padSample})` : ""}: ${Math.round((val / 127) * 100)}%`
                     }
                   >
                     {/* Ranura vertical metálica del chasis (Fader Track Slot) */}
@@ -480,7 +480,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                   }
                 }}
                 className="bg-transparent text-emerald-300 font-mono text-[10.5px] font-bold focus:outline-none cursor-pointer w-full truncate pr-1"
-                title="Seleccionar instrumento melódico"
+                title="Cambiar Instrumento"
               >
                 {availableSoundfonts.length > 0 ? (
                   availableSoundfonts.map((sf) => (
@@ -587,8 +587,8 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                   }}
                   title={
                     isMidiLearnActive
-                      ? `MIDI Learn: Knob ${idx + 1} (CC ${mappedKnobCc}). Haz clic para reasignar.`
-                      : `Knob ${idx + 1}: ${activeLabel} (${displayName}) | Valor: ${val} | Doble clic para restablecer (${defaultKnobVal}) | Clic en etiqueta o clic derecho para reasignar`
+                      ? `MIDI Learn: Knob ${idx + 1} (CC ${mappedKnobCc})`
+                      : `Knob ${idx + 1}: ${displayName} (${val})`
                   }
                 >
                   {/* Knob con Anillo de Progreso Circular */}
@@ -652,7 +652,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                       const y = Math.min(rect.bottom + 4, window.innerHeight - 340);
                       setKnobContextMenu({ knobIdx: idx, x, y });
                     }}
-                    title={`Clic para reasignar destino de ${activeLabel} | Clic derecho también disponible`}
+                    title="Reasignar modulación"
                     className={`text-[9.5px] font-mono font-bold mt-1.5 truncate max-w-[58px] text-center leading-tight tracking-wider px-1 py-0.5 rounded transition-all flex items-center justify-center gap-0.5 ${
                       isFxBypassed
                         ? "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04]"
@@ -702,7 +702,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                   onChangeFxRouting?.(hasPads ? "both" : "keys");
                 }
               }}
-              title="Activar o desactivar efectos en el Teclado Melódico"
+              title="FX a Teclado"
               className={`flex-1 w-full rounded flex items-center justify-between px-2 font-mono text-[9.5px] font-bold tracking-wider transition-all mb-1 active:scale-95 ${
                 fxRouting === "keys" || fxRouting === "both"
                   ? "bg-amber-500/20 text-amber-300 border border-amber-400/60 shadow-[0_0_8px_rgba(245,158,11,0.35),inset_0_1px_0_rgba(255,255,255,0.15)] font-black"
@@ -731,7 +731,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                   onChangeFxRouting?.(hasKeys ? "both" : "pads");
                 }
               }}
-              title="Activar o desactivar efectos en los Pads Rítmicos"
+              title="FX a Pads"
               className={`flex-1 w-full rounded flex items-center justify-between px-2 font-mono text-[9.5px] font-bold tracking-wider transition-all active:scale-95 ${
                 fxRouting === "pads" || fxRouting === "both"
                   ? "bg-amber-500/20 text-amber-300 border border-amber-400/60 shadow-[0_0_8px_rgba(245,158,11,0.35),inset_0_1px_0_rgba(255,255,255,0.15)] font-black"
@@ -874,7 +874,6 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                           : "bg-gradient-to-b from-[#18191c] via-[#121316] to-[#08080a] border-x border-[#060608] border-b-[4px] border-b-[#020203] shadow-[2px_6px_10px_rgba(0,0,0,0.95),-2px_6px_10px_rgba(0,0,0,0.95)] hover:bg-[#1f2026] cursor-pointer"
                       }`}
                       style={{ flexShrink: 0 }}
-                      title={k.isOutOfRange ? `Nota ${k.note} fuera de rango de cinta (G2 - F5 / 43-77)` : `Tecla negra ${k.note}`}
                     />
                   );
                 }
@@ -904,7 +903,6 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                         ? "bg-gradient-to-b from-cyan-300 via-cyan-400 to-cyan-500 text-black border-r border-cyan-300 shadow-[inset_0_4px_8px_rgba(0,0,0,0.25),inset_0_-2px_0_#0891b2,0_0_18px_rgba(6,182,212,0.9)] cursor-pointer"
                         : "bg-gradient-to-b from-[#eef1f5] via-[#fafbfc] to-[#dce2ea] border-r border-black/30 shadow-[inset_0_-5px_0_#cbd5e1,0_2px_4px_rgba(0,0,0,0.3)] hover:brightness-105 cursor-pointer"
                     }`}
-                    title={k.isOutOfRange ? `Nota ${k.note} fuera de rango de cinta (G2 - F5 / 43-77)` : `Tecla blanca ${k.note}`}
                   >
                     {/* Marcador de Octava en teclas C (C1 a C5) con grabado láser */}
                     {isCKey && (

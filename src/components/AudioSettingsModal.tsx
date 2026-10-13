@@ -381,7 +381,7 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
                       ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-[0_0_10px_rgba(16,185,129,0.3)]"
                       : "bg-white/[0.06] hover:bg-white/[0.12] text-zinc-300 hover:text-white border-white/10"
                   }`}
-                  title="Restablecer Faders (CC 38-46), Knobs (CC 56-63) y Pads (36-43) a valores por defecto"
+                  title="Restablecer a valores de fábrica"
                 >
                   <RotateCcw size={12} className={isResetConfirm ? "text-emerald-400 animate-spin" : "text-zinc-400"} />
                   {isResetConfirm ? "¡Restablecido a Fábrica!" : "Restablecer de Fábrica"}
