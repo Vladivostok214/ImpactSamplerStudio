@@ -14,12 +14,15 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use audio::engine::AudioEngine;
 use audio::{
     AudioDeviceInfo, AudioEngineCommand, FxRouting, KnobMappingInfo, KnobTarget, PadEngineMode,
-    PadPlaybackMode, PadSampleData, PadSlotInfo, PatternBank, SequencerBankToggleResult,
-    SequencerStateInfo, StepResolution, NUM_PADS, NUM_STEPS,
+    PadPlaybackMode, PadSampleData, PadSlotInfo, PatternBank, QuantizeMode, SequencerAction,
+    SequencerBankToggleResult, SequencerStateInfo, StepResolution, MAX_STEPS, NUM_PADS,
 };
 use midi::parser::parse_midi_message;
 use midi::{MidiManager, MidiPortInfo};
-use soundfont::{load_soundfont_from_file, scan_soundfonts, SoundFontInfo};
+use soundfont::{
+    delete_user_soundfont, import_soundfont_file, load_soundfont_from_file, scan_soundfonts,
+    SoundFontInfo,
+};
 use state::{AppState, AudioStatusInfo};
 
 #[tauri::command]
@@ -33,14 +36,43 @@ fn list_soundfonts() -> Vec<SoundFontInfo> {
 }
 
 #[tauri::command]
+fn pick_and_import_soundfont() -> Result<Option<SoundFontInfo>, String> {
+    let file = rfd::FileDialog::new()
+        .add_filter("SoundFont 2 (*.sf2)", &["sf2"])
+        .set_title("Seleccionar Instrumento SoundFont (.sf2)")
+        .pick_file();
+
+    if let Some(path) = file {
+        let info = import_soundfont_file(&path)?;
+        Ok(Some(info))
+    } else {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+fn import_soundfont_from_path(file_path: String) -> Result<SoundFontInfo, String> {
+    let path = Path::new(&file_path);
+    import_soundfont_file(path)
+}
+
+#[tauri::command]
+fn remove_user_soundfont(filename: String) -> Result<(), String> {
+    delete_user_soundfont(&filename)
+}
+
+#[tauri::command]
 fn load_soundfont(filename: String, state: State<'_, AppState>) -> Result<SoundFontInfo, String> {
     let (sf_arc, info) = load_soundfont_from_file(&filename)?;
-    let default_patch = info.presets.first().map(|p| p.patch).unwrap_or(0);
+    let default_preset = info.presets.first();
+    let default_patch = default_preset.map(|p| p.patch).unwrap_or(0);
+    let default_bank = default_preset.map(|p| p.bank).unwrap_or(0);
 
     if let Ok(mut prod) = state.audio_producer.lock() {
         let _ = prod.push(AudioEngineCommand::LoadSoundFont {
             sound_font: sf_arc,
             patch_number: default_patch,
+            bank_number: default_bank,
         });
     }
 
@@ -49,9 +81,17 @@ fn load_soundfont(filename: String, state: State<'_, AppState>) -> Result<SoundF
 }
 
 #[tauri::command]
-fn select_soundfont_preset(patch_number: i32, state: State<'_, AppState>) -> Result<(), String> {
+fn select_soundfont_preset(
+    patch_number: i32,
+    bank_number: Option<i32>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let bank = bank_number.unwrap_or(0);
     if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SelectPreset { patch_number });
+        let _ = prod.push(AudioEngineCommand::SelectPreset {
+            patch_number,
+            bank_number: bank,
+        });
     }
     Ok(())
 }
@@ -484,6 +524,32 @@ fn set_midi_learn_mappings(
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+pub struct ActionMidiBinding {
+    pub message_type: String, // "cc" | "note"
+    pub number: u8,
+    pub action: SequencerAction,
+}
+
+#[tauri::command]
+fn set_action_midi_mappings(
+    bindings: Vec<ActionMidiBinding>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut cc_list = Vec::new();
+    let mut note_list = Vec::new();
+    for b in bindings {
+        if b.message_type == "cc" {
+            cc_list.push((b.number, b.action));
+        } else if b.message_type == "note" {
+            note_list.push((b.number, b.action));
+        }
+    }
+    let midi_mgr = state.midi_manager.lock().unwrap();
+    midi_mgr.set_action_mappings(&cc_list, &note_list);
+    Ok(())
+}
+
 #[tauri::command]
 fn get_knob_mappings(state: State<'_, AppState>) -> Vec<KnobMappingInfo> {
     let engine = state.audio_engine.lock().unwrap();
@@ -669,7 +735,7 @@ fn sequencer_set_step(
     velocity: u8,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    if pad_index >= 8 || step_index >= 16 {
+    if pad_index >= 8 || step_index >= 32 {
         return Err("Índice de paso o pad fuera de rango".to_string());
     }
     if let Ok(mut prod) = state.audio_producer.lock() {
@@ -692,7 +758,7 @@ fn sequencer_toggle_step(
     step_index: usize,
     state: State<'_, AppState>,
 ) -> Result<u8, String> {
-    if pad_index >= 8 || step_index >= 16 {
+    if pad_index >= 8 || step_index >= 32 {
         return Err("Índice de paso o pad fuera de rango".to_string());
     }
     if let Ok(mut prod) = state.audio_producer.lock() {
@@ -764,7 +830,7 @@ fn sequencer_toggle_bank(state: State<'_, AppState>) -> Result<SequencerBankTogg
     let engine = state.audio_engine.lock().unwrap();
     let res = if let Ok(mut seq) = engine.shared_sequencer.lock() {
         let bank = seq.toggle_bank();
-        let pattern = *seq.get_active_pattern();
+        let pattern = seq.get_active_pattern();
         SequencerBankToggleResult {
             current_bank: bank,
             pattern,
@@ -772,24 +838,33 @@ fn sequencer_toggle_bank(state: State<'_, AppState>) -> Result<SequencerBankTogg
     } else {
         SequencerBankToggleResult {
             current_bank: PatternBank::A,
-            pattern: [[0u8; NUM_STEPS]; NUM_PADS],
+            pattern: [[0u8; MAX_STEPS]; NUM_PADS],
         }
     };
     Ok(res)
 }
 
 #[tauri::command]
-fn sequencer_toggle_swing(state: State<'_, AppState>) -> Result<bool, String> {
+fn sequencer_pause(state: State<'_, AppState>) -> Result<(), String> {
     if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerToggleSwing);
+        let _ = prod.push(AudioEngineCommand::SequencerPause);
     }
     let engine = state.audio_engine.lock().unwrap();
-    let swing = if let Ok(mut seq) = engine.shared_sequencer.lock() {
-        seq.toggle_swing()
-    } else {
-        false
-    };
-    Ok(swing)
+    if let Ok(mut seq) = engine.shared_sequencer.lock() {
+        seq.pause();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn sequencer_execute_action(
+    action: SequencerAction,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if let Ok(mut prod) = state.audio_producer.lock() {
+        let _ = prod.push(AudioEngineCommand::SequencerExecuteAction(action));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -834,6 +909,94 @@ fn sequencer_clear_track(pad_index: usize, state: State<'_, AppState>) -> Result
     Ok(())
 }
 
+#[tauri::command]
+fn sequencer_set_quantize_mode(
+    mode: String,
+    state: State<'_, AppState>,
+) -> Result<QuantizeMode, String> {
+    let q_mode = match mode.as_str() {
+        "off" => QuantizeMode::Off,
+        "eighth" => QuantizeMode::Eighth,
+        "sixteenth" => QuantizeMode::Sixteenth,
+        "thirtySecond" => QuantizeMode::ThirtySecond,
+        _ => return Err("Modo de cuantización no válido".to_string()),
+    };
+    if let Ok(mut prod) = state.audio_producer.lock() {
+        let _ = prod.push(AudioEngineCommand::SequencerSetQuantizeMode(q_mode));
+    }
+    let engine = state.audio_engine.lock().unwrap();
+    if let Ok(mut seq) = engine.shared_sequencer.lock() {
+        seq.set_quantize_mode(q_mode);
+    }
+    Ok(q_mode)
+}
+
+#[tauri::command]
+fn sequencer_set_quantize_strength(
+    strength: f32,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let clamped = strength.clamp(0.0, 1.0);
+    if let Ok(mut prod) = state.audio_producer.lock() {
+        let _ = prod.push(AudioEngineCommand::SequencerSetQuantizeStrength(clamped));
+    }
+    let engine = state.audio_engine.lock().unwrap();
+    if let Ok(mut seq) = engine.shared_sequencer.lock() {
+        seq.set_quantize_strength(clamped);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn sequencer_requantize(state: State<'_, AppState>) -> Result<(), String> {
+    if let Ok(mut prod) = state.audio_producer.lock() {
+        let _ = prod.push(AudioEngineCommand::SequencerRequantize);
+    }
+    let engine = state.audio_engine.lock().unwrap();
+    if let Ok(mut seq) = engine.shared_sequencer.lock() {
+        seq.requantize_pattern();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn sequencer_set_latency_compensation(
+    ticks: i32,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let clamped = ticks.clamp(-96, 96);
+    if let Ok(mut prod) = state.audio_producer.lock() {
+        let _ = prod.push(AudioEngineCommand::SequencerSetLatencyCompensation(clamped));
+    }
+    let engine = state.audio_engine.lock().unwrap();
+    if let Ok(mut seq) = engine.shared_sequencer.lock() {
+        seq.set_latency_compensation_ticks(clamped);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn sequencer_undo(state: State<'_, AppState>) -> Result<bool, String> {
+    if let Ok(mut prod) = state.audio_producer.lock() {
+        let _ = prod.push(AudioEngineCommand::SequencerUndo);
+    }
+    let engine = state.audio_engine.lock().unwrap();
+    let undone = if let Ok(mut seq) = engine.shared_sequencer.lock() {
+        seq.undo()
+    } else {
+        false
+    };
+    Ok(undone)
+}
+
+#[tauri::command]
+fn set_midi_mute(muted: bool, state: State<'_, AppState>) -> Result<(), String> {
+    if let Ok(mut prod) = state.audio_producer.lock() {
+        let _ = prod.push(AudioEngineCommand::SetMidiMute(muted));
+    }
+    Ok(())
+}
+
 fn main() {
     let (producer, consumer) = RingBuffer::<AudioEngineCommand>::new(1024);
     let audio_engine = Arc::new(Mutex::new(AudioEngine::new()));
@@ -863,6 +1026,9 @@ fn main() {
             trigger_virtual_cc,
             trigger_virtual_pitch_bend,
             list_soundfonts,
+            pick_and_import_soundfont,
+            import_soundfont_from_path,
+            remove_user_soundfont,
             load_soundfont,
             select_soundfont_preset,
             get_current_soundfont,
@@ -900,12 +1066,20 @@ fn main() {
             sequencer_set_resolution,
             sequencer_toggle_click,
             sequencer_toggle_bank,
-            sequencer_toggle_swing,
+            sequencer_pause,
+            sequencer_execute_action,
             sequencer_set_selected_pad,
             sequencer_clear_selected_track,
             sequencer_clear_track,
+            sequencer_set_quantize_mode,
+            sequencer_set_quantize_strength,
+            sequencer_requantize,
+            sequencer_set_latency_compensation,
+            sequencer_undo,
+            set_midi_mute,
             show_main_window,
             set_midi_learn_mappings,
+            set_action_midi_mappings,
             rescan_midi_ports,
         ])
         .setup(|app| {
@@ -915,6 +1089,11 @@ fn main() {
             // Inicializar directorio de recursos de Tauri para resolución de SoundFonts y Samples en producción
             if let Ok(res_dir) = app.path().resource_dir() {
                 soundfont::init_resource_dir(Some(res_dir));
+            }
+
+            // Inicializar directorio de datos de usuario para guardar SoundFonts importados
+            if let Ok(data_dir) = app.path().app_data_dir() {
+                soundfont::init_user_data_dir(Some(data_dir));
             }
 
             let mut midi_mgr = state.midi_manager.lock().unwrap();

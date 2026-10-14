@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Check } from "lucide-react";
 import { PadSlotInfo, KnobMappingInfo, KnobTarget, FxRouting } from "../types/sampler";
-import { MidiLearnTarget, MidiLearnMapping } from "../types/midiLearn";
+import { MidiLearnTarget, MidiLearnMapping, getActionMappingLabel } from "../types/midiLearn";
 
 import { SoundFontInfo } from "../types/soundfont";
 
@@ -21,7 +21,7 @@ interface HardwareSkeletonProps {
   currentSoundfont?: SoundFontInfo | null;
   activePresetIndex?: number;
   onSelectSoundfont?: (filename: string) => void;
-  onSelectPreset?: (patch: number, index: number) => void;
+  onSelectPreset?: (patch: number, index: number, bank?: number) => void;
   onTriggerNote: (note: number, velocity: number) => void;
   onReleaseNote: (note: number) => void;
   onChangeFader: (index: number, value: number) => void;
@@ -511,8 +511,10 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                   value={activePresetIndex}
                   onChange={(e) => {
                     const idx = parseInt(e.target.value, 10);
-                    const patch = currentSoundfont.presets[idx]?.patch ?? 0;
-                    onSelectPreset?.(patch, idx);
+                    const preset = currentSoundfont.presets[idx];
+                    const patch = preset?.patch ?? 0;
+                    const bank = preset?.bank ?? 0;
+                    onSelectPreset?.(patch, idx, bank);
                   }}
                   className="bg-transparent text-amber-300 font-mono text-[10.5px] font-bold focus:outline-none cursor-pointer pr-1"
                 >
@@ -691,62 +693,98 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
           {/* Torre / Consola Empotrada con pulsadores independientes KEYS y PADS */}
           <div className="w-full h-24 bg-[#08080a] rounded-lg border border-white/[0.08] p-1.5 flex flex-col justify-between shadow-[inset_0_2px_6px_rgba(0,0,0,0.9)] relative overflow-hidden">
             {/* Pulsador KEYS */}
-            <button
-              type="button"
-              onClick={() => {
-                const hasKeys = fxRouting === "keys" || fxRouting === "both";
-                const hasPads = fxRouting === "pads" || fxRouting === "both";
-                if (hasKeys) {
-                  onChangeFxRouting?.(hasPads ? "pads" : "off");
-                } else {
-                  onChangeFxRouting?.(hasPads ? "both" : "keys");
-                }
-              }}
-              title="FX a Teclado"
-              className={`flex-1 w-full rounded flex items-center justify-between px-2 font-mono text-[9.5px] font-bold tracking-wider transition-all mb-1 active:scale-95 ${
-                fxRouting === "keys" || fxRouting === "both"
-                  ? "bg-amber-500/20 text-amber-300 border border-amber-400/60 shadow-[0_0_8px_rgba(245,158,11,0.35),inset_0_1px_0_rgba(255,255,255,0.15)] font-black"
-                  : "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.03] border border-transparent"
-              }`}
-            >
-              <span>KEYS</span>
-              <span
-                className={`w-1.5 h-1.5 rounded-full transition-all ${
-                  fxRouting === "keys" || fxRouting === "both"
-                    ? "bg-amber-400 shadow-[0_0_6px_#f59e0b]"
-                    : "bg-zinc-700/60"
-                }`}
-              />
-            </button>
+            {(() => {
+              const isKeysSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "fxRouteKeys";
+              const keysMapped = getActionMappingLabel(midiLearnMapping, "fxRouteKeys");
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isMidiLearnActive) {
+                      onSelectLearnTarget?.({ type: "action", id: "fxRouteKeys" });
+                      return;
+                    }
+                    const hasKeys = fxRouting === "keys" || fxRouting === "both";
+                    const hasPads = fxRouting === "pads" || fxRouting === "both";
+                    if (hasKeys) {
+                      onChangeFxRouting?.(hasPads ? "pads" : "off");
+                    } else {
+                      onChangeFxRouting?.(hasPads ? "both" : "keys");
+                    }
+                  }}
+                  title={
+                    isMidiLearnActive
+                      ? `FX Route (Keys): ${keysMapped ? `Asignado (${keysMapped})` : "Sin asignar"}`
+                      : "FX a Teclado"
+                  }
+                  className={`flex-1 w-full rounded flex items-center justify-between px-2 font-mono text-[9.5px] font-bold tracking-wider transition-all mb-1 active:scale-95 cursor-pointer ${
+                    isKeysSelected
+                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                      : isMidiLearnActive
+                      ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                      : fxRouting === "keys" || fxRouting === "both"
+                      ? "bg-amber-500/20 text-amber-300 border border-amber-400/60 shadow-[0_0_8px_rgba(245,158,11,0.35),inset_0_1px_0_rgba(255,255,255,0.15)] font-black"
+                      : "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.03] border border-transparent"
+                  }`}
+                >
+                  <span>KEYS</span>
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full transition-all ${
+                      fxRouting === "keys" || fxRouting === "both"
+                        ? "bg-amber-400 shadow-[0_0_6px_#f59e0b]"
+                        : "bg-zinc-700/60"
+                    }`}
+                  />
+                </button>
+              );
+            })()}
 
             {/* Pulsador PADS */}
-            <button
-              type="button"
-              onClick={() => {
-                const hasKeys = fxRouting === "keys" || fxRouting === "both";
-                const hasPads = fxRouting === "pads" || fxRouting === "both";
-                if (hasPads) {
-                  onChangeFxRouting?.(hasKeys ? "keys" : "off");
-                } else {
-                  onChangeFxRouting?.(hasKeys ? "both" : "pads");
-                }
-              }}
-              title="FX a Pads"
-              className={`flex-1 w-full rounded flex items-center justify-between px-2 font-mono text-[9.5px] font-bold tracking-wider transition-all active:scale-95 ${
-                fxRouting === "pads" || fxRouting === "both"
-                  ? "bg-amber-500/20 text-amber-300 border border-amber-400/60 shadow-[0_0_8px_rgba(245,158,11,0.35),inset_0_1px_0_rgba(255,255,255,0.15)] font-black"
-                  : "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.03] border border-transparent"
-              }`}
-            >
-              <span>PADS</span>
-              <span
-                className={`w-1.5 h-1.5 rounded-full transition-all ${
-                  fxRouting === "pads" || fxRouting === "both"
-                    ? "bg-amber-400 shadow-[0_0_6px_#f59e0b]"
-                    : "bg-zinc-700/60"
-                }`}
-              />
-            </button>
+            {(() => {
+              const isPadsSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "fxRoutePads";
+              const padsMapped = getActionMappingLabel(midiLearnMapping, "fxRoutePads");
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isMidiLearnActive) {
+                      onSelectLearnTarget?.({ type: "action", id: "fxRoutePads" });
+                      return;
+                    }
+                    const hasKeys = fxRouting === "keys" || fxRouting === "both";
+                    const hasPads = fxRouting === "pads" || fxRouting === "both";
+                    if (hasPads) {
+                      onChangeFxRouting?.(hasKeys ? "keys" : "off");
+                    } else {
+                      onChangeFxRouting?.(hasKeys ? "both" : "pads");
+                    }
+                  }}
+                  title={
+                    isMidiLearnActive
+                      ? `FX Route (Pads): ${padsMapped ? `Asignado (${padsMapped})` : "Sin asignar"}`
+                      : "FX a Pads"
+                  }
+                  className={`flex-1 w-full rounded flex items-center justify-between px-2 font-mono text-[9.5px] font-bold tracking-wider transition-all active:scale-95 cursor-pointer ${
+                    isPadsSelected
+                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                      : isMidiLearnActive
+                      ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                      : fxRouting === "pads" || fxRouting === "both"
+                      ? "bg-amber-500/20 text-amber-300 border border-amber-400/60 shadow-[0_0_8px_rgba(245,158,11,0.35),inset_0_1px_0_rgba(255,255,255,0.15)] font-black"
+                      : "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.03] border border-transparent"
+                  }`}
+                >
+                  <span>PADS</span>
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full transition-all ${
+                      fxRouting === "pads" || fxRouting === "both"
+                        ? "bg-amber-400 shadow-[0_0_6px_#f59e0b]"
+                        : "bg-zinc-700/60"
+                    }`}
+                  />
+                </button>
+              );
+            })()}
           </div>
 
           {/* Badge de Estado Dinámico */}

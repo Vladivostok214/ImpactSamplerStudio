@@ -13,4 +13,5 @@ export interface SoundFontInfo {
   category: string;
   fileSizeMb: number;
   presets: SoundFontPresetInfo[];
+  isUser?: boolean;
 }

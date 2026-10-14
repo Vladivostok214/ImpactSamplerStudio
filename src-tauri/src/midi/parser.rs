@@ -214,16 +214,16 @@ pub fn get_cc_label(cc: u8) -> Option<String> {
         106 => Some("Transport: Play / Pause".to_string()),
         107 => Some("Transport: Record (Overdub)".to_string()),
 
-        // Botones Asignables Nektar LX49+ (B1..B9)
-        47 => Some("Button 1 (Click On/Off)".to_string()),
-        48 => Some("Button 2 (Grid 1/8)".to_string()),
-        49 => Some("Button 3 (Grid 1/16)".to_string()),
-        50 => Some("Button 4 (Grid 1/32)".to_string()),
-        51 => Some("Button 5 (Pattern Bank A/B)".to_string()),
-        52 => Some("Button 6 (MPC Swing 58%)".to_string()),
-        53 => Some("Button 7 (Clear Track)".to_string()),
-        54 => Some("Button 8 (Toggle Visual Metronome)".to_string()),
-        55 => Some("Button 9 (Clear All Pattern)".to_string()),
+        // Botones Asignables Nektar LX49+ (B1..B9) - Libres para MIDI Learn en Paso 4.1
+        47 => Some("Button 1 (Unassigned)".to_string()),
+        48 => Some("Button 2 (Unassigned)".to_string()),
+        49 => Some("Button 3 (Unassigned)".to_string()),
+        50 => Some("Button 4 (Unassigned)".to_string()),
+        51 => Some("Button 5 (Unassigned)".to_string()),
+        52 => Some("Button 6 (Unassigned)".to_string()),
+        53 => Some("Button 7 (Unassigned)".to_string()),
+        54 => Some("Button 8 (Unassigned)".to_string()),
+        55 => Some("Button 9 (Unassigned)".to_string()),
 
         _ => None,
     }

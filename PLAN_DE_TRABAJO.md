@@ -145,8 +145,6 @@ flowchart TD
       * **Modo 1/8 (Corcheas):** 16 pasos = 2 compases completos de 4/4 (8 tiempos de negra).
       * **Modo 1/16 (Semicorcheas):** 16 pasos = 1 compás completo de 4/4.
       * **Modo 1/32 (Fusas):** 16 pasos = 2 tiempos de negra (medio compás), ideal para *hi-hat trap rolls* ultraprecisos.
-    * **Groove Swing MPC 58% Sample-Accurate:**
-      * Desfase temporal dinámico de micro-timing clásico Akai (+16% paso par, -16% paso impar) calculado a nivel de muestras sin deriva de reloj.
     * Rango de tempo dinámico de 40 a 300 BPM con algoritmo de Tap Tempo suave.
   * **Metrónomo Sonoro Clic Dry Sintético (Audio Click Track):**
     * Generador de impulsos senoidales analógicos con decaimiento percusivo exponencial de ~18 ms sintetizado directamente en el callback de audio.
@@ -169,7 +167,7 @@ flowchart TD
       * `B3 (CC 49)`: **Grid 1/16** (resolución de semicorcheas - 1 compás).
       * `B4 (CC 50)`: **Grid 1/32** (resolución de fusas - 2 tiempos).
       * `B5 (CC 51)`: **Pattern Bank A / B** (alterna entre banco A y B).
-      * `B6 (CC 52)`: **MPC Swing 58% ON/OFF** (alterna entre ritmo recto y groove MPC).
+      * B6 (CC 52): **Sin función / Reservado** (desactivado hasta Paso 4.1).
       * `B7 (CC 53)`: **Clear Selected Track** (borra únicamente la pista del pad actualmente seleccionado).
       * `B8 (CC 54)`: **Toggle Visual Metronome** (muestra u oculta el overlay numérico gigante).
       * `B9 (CC 55)`: **Clear All Pattern** (limpia por completo el patrón de 16 pasos del banco activo).
@@ -178,12 +176,12 @@ flowchart TD
     * Sincronizado estrictamente al motor Rust y conmutable mediante botón UI o botón físico B8 (`CC 54`).
   * **Cuadrícula Rítmica Noir-Tech (`src/components/StepSequencer.tsx`):**
     * 8 filas de pads con nombres de instrumentos, botón de audición rápida y selección interactiva de pista activa (halo esmeralda neón).
-    * Badges interactivos para Banco A/B (Cian / Púrpura), botón de Clic con LED sonoro ámbar, botón de Swing MPC 58% con LED rosa y botón de Overlay.
+    * Badges interactivos para Banco A/B (Cian / Púrpura), botón de Clic con LED sonoro ámbar y botón de Overlay.
     * Selector visual de resoluciones `GRID: [ 1/8 | 1/16 | 1/32 ]`.
     * Botón `CLR P{n}` para borrado rápido de la pista activa y botón general de borrado.
 * **Criterio de Aceptación:**
   * Reproducción estable y sin deriva temporal a cualquier tempo.
-  * Tocar pads en vivo o disparar melodías en el teclado mientras el secuenciador corre con clic y swing funciona con 0 latencia y total solidez.
+  * Tocar pads en vivo o disparar melodías en el teclado mientras el secuenciador corre con clic funciona con 0 latencia y total solidez.
 
 ---
 
@@ -274,13 +272,13 @@ flowchart TD
      - **Ruedas de Expresión:** `Pitch Bend` y `Modulation (CC 1)`.
      - **Switches de Ruteo FX:** `FX a Teclado` y `FX a Pads`.
      - **Header:** `Instrumentos`, `MIDI Learn` / `Desactivar MIDI Learn`, `Ajustes de Audio / MIDI`, `Monitor MIDI` y `Volumen Master: 80%`.
-     - **Barra de Transporte y Control Rítmico:** `Modo Teclado`, `Modo Secuenciador`, `Kit de Batería`, `Banco A/B`, `Resolución Grid`, `Swing MPC 58%`, `Metrónomo Sonoro`, `Tempo BPM`, `Tempo -1 / +1`, `Tap Tempo`, `Stop`, `Play / Pause (Espacio)`, `Grabar Overdub`, `Metrónomo Visual` y `Borrar Patrón`.
+     - **Barra de Transporte y Control Rítmico:** Modo Teclado, Modo Secuenciador, Kit de Batería, Banco A/B, Resolución Grid, Metrónomo Sonoro, Tempo BPM, Tempo -1 / +1, Tap Tempo, Stop, Play / Pause (Espacio), Grabar Overdub, Metrónomo Visual y Borrar Patrón.
      - **Modal de Ajustes (`AudioSettingsModal.tsx`):** `Restablecer a valores de fábrica`.
 
 ---
 
-### Fase 6: Infraestructura de Distribución, Empaque (.exe) y Sistema Extensible de Librería 📋 [EN PROGRESO]
-* **Objetivo:** Resolver el empaquetado autónomo de la aplicación (`.exe` standalone / instalador) para que los instrumentos de fábrica funcionen de inmediato sin requerir configuración manual, dotar a la plataforma de una arquitectura dual de librería (Factory vs. User Libraries) y sentar las bases para la carga escalable de SoundFonts de terceros manteniendo la estética Noir-Tech de alta fidelidad.
+### Fase 6: Infraestructura de Distribución, Empaque (.exe) y Sistema Extensible de Librería & MIDI Learn Universal ✅ [COMPLETADA]
+* **Objetivo:** Resolver el empaquetado autónomo de la aplicación (`.exe` standalone / instalador) para que los instrumentos de fábrica funcionen de inmediato sin requerir configuración manual, dotar a la plataforma de una arquitectura dual de librería (Factory vs. User Libraries), sentar las bases para la carga escalable de SoundFonts de terceros y completar el sistema universal de MIDI Learn con soporte para 17 acciones de interfaz en tiempo real.
 * **Componentes y Especificaciones Técnicas:**
   1. **Resolución de Recursos Embebidos en Rust & Empaque Tauri ✅ [IMPLEMENTADO]:**
      - Configuración de empaquetado en `src-tauri/tauri.conf.json`:
@@ -290,7 +288,7 @@ flowchart TD
        - Tier 2: Búsqueda adyacente al ejecutable (`current_exe().parent()/resources/` y `current_exe().parent()/`) para ejecutables portables.
        - Tier 3: Fallback a rutas relativas de desarrollo (`./soundfonts`, `../soundfonts`, `./samples`, `../samples`) para desarrollo local (`npm run tauri dev`).
      - Carga unificada en todos los componentes del motor (`load_factory_pad_samples`, `load_default_drum_soundfont`, `scan_soundfonts`, `load_soundfont_from_file`).
-  2. **Arquitectura Dual de Librería (Factory Library vs. User Library):**
+  2. **Arquitectura Dual de Librería (Factory Library vs. User Library) ✅ [IMPLEMENTADO]:**
      - **Capa A: Factory Library (Instrumentos Curados de Fábrica):**
        - 4 instrumentos oficiales de estudio incluidos de origen:
          1. 🎹 *Grand Piano* (Steinway Samples)
@@ -299,20 +297,24 @@ flowchart TD
          4. 🥁 *Yamaha RX7 Drum Machine* (1987 PCM Vintage Drums)
        - Conservan su fotografía PNG de estudio dedicada, su paleta de resplandor Noir-Tech (ámbar, cian, rosa, púrpura) y sus mappings exclusivos (como conmutación automática a pads rítmicos).
      - **Capa B: User Library (Librería Personalizada del Usuario):**
-       - Nueva sección en `AudioSettingsModal.tsx`: *«Directorio de SoundFonts de Usuario»*.
+       - Sección en `AudioSettingsModal.tsx`: *«Directorio de SoundFonts de Usuario»*.
        - Integración del selector nativo de carpetas de Windows mediante diálogo de Tauri (`tauri-plugin-dialog`).
        - Persistencia de la ruta seleccionada en la configuración local del usuario (`localStorage`).
        - Comando unificado `list_soundfonts` en Rust que escanea concurrentemente ambas carpetas (Factory + User), deduplica entradas y reporta la lista consolidada al frontend.
-  3. **Catálogo Declarativo & Registro de Instrumentos (`Instrument Registry`):**
-     - Migración de la lógica dispersa `filename.includes("...")` a un sistema formal de perfiles (`InstrumentCatalog` / `InstrumentDefinition`):
+  3. **Catálogo Declarativo & Registro de Instrumentos (`Instrument Registry`) ✅ [IMPLEMENTADO]:**
+     - Registro formal de perfiles (`InstrumentCatalog` / `InstrumentDefinition`):
        - Identificador único (`id`), patrones de coincidencia de nombres, categoría tímbrica y tipo de motor (`melodic` vs `drum-kit`).
-       - Permite incorporar nuevos instrumentos de fábrica a futuro de forma puramente declarativa sin modificar código de render ni lógica interna.
-  4. **Plantilla Visual Genérica Noir-Tech para Instrumentos de Usuario:**
-     - Diseño de tarjeta elegante en `InstrumentSelectModal.tsx` para SoundFonts de terceros:
-       - Badge distintivo de categoría: `USER SF2`.
-       - Render/ilustración Noir-Tech sobria (estilo chasis de rack analógico / módulo modular de estudio) para aquellos instrumentos sin fotografía de estudio precargada.
-       - Extracción dinámica de metadatos (nombre de parche, banco y número de presets) directamente desde el encabezado del archivo `.sf2` analizado por `rustysynth`.
-       - Asignación por defecto a teclado melódico cromático completo.
+  4. **Paso 4: Mejoras Input Quantize, Reloj por Ticks, Calibración Asistida y Undo ✅ [COMPLETADO]:**
+     - Ver detalle en [PLAN_DE_TRABAJO_PASO_4.md](PLAN_DE_TRABAJO_PASO_4.md).
+     - Reloj ultrapreciso a 96 ticks/negra (384 ticks/compás), grilla adaptativa (1/8, 1/16, 1/32 con páginas 1 y 2), anti-flam, Q-Mode / Q-Strength y botón de re-cuantización.
+     - Calibración interactiva de latencia de 8 golpes con silenciamiento de audio y persistencia por dispositivo de audio (validada en hardware real con 0 ticks de desviación).
+     - Sistema de Undo (`sequencer_undo`) LIFO de 16 estados sin alocaciones en el hilo de audio.
+     - Full Level unificado en 127 fijado permanentemente.
+  5. **Paso 4.1: MIDI Learn de Acciones de UI (Controles Asignables) ✅ [COMPLETADO]:**
+     - Ver detalle completo en [PLAN_DE_TRABAJO_PASO_4.md](PLAN_DE_TRABAJO_PASO_4.md#paso-41---midi-learn-de-acciones-de-ui-controles-asignables--completado).
+     - 17 acciones de interfaz conectadas a MIDI Learn (Transporte, BPM, Tap Tempo, Clic, Metrónomo Visual, Undo, Clear Track, Clear Pattern, Grid, Page, Bank, Workstation Mode y FX Route Keys/Pads).
+     - Despacho $O(1)$ lock-free en Rust y soporte de pulsación única 1:1 para botones con toggle de hardware.
+     - Sincronización bidireccional de FX Route con notificación nativa a la interfaz.
 
 ---
 
@@ -369,7 +371,7 @@ flowchart TD
      - Formato JSON estructurado de alto rendimiento que encapsula el estado exacto del estudio:
        * **Secuenciador Rítmico:**
          - Matriz de 16 pasos completa para Banco A y Banco B en las 8 pistas de percusión.
-         - Tempo en BPM y activación de Swing MPC 58%.
+         - Tempo en BPM.
          - Resolución de Grid activa (`1/8`, `1/16` o `1/32`).
          - Modo de pads activo (`WAV SAMPLER`, `DRUM SF2` o `MIRROR`).
          - Mapeo de muestras WAV cargadas en los slots (nombres, rutas y configuración One-Shot/Gate).
@@ -401,7 +403,7 @@ flowchart TD
   5. **Plantillas de Fábrica Inspiracionales (*Factory Presets / Templates*):**
      - Presets de estudio preconfigurados al dar «Nuevo Proyecto»:
        * 🌆 *Synthwave 80s:* Yamaha RX7 + Mellotron Strings + Reverb/Delay envolvente + 115 BPM con groove retro.
-       * ☕ *Lo-Fi Bedroom:* Vintage Rhodes Mark I + Warm Drive suave + 1/16 Swing MPC 58% al 85 BPM.
+       * ☕ *Lo-Fi Bedroom:* Vintage Rhodes Mark I + Warm Drive suave al 85 BPM.
        * 🎹 *Concert Acoustic:* Grand Piano Steinway + Reverb de sala grande + 120 BPM con faders calibrados.
        * 🎛️ *Init (Clean Slate):* Grilla y parámetros en cero para componer desde una hoja en blanco.
   6. **Motor de Exportación Offline de Audio (*WAV Bounce & Stems*):**
@@ -412,6 +414,6 @@ flowchart TD
 ---
 
 ## 3. Próximo Paso Inmediato
-Fases 1 a 5.2 completadas al 100%. Fases 6, 7 y 8 planificadas y documentadas en detalle en la hoja de ruta.
+Fases 1 a 6 completadas al 100%. Fases 7 y 8 planificadas y documentadas en detalle en la hoja de ruta.
 Quedamos atentos a nuevas ideas o requerimientos adicionales para continuar enriqueciendo el plan antes de proceder a la ejecución.
 

@@ -6,7 +6,7 @@ use rtrb::Producer;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
-use crate::audio::{AudioEngineCommand, StepResolution};
+use crate::audio::AudioEngineCommand;
 use parser::{parse_midi_message, MidiEventType};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,20 +26,67 @@ pub struct MidiStatusEvent {
     pub ports: Vec<MidiPortInfo>,
 }
 
+use crate::audio::sequencer::SequencerAction;
+
 pub struct MidiManager {
     _connections: Vec<MidiInputConnection<()>>,
     pub connected_port_index: Option<usize>,
     pub connected_port_name: Option<String>,
     pub preferred_port_name: Option<String>,
+    pub action_cc_map: Arc<Mutex<[Option<SequencerAction>; 128]>>,
+    pub action_note_map: Arc<Mutex<[Option<SequencerAction>; 128]>>,
 }
 
 impl MidiManager {
     pub fn new() -> Self {
+        let mut cc_map = [None; 128];
+        // Valores de fábrica Nektar Impact LX49+
+        cc_map[106] = Some(SequencerAction::TogglePlay);       // Play / Pause
+        cc_map[105] = Some(SequencerAction::Stop);             // Stop
+        cc_map[107] = Some(SequencerAction::ToggleRecord);     // Record Overdub
+        cc_map[102] = Some(SequencerAction::TapTempo);        // Tap Tempo
+        cc_map[103] = Some(SequencerAction::BpmDown);         // BPM -1
+        cc_map[104] = Some(SequencerAction::BpmUp);           // BPM +1
+        cc_map[47]  = Some(SequencerAction::ToggleClick);      // B1: Clic Metrónomo
+        cc_map[48]  = Some(SequencerAction::CycleResolution);  // B2: Grilla
+        cc_map[51]  = Some(SequencerAction::ToggleBank);       // B5: Banco A/B
+        cc_map[52]  = Some(SequencerAction::Undo);             // B6: Undo
+        cc_map[53]  = Some(SequencerAction::ClearSelectedTrack);// B7: Clear Track
+        cc_map[54]  = Some(SequencerAction::ToggleVisualMetronome); // B8: Metrónomo Visual
+        cc_map[55]  = Some(SequencerAction::ClearAll);         // B9: Clear Pattern
+
+        let note_map = [None; 128];
+
         Self {
             _connections: Vec::new(),
             connected_port_index: None,
             connected_port_name: None,
             preferred_port_name: None,
+            action_cc_map: Arc::new(Mutex::new(cc_map)),
+            action_note_map: Arc::new(Mutex::new(note_map)),
+        }
+    }
+
+    pub fn set_action_mappings(
+        &self,
+        cc_mappings: &[(u8, SequencerAction)],
+        note_mappings: &[(u8, SequencerAction)],
+    ) {
+        if let Ok(mut ccs) = self.action_cc_map.lock() {
+            *ccs = [None; 128];
+            for &(cc, action) in cc_mappings {
+                if (cc as usize) < 128 {
+                    ccs[cc as usize] = Some(action);
+                }
+            }
+        }
+        if let Ok(mut notes) = self.action_note_map.lock() {
+            *notes = [None; 128];
+            for &(note, action) in note_mappings {
+                if (note as usize) < 128 {
+                    notes[note as usize] = Some(action);
+                }
+            }
         }
     }
 
@@ -108,6 +155,8 @@ impl MidiManager {
         let app_clone = app_handle.clone();
         let prod_clone = audio_producer.clone();
         let p_name = port_name.clone();
+        let cc_map_clone = self.action_cc_map.clone();
+        let note_map_clone = self.action_note_map.clone();
 
         let conn = midi_in.connect(
             port,
@@ -121,17 +170,43 @@ impl MidiManager {
                     if let Ok(mut prod) = prod_clone.lock() {
                         match &event.event {
                             MidiEventType::NoteOn { note, velocity, pad_index, .. } => {
-                                let vel_f = *velocity as f32 / 127.0;
-                                if let Some(p_idx) = pad_index {
-                                    let _ = prod.push(AudioEngineCommand::PadTrigger {
-                                        pad_index: (*p_idx as usize).saturating_sub(1),
-                                        velocity: vel_f,
-                                    });
-                                } else {
-                                    let _ = prod.push(AudioEngineCommand::NoteOn {
-                                        note: *note,
-                                        velocity: vel_f,
-                                    });
+                                // Verificar si esta nota física está mapeada a una acción de UI
+                                let mut action_handled = false;
+                                if (*note as usize) < 128 {
+                                    if let Ok(guard) = note_map_clone.try_lock() {
+                                        if let Some(action) = guard[*note as usize] {
+                                            action_handled = true;
+                                            match action {
+                                                SequencerAction::ToggleVisualMetronome => {
+                                                    let _ = app_clone.emit("toggle-visual-metronome", ());
+                                                }
+                                                SequencerAction::AdvancePage => {
+                                                    let _ = app_clone.emit("sequencer-advance-page", ());
+                                                }
+                                                SequencerAction::ToggleWorkstationMode => {
+                                                    let _ = app_clone.emit("toggle-workstation-mode", ());
+                                                }
+                                                other => {
+                                                    let _ = prod.push(AudioEngineCommand::SequencerExecuteAction(other));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if !action_handled {
+                                    let vel_f = *velocity as f32 / 127.0;
+                                    if let Some(p_idx) = pad_index {
+                                        let _ = prod.push(AudioEngineCommand::PadTrigger {
+                                            pad_index: (*p_idx as usize).saturating_sub(1),
+                                            velocity: vel_f,
+                                        });
+                                    } else {
+                                        let _ = prod.push(AudioEngineCommand::NoteOn {
+                                            note: *note,
+                                            velocity: vel_f,
+                                        });
+                                    }
                                 }
                             }
                             MidiEventType::NoteOff { note, pad_index, .. } => {
@@ -150,71 +225,30 @@ impl MidiManager {
                                     value: val_f,
                                 });
 
-                                // Interceptar botones físicos de Transporte y Asignables del Nektar Impact LX49+
-                                if *value > 0 {
-                                    match *controller {
-                                        102 => {
-                                            // Cycle / Loop: Tap Tempo
-                                            let _ = prod.push(AudioEngineCommand::SequencerTapTempo);
+                                // Interceptar acciones de UI dinámicas.
+                                // SOTA Controller Handling: Los botones del controlador pueden estar configurados
+                                // internamente como toggle (enviando 127 en una pulsación y 0 en la siguiente),
+                                // o como momentary (127 al presionar y 0 al soltar). Para garantizar que cada
+                                // pulsación física del usuario active la acción 1:1 de inmediato sin requerir doble
+                                // clic, se dispara la acción en cada evento CC recibido para este controlador.
+                                if (*controller as usize) < 128 {
+                                    if let Ok(guard) = cc_map_clone.try_lock() {
+                                        if let Some(action) = guard[*controller as usize] {
+                                            match action {
+                                                SequencerAction::ToggleVisualMetronome => {
+                                                    let _ = app_clone.emit("toggle-visual-metronome", ());
+                                                }
+                                                SequencerAction::AdvancePage => {
+                                                    let _ = app_clone.emit("sequencer-advance-page", ());
+                                                }
+                                                SequencerAction::ToggleWorkstationMode => {
+                                                    let _ = app_clone.emit("toggle-workstation-mode", ());
+                                                }
+                                                other => {
+                                                    let _ = prod.push(AudioEngineCommand::SequencerExecuteAction(other));
+                                                }
+                                            }
                                         }
-                                        103 => {
-                                            // Rewind: BPM -1
-                                            let _ = prod.push(AudioEngineCommand::SequencerAdjustBpm(-1.0));
-                                        }
-                                        104 => {
-                                            // Forward: BPM +1
-                                            let _ = prod.push(AudioEngineCommand::SequencerAdjustBpm(1.0));
-                                        }
-                                        105 => {
-                                            // Stop: Detener y rebobinar
-                                            let _ = prod.push(AudioEngineCommand::SequencerStop);
-                                        }
-                                        106 => {
-                                            // Play: Iniciar / Pausar
-                                            let _ = prod.push(AudioEngineCommand::SequencerTogglePlay);
-                                        }
-                                        107 => {
-                                            // Record: Alternar modo Overdub en vivo
-                                            let _ = prod.push(AudioEngineCommand::SequencerToggleRecord);
-                                        }
-                                        // Botones Asignables B1..B9 (CC 47..55)
-                                        47 => {
-                                            // B1: Metrónomo Sonoro Clic ON/OFF
-                                            let _ = prod.push(AudioEngineCommand::SequencerToggleClick);
-                                        }
-                                        48 => {
-                                            // B2: Grid 1/8
-                                            let _ = prod.push(AudioEngineCommand::SequencerSetResolution(StepResolution::Eighth));
-                                        }
-                                        49 => {
-                                            // B3: Grid 1/16
-                                            let _ = prod.push(AudioEngineCommand::SequencerSetResolution(StepResolution::Sixteenth));
-                                        }
-                                        50 => {
-                                            // B4: Grid 1/32
-                                            let _ = prod.push(AudioEngineCommand::SequencerSetResolution(StepResolution::ThirtySecond));
-                                        }
-                                        51 => {
-                                            // B5: Pattern Bank A/B
-                                            let _ = prod.push(AudioEngineCommand::SequencerToggleBank);
-                                        }
-                                        52 => {
-                                            // B6: Swing MPC 58% ON/OFF
-                                            let _ = prod.push(AudioEngineCommand::SequencerToggleSwing);
-                                        }
-                                        53 => {
-                                            // B7: Clear Track (limpia la pista del pad seleccionado)
-                                            let _ = prod.push(AudioEngineCommand::SequencerClearSelectedTrack);
-                                        }
-                                        54 => {
-                                            // B8: Metrónomo Visual Gigante ON/OFF
-                                            let _ = app_clone.emit("toggle-visual-metronome", ());
-                                        }
-                                        55 => {
-                                            // B9: Clear All Pattern (limpia la grilla del banco activo)
-                                            let _ = prod.push(AudioEngineCommand::SequencerClear);
-                                        }
-                                        _ => {}
                                     }
                                 }
                             }

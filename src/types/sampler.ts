@@ -31,19 +31,23 @@ export interface KnobMappingInfo {
 }
 
 export type StepResolution = "eighth" | "sixteenth" | "thirtySecond";
+export type QuantizeMode = "off" | "eighth" | "sixteenth" | "thirtySecond";
 export type PatternBank = "a" | "b";
 
 export interface SequencerStateInfo {
   isPlaying: boolean;
+  isPaused: boolean;
   isRecording: boolean;
   bpm: number;
   currentStep: number;
   resolution: StepResolution;
   currentBank: PatternBank;
   isClickEnabled: boolean;
-  isSwingEnabled: boolean;
   selectedPad: number;
-  pattern: number[][]; // 8 pads x 16 steps (velocities 0..127)
+  quantizeMode: QuantizeMode;
+  quantizeStrength: number;
+  latencyCompensationTicks: number;
+  pattern: number[][]; // 8 pads x 32 steps (velocities 0..127)
 }
 
 export interface SequencerStepEvent {

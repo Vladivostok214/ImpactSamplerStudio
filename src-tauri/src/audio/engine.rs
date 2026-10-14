@@ -2,14 +2,14 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
-use rtrb::Consumer;
+use rtrb::{Consumer, Producer, RingBuffer};
 use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
 use tauri::{AppHandle, Emitter};
 
 use super::fx::{AudioFxRack, FxRouting, KnobMappingInfo, KnobTarget};
 use super::sampler::{PadEngineMode, PadPlaybackMode, PadSampleData, PadSampler, PadSlotInfo};
-use super::sequencer::{SequencerStateInfo, SequencerStepEvent, StepSequencer};
-use super::{AudioDeviceInfo, AudioEngineCommand};
+use super::sequencer::{SequencerAction, SequencerStateInfo, SequencerStepEvent, StepSequencer};
+use super::{AudioDeviceInfo, AudioEngineCommand, SequencerUiEvent};
 
 struct StreamHolder(Option<Stream>);
 unsafe impl Send for StreamHolder {}
@@ -28,6 +28,9 @@ pub struct AudioEngine {
     shared_master_gain: Arc<Mutex<f32>>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
     watchdog_started: Arc<AtomicBool>,
+    ui_event_thread_started: Arc<AtomicBool>,
+    ui_event_producer: Arc<Mutex<Option<Producer<SequencerUiEvent>>>>,
+    ui_event_consumer: Arc<Mutex<Option<Consumer<SequencerUiEvent>>>>,
     // Fase 3: Pad Sampler & Drum Kit
     pub shared_pad_samples: Arc<Mutex<[Option<Arc<PadSampleData>>; 8]>>,
     pub shared_pad_modes: Arc<Mutex<[PadPlaybackMode; 8]>>,
@@ -39,7 +42,7 @@ pub struct AudioEngine {
     // Fase 4: FX Rack & Knobs
     pub shared_fx_rack: Arc<Mutex<AudioFxRack>>,
     pub shared_fx_routing: Arc<Mutex<FxRouting>>,
-    // Fase 5: Step Sequencer
+    // Fase 5: Step Sequencer (Única fuente de verdad en render state, sincronizada a shared para lecturas)
     pub shared_sequencer: Arc<Mutex<StepSequencer>>,
 }
 
@@ -136,10 +139,11 @@ struct AudioRenderState {
     // Fase 5: Step Sequencer
     sequencer: StepSequencer,
     shared_sequencer: Arc<Mutex<StepSequencer>>,
-    shared_app_handle: Arc<Mutex<Option<AppHandle>>>,
+    ui_event_producer: Arc<Mutex<Option<Producer<SequencerUiEvent>>>>,
     // MIDI Learn: Mapeos dinámicos CC
     midi_fader_ccs: [u8; 9],
     midi_knob_ccs: [u8; 8],
+    is_midi_muted: bool,
 }
 
 impl AudioRenderState {
@@ -160,7 +164,7 @@ impl AudioRenderState {
         shared_fx_rack: Arc<Mutex<AudioFxRack>>,
         shared_fx_routing: Arc<Mutex<FxRouting>>,
         shared_sequencer: Arc<Mutex<StepSequencer>>,
-        shared_app_handle: Arc<Mutex<Option<AppHandle>>>,
+        ui_event_producer: Arc<Mutex<Option<Producer<SequencerUiEvent>>>>,
     ) -> Self {
         let mut pad_sampler = PadSampler::new(sample_rate_f);
         let drum_pad_notes = *shared_drum_pad_notes.lock().unwrap();
@@ -261,9 +265,25 @@ impl AudioRenderState {
             shared_fx_routing,
             sequencer,
             shared_sequencer,
-            shared_app_handle,
+            ui_event_producer,
             midi_fader_ccs: [38, 39, 40, 41, 42, 43, 44, 45, 46],
             midi_knob_ccs: [56, 57, 58, 59, 60, 61, 62, 63],
+            is_midi_muted: false,
+        }
+    }
+
+    #[inline]
+    fn send_ui_event(&self, event: SequencerUiEvent) {
+        if let Ok(mut prod_guard) = self.ui_event_producer.try_lock() {
+            if let Some(prod) = prod_guard.as_mut() {
+                let _ = prod.push(event);
+            }
+        }
+    }
+
+    fn sync_shared_sequencer(&self) {
+        if let Ok(mut seq) = self.shared_sequencer.try_lock() {
+            *seq = self.sequencer.clone();
         }
     }
 
@@ -276,9 +296,12 @@ impl AudioRenderState {
                             self.midi_fader_ccs = faders;
                             self.midi_knob_ccs = knobs;
                         }
-                        AudioEngineCommand::LoadSoundFont { sound_font, patch_number } => {
+                        AudioEngineCommand::LoadSoundFont { sound_font, patch_number, bank_number } => {
                             let settings = SynthesizerSettings::new(self.sample_rate_f as i32);
                             if let Ok(mut synth) = Synthesizer::new(&sound_font, &settings) {
+                                // Enviar Bank Select MSB (CC 0), LSB (CC 32) y Program Change (0xC0) en canal 0
+                                synth.process_midi_message(0, 0xB0, 0, bank_number);
+                                synth.process_midi_message(0, 0xB0, 32, 0);
                                 synth.process_midi_message(0, 0xC0, patch_number, 0);
                                 self.synthesizer = Some(synth);
                             }
@@ -287,35 +310,42 @@ impl AudioRenderState {
                             }
                             self.shared_patch.store(patch_number, Ordering::SeqCst);
                         }
-                        AudioEngineCommand::SelectPreset { patch_number } => {
+                        AudioEngineCommand::SelectPreset { patch_number, bank_number } => {
                             if let Some(synth) = &mut self.synthesizer {
+                                // Cortar notas activas anteriores para evitar notas colgadas con parámetros mixtos
+                                synth.note_off_all(false);
+                                // Enviar Bank Select MSB (CC 0), LSB (CC 32) y Program Change (0xC0) en canal 0
+                                synth.process_midi_message(0, 0xB0, 0, bank_number);
+                                synth.process_midi_message(0, 0xB0, 32, 0);
                                 synth.process_midi_message(0, 0xC0, patch_number, 0);
                             }
                             self.shared_patch.store(patch_number, Ordering::SeqCst);
                         }
                         AudioEngineCommand::NoteOn { note, velocity } => {
-                            if let Some(synth) = &mut self.synthesizer {
-                                let vel_7bit = (velocity * 127.0).round().clamp(1.0, 127.0) as i32;
-                                synth.note_on(0, note as i32, vel_7bit);
-                            } else {
-                                let mut slot_idx = 0;
-                                for (i, v) in self.voices.iter().enumerate() {
-                                    if !v.active {
-                                        slot_idx = i;
-                                        break;
+                            if !self.is_midi_muted {
+                                if let Some(synth) = &mut self.synthesizer {
+                                    let vel_7bit = (velocity * 127.0).round().clamp(1.0, 127.0) as i32;
+                                    synth.note_on(0, note as i32, vel_7bit);
+                                } else {
+                                    let mut slot_idx = 0;
+                                    for (i, v) in self.voices.iter().enumerate() {
+                                        if !v.active {
+                                            slot_idx = i;
+                                            break;
+                                        }
                                     }
+
+                                    let target_voice = &mut self.voices[slot_idx];
+                                    target_voice.note = note;
+                                    target_voice.velocity = velocity;
+                                    target_voice.active = true;
+                                    target_voice.release = false;
+                                    target_voice.phase = 0.0;
+                                    target_voice.envelope = 0.0;
+
+                                    let freq = 440.0 * 2.0f32.powf((note as f32 - 69.0) / 12.0);
+                                    target_voice.phase_inc = freq / self.sample_rate_f;
                                 }
-
-                                let target_voice = &mut self.voices[slot_idx];
-                                target_voice.note = note;
-                                target_voice.velocity = velocity;
-                                target_voice.active = true;
-                                target_voice.release = false;
-                                target_voice.phase = 0.0;
-                                target_voice.envelope = 0.0;
-
-                                let freq = 440.0 * 2.0f32.powf((note as f32 - 69.0) / 12.0);
-                                target_voice.phase_inc = freq / self.sample_rate_f;
                             }
                         }
                         AudioEngineCommand::NoteOff { note } => {
@@ -428,29 +458,25 @@ impl AudioRenderState {
                             let vel_byte = 127u8;
                             let vel_7bit = 127i32;
 
-                            // Si el secuenciador está en Play + Record (Overdub), grabar en el paso cuantizado al 50%
+                            // Si el secuenciador está en Play + Record (Overdub), grabar en vivo con cuantización y anti-flam
                             if self.sequencer.is_playing && self.sequencer.is_recording && pad_index < 8 {
-                                let target_step = self.sequencer.get_quantized_step();
-                                self.sequencer.set_step(pad_index, target_step, vel_byte);
-                                if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                    seq.set_step(pad_index, target_step, vel_byte);
-                                }
-                                if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                    if let Some(h) = guard.as_ref() {
-                                        let _ = h.emit("sequencer-pattern-updated", *self.sequencer.get_active_pattern());
-                                    }
-                                }
+                                self.sequencer.save_undo_state();
+                                self.sequencer.record_live_hit(pad_index, vel_byte);
+                                self.sync_shared_sequencer();
+                                self.send_ui_event(SequencerUiEvent::PatternUpdated(self.sequencer.get_active_pattern()));
                             }
 
-                            match self.pad_engine_mode {
-                                PadEngineMode::WavSampler => {
-                                    self.pad_sampler.trigger(pad_index, full_velocity_f);
-                                }
-                                PadEngineMode::DrumKitSf2 => {
-                                    if pad_index < 8 {
-                                        if let Some(synth) = &mut self.drum_synthesizers[pad_index] {
-                                            let note = self.drum_pad_notes[pad_index];
-                                            synth.note_on(9, note, vel_7bit);
+                            if !self.is_midi_muted {
+                                match self.pad_engine_mode {
+                                    PadEngineMode::WavSampler => {
+                                        self.pad_sampler.trigger(pad_index, full_velocity_f);
+                                    }
+                                    PadEngineMode::DrumKitSf2 => {
+                                        if pad_index < 8 {
+                                            if let Some(synth) = &mut self.drum_synthesizers[pad_index] {
+                                                let note = self.drum_pad_notes[pad_index];
+                                                synth.note_on(9, note, vel_7bit);
+                                            }
                                         }
                                     }
                                 }
@@ -556,221 +582,286 @@ impl AudioRenderState {
                         // --- FASE 5: COMANDOS DEL SECUENCIADOR ---
                         AudioEngineCommand::SequencerPlay => {
                             self.sequencer.play();
-                            if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                seq.play();
-                            }
-                            if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                if let Some(h) = guard.as_ref() {
-                                    let _ = h.emit("sequencer-state-changed", self.sequencer.get_state_info());
-                                }
-                            }
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                        }
+                        AudioEngineCommand::SequencerPause => {
+                            self.sequencer.pause();
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
                         }
                         AudioEngineCommand::SequencerStop => {
                             self.sequencer.stop();
-                            if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                seq.stop();
-                            }
+                            self.sync_shared_sequencer();
                             let (_b, max_beats) = self.sequencer.get_current_beat();
-                            if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                if let Some(h) = guard.as_ref() {
-                                    let _ = h.emit("sequencer-state-changed", self.sequencer.get_state_info());
-                                    let _ = h.emit("sequencer-step", SequencerStepEvent {
+                            self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                            self.send_ui_event(SequencerUiEvent::Step(SequencerStepEvent {
+                                step: 0,
+                                is_playing: false,
+                                bpm: self.sequencer.bpm,
+                                beat: 1,
+                                max_beats,
+                            }));
+                        }
+                        AudioEngineCommand::SequencerTogglePlay => {
+                            let playing = self.sequencer.toggle_play();
+                            self.sync_shared_sequencer();
+                            let (beat, max_beats) = self.sequencer.get_current_beat();
+                            self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                            if !playing {
+                                self.send_ui_event(SequencerUiEvent::Step(SequencerStepEvent {
+                                    step: self.sequencer.current_step,
+                                    is_playing: false,
+                                    bpm: self.sequencer.bpm,
+                                    beat,
+                                    max_beats,
+                                }));
+                            }
+                        }
+                        AudioEngineCommand::SequencerSetBpm(bpm) => {
+                            self.sequencer.set_bpm(bpm);
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                        }
+                        AudioEngineCommand::SequencerAdjustBpm(delta) => {
+                            self.sequencer.adjust_bpm(delta);
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                        }
+                        AudioEngineCommand::SequencerTapTempo => {
+                            if let Some(_new_bpm) = self.sequencer.tap_tempo() {
+                                self.sync_shared_sequencer();
+                                self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                            }
+                        }
+                        AudioEngineCommand::SequencerSetRecord(rec) => {
+                            self.sequencer.set_recording(rec);
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                        }
+                        AudioEngineCommand::SequencerToggleRecord => {
+                            let _ = self.sequencer.toggle_recording();
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                        }
+                        AudioEngineCommand::SequencerSetStep { pad_index, step_index, velocity } => {
+                            self.sequencer.set_step(pad_index, step_index, velocity);
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::PatternUpdated(self.sequencer.get_active_pattern()));
+                        }
+                        AudioEngineCommand::SequencerToggleStep { pad_index, step_index } => {
+                            self.sequencer.toggle_step(pad_index, step_index);
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::PatternUpdated(self.sequencer.get_active_pattern()));
+                        }
+                        AudioEngineCommand::SequencerClear => {
+                            self.sequencer.clear_pattern();
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::PatternUpdated(self.sequencer.get_active_pattern()));
+                        }
+                        AudioEngineCommand::SequencerSetResolution(res) => {
+                            self.sequencer.set_resolution(res);
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                        }
+                        AudioEngineCommand::SequencerToggleClick => {
+                            let _ = self.sequencer.toggle_click();
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                        }
+                        AudioEngineCommand::SequencerToggleBank => {
+                            let _ = self.sequencer.toggle_bank();
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                            self.send_ui_event(SequencerUiEvent::PatternUpdated(self.sequencer.get_active_pattern()));
+                        }
+                        AudioEngineCommand::SequencerSetSelectedPad(pad_idx) => {
+                            self.sequencer.set_selected_pad(pad_idx);
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                        }
+                        AudioEngineCommand::SequencerClearSelectedTrack => {
+                            self.sequencer.clear_selected_track();
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::PatternUpdated(self.sequencer.get_active_pattern()));
+                        }
+                        AudioEngineCommand::SequencerClearTrack(pad_idx) => {
+                            self.sequencer.clear_track(pad_idx);
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::PatternUpdated(self.sequencer.get_active_pattern()));
+                        }
+                        AudioEngineCommand::SequencerExecuteAction(action) => {
+                            match action {
+                                SequencerAction::Play => {
+                                    self.sequencer.play();
+                                    self.sync_shared_sequencer();
+                                    self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                                }
+                                SequencerAction::Pause => {
+                                    self.sequencer.pause();
+                                    self.sync_shared_sequencer();
+                                    self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                                }
+                                SequencerAction::Stop => {
+                                    self.sequencer.stop();
+                                    self.sync_shared_sequencer();
+                                    let (_b, max_beats) = self.sequencer.get_current_beat();
+                                    self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                                    self.send_ui_event(SequencerUiEvent::Step(SequencerStepEvent {
                                         step: 0,
                                         is_playing: false,
                                         bpm: self.sequencer.bpm,
                                         beat: 1,
                                         max_beats,
-                                    });
+                                    }));
                                 }
-                            }
-                        }
-                        AudioEngineCommand::SequencerTogglePlay => {
-                            let playing = self.sequencer.toggle_play();
-                            if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                if playing { seq.play(); } else { seq.stop(); }
-                            }
-                            let (_b, max_beats) = self.sequencer.get_current_beat();
-                            if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                if let Some(h) = guard.as_ref() {
-                                    let _ = h.emit("sequencer-state-changed", self.sequencer.get_state_info());
+                                SequencerAction::TogglePlay => {
+                                    let playing = self.sequencer.toggle_play();
+                                    self.sync_shared_sequencer();
+                                    let (_b, max_beats) = self.sequencer.get_current_beat();
+                                    self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
                                     if !playing {
-                                        let _ = h.emit("sequencer-step", SequencerStepEvent {
+                                        self.send_ui_event(SequencerUiEvent::Step(SequencerStepEvent {
                                             step: 0,
                                             is_playing: false,
                                             bpm: self.sequencer.bpm,
                                             beat: 1,
                                             max_beats,
-                                        });
+                                        }));
                                     }
                                 }
-                            }
-                        }
-                        AudioEngineCommand::SequencerSetBpm(bpm) => {
-                            self.sequencer.set_bpm(bpm);
-                            if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                seq.set_bpm(bpm);
-                            }
-                            if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                if let Some(h) = guard.as_ref() {
-                                    let _ = h.emit("sequencer-state-changed", self.sequencer.get_state_info());
+                                SequencerAction::ToggleRecord => {
+                                    let _ = self.sequencer.toggle_recording();
+                                    self.sync_shared_sequencer();
+                                    self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
                                 }
-                            }
-                        }
-                        AudioEngineCommand::SequencerAdjustBpm(delta) => {
-                            self.sequencer.adjust_bpm(delta);
-                            if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                seq.adjust_bpm(delta);
-                            }
-                            if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                if let Some(h) = guard.as_ref() {
-                                    let _ = h.emit("sequencer-state-changed", self.sequencer.get_state_info());
+                                SequencerAction::ToggleClick => {
+                                    let _ = self.sequencer.toggle_click();
+                                    self.sync_shared_sequencer();
+                                    self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
                                 }
-                            }
-                        }
-                        AudioEngineCommand::SequencerTapTempo => {
-                            if let Some(new_bpm) = self.sequencer.tap_tempo() {
-                                if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                    seq.set_bpm(new_bpm);
+                                SequencerAction::ToggleBank => {
+                                    let _ = self.sequencer.toggle_bank();
+                                    self.sync_shared_sequencer();
+                                    self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                                    self.send_ui_event(SequencerUiEvent::PatternUpdated(self.sequencer.get_active_pattern()));
                                 }
-                                if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                    if let Some(h) = guard.as_ref() {
-                                        let _ = h.emit("sequencer-state-changed", self.sequencer.get_state_info());
+                                SequencerAction::TapTempo => {
+                                    if let Some(_new_bpm) = self.sequencer.tap_tempo() {
+                                        self.sync_shared_sequencer();
+                                        self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
                                     }
                                 }
-                            }
-                        }
-                        AudioEngineCommand::SequencerSetRecord(rec) => {
-                            self.sequencer.set_recording(rec);
-                            if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                seq.set_recording(rec);
-                            }
-                            if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                if let Some(h) = guard.as_ref() {
-                                    let _ = h.emit("sequencer-state-changed", self.sequencer.get_state_info());
+                                SequencerAction::ClearAll => {
+                                    self.sequencer.clear_pattern();
+                                    self.sync_shared_sequencer();
+                                    self.send_ui_event(SequencerUiEvent::PatternUpdated(self.sequencer.get_active_pattern()));
+                                }
+                                SequencerAction::ClearTrack => {
+                                    self.sequencer.clear_selected_track();
+                                    self.sync_shared_sequencer();
+                                    self.send_ui_event(SequencerUiEvent::PatternUpdated(self.sequencer.get_active_pattern()));
+                                }
+                                SequencerAction::ClearSelectedTrack => {
+                                    self.sequencer.clear_selected_track();
+                                    self.sync_shared_sequencer();
+                                    self.send_ui_event(SequencerUiEvent::PatternUpdated(self.sequencer.get_active_pattern()));
+                                }
+                                SequencerAction::SetResolution(res) => {
+                                    self.sequencer.set_resolution(res);
+                                    self.sync_shared_sequencer();
+                                    self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                                }
+                                SequencerAction::BpmDown => {
+                                    self.sequencer.adjust_bpm(-1.0);
+                                    self.sync_shared_sequencer();
+                                    self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                                }
+                                SequencerAction::BpmUp => {
+                                    self.sequencer.adjust_bpm(1.0);
+                                    self.sync_shared_sequencer();
+                                    self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                                }
+                                SequencerAction::SetBpm => {
+                                    // No-op directo sin parámetro
+                                }
+                                SequencerAction::Requantize => {
+                                    self.sequencer.requantize_pattern();
+                                    self.sync_shared_sequencer();
+                                    self.send_ui_event(SequencerUiEvent::PatternUpdated(self.sequencer.get_active_pattern()));
+                                }
+                                SequencerAction::Undo => {
+                                    if self.sequencer.undo() {
+                                        self.sync_shared_sequencer();
+                                        self.send_ui_event(SequencerUiEvent::PatternUpdated(self.sequencer.get_active_pattern()));
+                                    }
+                                }
+                                SequencerAction::CycleResolution => {
+                                    self.sequencer.toggle_resolution();
+                                    self.sync_shared_sequencer();
+                                    self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                                }
+                                SequencerAction::FxRouteKeys => {
+                                    let current = self.fx_routing;
+                                    let new_routing = match current {
+                                        FxRouting::Keys => FxRouting::Off,
+                                        FxRouting::Both => FxRouting::Pads,
+                                        FxRouting::Pads => FxRouting::Both,
+                                        FxRouting::Off => FxRouting::Keys,
+                                    };
+                                    self.fx_routing = new_routing;
+                                    if let Ok(mut r) = self.shared_fx_routing.try_lock() {
+                                        *r = new_routing;
+                                    }
+                                    self.send_ui_event(SequencerUiEvent::FxRoutingChanged(new_routing));
+                                }
+                                SequencerAction::FxRoutePads => {
+                                    let current = self.fx_routing;
+                                    let new_routing = match current {
+                                        FxRouting::Pads => FxRouting::Off,
+                                        FxRouting::Both => FxRouting::Keys,
+                                        FxRouting::Keys => FxRouting::Both,
+                                        FxRouting::Off => FxRouting::Pads,
+                                    };
+                                    self.fx_routing = new_routing;
+                                    if let Ok(mut r) = self.shared_fx_routing.try_lock() {
+                                        *r = new_routing;
+                                    }
+                                    self.send_ui_event(SequencerUiEvent::FxRoutingChanged(new_routing));
+                                }
+                                SequencerAction::AdvancePage | SequencerAction::CalibrateLatency | SequencerAction::ToggleWorkstationMode | SequencerAction::ToggleVisualMetronome => {
+                                    // No-ops para hilo de audio / notificados directamente a UI
                                 }
                             }
                         }
-                        AudioEngineCommand::SequencerToggleRecord => {
-                            let rec = self.sequencer.toggle_recording();
-                            if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                seq.set_recording(rec);
-                            }
-                            if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                if let Some(h) = guard.as_ref() {
-                                    let _ = h.emit("sequencer-state-changed", self.sequencer.get_state_info());
-                                }
+                        AudioEngineCommand::SequencerSetQuantizeMode(mode) => {
+                            self.sequencer.set_quantize_mode(mode);
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                        }
+                        AudioEngineCommand::SequencerSetQuantizeStrength(strength) => {
+                            self.sequencer.set_quantize_strength(strength);
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                        }
+                        AudioEngineCommand::SequencerRequantize => {
+                            self.sequencer.requantize_pattern();
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::PatternUpdated(self.sequencer.get_active_pattern()));
+                        }
+                        AudioEngineCommand::SequencerSetLatencyCompensation(ticks) => {
+                            self.sequencer.set_latency_compensation_ticks(ticks);
+                            self.sync_shared_sequencer();
+                            self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
+                        }
+                        AudioEngineCommand::SequencerUndo => {
+                            if self.sequencer.undo() {
+                                self.sync_shared_sequencer();
+                                self.send_ui_event(SequencerUiEvent::PatternUpdated(self.sequencer.get_active_pattern()));
                             }
                         }
-                        AudioEngineCommand::SequencerSetStep { pad_index, step_index, velocity } => {
-                            self.sequencer.set_step(pad_index, step_index, velocity);
-                            if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                seq.set_step(pad_index, step_index, velocity);
-                            }
-                            if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                if let Some(h) = guard.as_ref() {
-                                    let _ = h.emit("sequencer-pattern-updated", *self.sequencer.get_active_pattern());
-                                }
-                            }
-                        }
-                        AudioEngineCommand::SequencerToggleStep { pad_index, step_index } => {
-                            self.sequencer.toggle_step(pad_index, step_index);
-                            if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                *seq = self.sequencer.clone();
-                            }
-                            if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                if let Some(h) = guard.as_ref() {
-                                    let _ = h.emit("sequencer-pattern-updated", *self.sequencer.get_active_pattern());
-                                }
-                            }
-                        }
-                        AudioEngineCommand::SequencerClear => {
-                            self.sequencer.clear_pattern();
-                            if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                seq.clear_pattern();
-                            }
-                            if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                if let Some(h) = guard.as_ref() {
-                                    let _ = h.emit("sequencer-pattern-updated", *self.sequencer.get_active_pattern());
-                                }
-                            }
-                        }
-                        AudioEngineCommand::SequencerSetResolution(res) => {
-                            self.sequencer.set_resolution(res);
-                            if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                seq.set_resolution(res);
-                            }
-                            if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                if let Some(h) = guard.as_ref() {
-                                    let _ = h.emit("sequencer-state-changed", self.sequencer.get_state_info());
-                                }
-                            }
-                        }
-                        AudioEngineCommand::SequencerToggleClick => {
-                            let _ = self.sequencer.toggle_click();
-                            if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                let _ = seq.toggle_click();
-                            }
-                            if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                if let Some(h) = guard.as_ref() {
-                                    let _ = h.emit("sequencer-state-changed", self.sequencer.get_state_info());
-                                }
-                            }
-                        }
-                        AudioEngineCommand::SequencerToggleBank => {
-                            let _ = self.sequencer.toggle_bank();
-                            if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                *seq = self.sequencer.clone();
-                            }
-                            if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                if let Some(h) = guard.as_ref() {
-                                    let _ = h.emit("sequencer-state-changed", self.sequencer.get_state_info());
-                                    let _ = h.emit("sequencer-pattern-updated", *self.sequencer.get_active_pattern());
-                                }
-                            }
-                        }
-                        AudioEngineCommand::SequencerToggleSwing => {
-                            let _ = self.sequencer.toggle_swing();
-                            if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                let _ = seq.toggle_swing();
-                            }
-                            if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                if let Some(h) = guard.as_ref() {
-                                    let _ = h.emit("sequencer-state-changed", self.sequencer.get_state_info());
-                                }
-                            }
-                        }
-                        AudioEngineCommand::SequencerSetSelectedPad(pad_idx) => {
-                            self.sequencer.set_selected_pad(pad_idx);
-                            if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                seq.set_selected_pad(pad_idx);
-                            }
-                            if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                if let Some(h) = guard.as_ref() {
-                                    let _ = h.emit("sequencer-state-changed", self.sequencer.get_state_info());
-                                }
-                            }
-                        }
-                        AudioEngineCommand::SequencerClearSelectedTrack => {
-                            self.sequencer.clear_selected_track();
-                            if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                seq.clear_selected_track();
-                            }
-                            if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                if let Some(h) = guard.as_ref() {
-                                    let _ = h.emit("sequencer-pattern-updated", *self.sequencer.get_active_pattern());
-                                }
-                            }
-                        }
-                        AudioEngineCommand::SequencerClearTrack(pad_idx) => {
-                            self.sequencer.clear_track(pad_idx);
-                            if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-                                seq.clear_track(pad_idx);
-                            }
-                            if let Ok(guard) = self.shared_app_handle.try_lock() {
-                                if let Some(h) = guard.as_ref() {
-                                    let _ = h.emit("sequencer-pattern-updated", *self.sequencer.get_active_pattern());
-                                }
-                            }
+                        AudioEngineCommand::SetMidiMute(muted) => {
+                            self.is_midi_muted = muted;
                         }
                     }
                 }
@@ -864,19 +955,15 @@ impl AudioRenderState {
                         }
                     }
 
-                    // Notificar a la UI sobre el paso activo para el metrónomo y la cuadrícula
+                    // Notificar a la UI sobre el paso activo para el metrónomo y la cuadrícula (lock-free)
                     let (beat, max_beats) = self.sequencer.get_current_beat();
-                    if let Ok(guard) = self.shared_app_handle.try_lock() {
-                        if let Some(h) = guard.as_ref() {
-                            let _ = h.emit("sequencer-step", SequencerStepEvent {
-                                step,
-                                is_playing: true,
-                                bpm: self.sequencer.bpm,
-                                beat,
-                                max_beats,
-                            });
-                        }
-                    }
+                    self.send_ui_event(SequencerUiEvent::Step(SequencerStepEvent {
+                        step,
+                        is_playing: true,
+                        bpm: self.sequencer.bpm,
+                        beat,
+                        max_beats,
+                    }));
                 }
             }
         }
@@ -1084,7 +1171,7 @@ fn build_and_start_stream(
     shared_fx_rack: Arc<Mutex<AudioFxRack>>,
     shared_fx_routing: Arc<Mutex<FxRouting>>,
     shared_sequencer: Arc<Mutex<StepSequencer>>,
-    shared_app_handle: Arc<Mutex<Option<AppHandle>>>,
+    ui_event_producer: Arc<Mutex<Option<Producer<SequencerUiEvent>>>>,
     device_invalidated: Arc<AtomicBool>,
 ) -> Result<(Stream, u32, usize), String> {
     let sample_format = supported_config.sample_format();
@@ -1111,7 +1198,7 @@ fn build_and_start_stream(
         shared_fx_rack,
         shared_fx_routing,
         shared_sequencer,
-        shared_app_handle,
+        ui_event_producer,
     );
     state.master_gain = initial_gain;
 
@@ -1165,6 +1252,7 @@ impl AudioEngine {
     pub fn new() -> Self {
         let factory_samples = load_factory_pad_samples(48000);
         let default_drum_sf = load_default_drum_soundfont();
+        let (ui_prod, ui_cons) = RingBuffer::<SequencerUiEvent>::new(128);
 
         Self {
             stream: Arc::new(Mutex::new(StreamHolder(None))),
@@ -1179,6 +1267,9 @@ impl AudioEngine {
             shared_master_gain: Arc::new(Mutex::new(100.0 / 127.0)),
             app_handle: Arc::new(Mutex::new(None)),
             watchdog_started: Arc::new(AtomicBool::new(false)),
+            ui_event_thread_started: Arc::new(AtomicBool::new(false)),
+            ui_event_producer: Arc::new(Mutex::new(Some(ui_prod))),
+            ui_event_consumer: Arc::new(Mutex::new(Some(ui_cons))),
             shared_pad_samples: Arc::new(Mutex::new(factory_samples)),
             shared_pad_modes: Arc::new(Mutex::new([PadPlaybackMode::OneShot; 8])),
             shared_pad_gains: Arc::new(Mutex::new([64.0 / 127.0; 8])),
@@ -1193,7 +1284,49 @@ impl AudioEngine {
     }
 
     pub fn set_app_handle(&self, handle: AppHandle) {
-        *self.app_handle.lock().unwrap() = Some(handle);
+        *self.app_handle.lock().unwrap() = Some(handle.clone());
+        self.spawn_ui_event_dispatcher(handle);
+    }
+
+    fn spawn_ui_event_dispatcher(&self, handle: AppHandle) {
+        if self.ui_event_thread_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        let consumer_mutex = self.ui_event_consumer.clone();
+        std::thread::Builder::new()
+            .name("ui-event-dispatcher".to_string())
+            .spawn(move || {
+                loop {
+                    let mut processed_any = false;
+                    if let Ok(mut cons_guard) = consumer_mutex.try_lock() {
+                        if let Some(consumer) = cons_guard.as_mut() {
+                            while let Ok(event) = consumer.pop() {
+                                processed_any = true;
+                                match event {
+                                    SequencerUiEvent::Step(step_event) => {
+                                        let _ = handle.emit("sequencer-step", step_event);
+                                    }
+                                    SequencerUiEvent::StateChanged(state_info) => {
+                                        let _ = handle.emit("sequencer-state-changed", state_info);
+                                    }
+                                    SequencerUiEvent::PatternUpdated(pattern) => {
+                                        let _ = handle.emit("sequencer-pattern-updated", pattern);
+                                    }
+                                    SequencerUiEvent::FxRoutingChanged(routing) => {
+                                        let _ = handle.emit("fx-routing-changed", routing);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if !processed_any {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                }
+            })
+            .expect("Error al iniciar hilo ui-event-dispatcher");
     }
 
     pub fn get_sequencer_state(&self) -> SequencerStateInfo {
@@ -1315,7 +1448,7 @@ impl AudioEngine {
             self.shared_fx_rack.clone(),
             self.shared_fx_routing.clone(),
             self.shared_sequencer.clone(),
-            self.app_handle.clone(),
+            self.ui_event_producer.clone(),
             self.device_invalidated.clone(),
         )?;
 
@@ -1357,6 +1490,7 @@ impl AudioEngine {
         let shared_fx_rack = self.shared_fx_rack.clone();
         let shared_fx_routing = self.shared_fx_routing.clone();
         let shared_sequencer = self.shared_sequencer.clone();
+        let ui_event_producer = self.ui_event_producer.clone();
         let app_handle = self.app_handle.clone();
 
         std::thread::Builder::new()
@@ -1400,7 +1534,7 @@ impl AudioEngine {
                                         shared_fx_rack.clone(),
                                         shared_fx_routing.clone(),
                                         shared_sequencer.clone(),
-                                        app_handle.clone(),
+                                        ui_event_producer.clone(),
                                         device_invalidated.clone(),
                                     ) {
                                         Ok((new_stream, new_sample_rate, _channels)) => {

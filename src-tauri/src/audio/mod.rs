@@ -13,9 +13,18 @@ pub use fx::{AudioFxRack, FxRouting, KnobMappingInfo, KnobTarget};
 pub use sampler::{PadEngineMode, PadPlaybackMode, PadSampleData, PadSlotInfo};
 #[allow(unused_imports)]
 pub use sequencer::{
-    PatternBank, SequencerBankToggleResult, SequencerStateInfo, SequencerStepEvent, StepResolution,
-    StepSequencer, NUM_PADS, NUM_STEPS,
+    PatternBank, QuantizeMode, SequencerAction, SequencerBankToggleResult, SequencerStateInfo,
+    SequencerStepEvent, StepResolution, StepSequencer, MAX_STEPS, NUM_PADS, NUM_STEPS,
 };
+
+/// Eventos enviados desde el hilo de audio hacia el despachador de UI
+#[derive(Debug, Clone)]
+pub enum SequencerUiEvent {
+    Step(SequencerStepEvent),
+    StateChanged(SequencerStateInfo),
+    PatternUpdated([[u8; MAX_STEPS]; NUM_PADS]),
+    FxRoutingChanged(FxRouting),
+}
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -25,8 +34,8 @@ pub enum AudioEngineCommand {
     ControlChange { controller: u8, value: f32 },
     PitchBend { normalized: i16 },
     SetMasterGain(f32),
-    LoadSoundFont { sound_font: Arc<SoundFont>, patch_number: i32 },
-    SelectPreset { patch_number: i32 },
+    LoadSoundFont { sound_font: Arc<SoundFont>, patch_number: i32, bank_number: i32 },
+    SelectPreset { patch_number: i32, bank_number: i32 },
     // Fase 3: Pad Commands
     PadTrigger { pad_index: usize, velocity: f32 },
     PadRelease { pad_index: usize },
@@ -44,6 +53,7 @@ pub enum AudioEngineCommand {
     SetFxRouting(FxRouting),
     // Fase 5: Sequencer Commands
     SequencerPlay,
+    SequencerPause,
     SequencerStop,
     SequencerTogglePlay,
     SequencerSetBpm(f32),
@@ -57,10 +67,16 @@ pub enum AudioEngineCommand {
     SequencerSetResolution(StepResolution),
     SequencerToggleClick,
     SequencerToggleBank,
-    SequencerToggleSwing,
     SequencerSetSelectedPad(usize),
     SequencerClearSelectedTrack,
     SequencerClearTrack(usize),
+    SequencerExecuteAction(SequencerAction),
+    SequencerSetQuantizeMode(QuantizeMode),
+    SequencerSetQuantizeStrength(f32),
+    SequencerRequantize,
+    SequencerSetLatencyCompensation(i32),
+    SequencerUndo,
+    SetMidiMute(bool),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

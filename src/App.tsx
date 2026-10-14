@@ -19,6 +19,7 @@ import {
   SequencerStateInfo,
   SequencerStepEvent,
   StepResolution,
+  QuantizeMode,
   PatternBank,
 } from "./types/sampler";
 
@@ -72,15 +73,18 @@ export default function App() {
   // Estados del Secuenciador Rítmico (Fase 5 - 16 Pasos, Bancos A/B y Clic Hardware)
   const [sequencerState, setSequencerState] = useState<SequencerStateInfo>({
     isPlaying: false,
+    isPaused: false,
     isRecording: false,
     bpm: 120,
     currentStep: 0,
-    resolution: "eighth",
+    resolution: "sixteenth",
     currentBank: "a",
     isClickEnabled: false,
-    isSwingEnabled: false,
     selectedPad: 0,
-    pattern: Array.from({ length: 8 }, () => Array(16).fill(0)),
+    quantizeMode: "sixteenth",
+    quantizeStrength: 1.0,
+    latencyCompensationTicks: 0,
+    pattern: Array.from({ length: 8 }, () => Array(32).fill(0)),
   });
 
   const [isVisualMetronomeVisible, setIsVisualMetronomeVisible] = useState<boolean>(false);
@@ -113,12 +117,38 @@ export default function App() {
 
   useEffect(() => {
     invoke<AudioStatusInfo>("get_audio_status")
-      .then(setAudioStatus)
+      .then((status) => {
+        setAudioStatus(status);
+        const devName = status?.deviceName || status?.device_name;
+        if (devName) {
+          try {
+            const saved = JSON.parse(localStorage.getItem("impact_sampler_latency_by_device") || "{}");
+            if (saved[devName] !== undefined) {
+              const ticks = saved[devName];
+              invoke("sequencer_set_latency_compensation", { ticks }).catch(console.error);
+              setSequencerState((prev) => ({ ...prev, latencyCompensationTicks: ticks }));
+            }
+          } catch (_) {}
+        }
+      })
       .catch(console.error);
 
     const unlistenAudio = listen("audio-status-changed", () => {
       invoke<AudioStatusInfo>("get_audio_status")
-        .then(setAudioStatus)
+        .then((status) => {
+          setAudioStatus(status);
+          const devName = status?.deviceName || status?.device_name;
+          if (devName) {
+            try {
+              const saved = JSON.parse(localStorage.getItem("impact_sampler_latency_by_device") || "{}");
+              if (saved[devName] !== undefined) {
+                const ticks = saved[devName];
+                invoke("sequencer_set_latency_compensation", { ticks }).catch(console.error);
+                setSequencerState((prev) => ({ ...prev, latencyCompensationTicks: ticks }));
+              }
+            } catch (_) {}
+          }
+        })
         .catch(console.error);
     });
 
@@ -181,6 +211,9 @@ export default function App() {
     let unlistenState: (() => void) | undefined;
     let unlistenPattern: (() => void) | undefined;
     let unlistenToggleVisualMetronome: (() => void) | undefined;
+    let unlistenAdvancePage: (() => void) | undefined;
+    let unlistenToggleWorkstation: (() => void) | undefined;
+    let unlistenFxRouting: (() => void) | undefined;
 
     listen<SequencerStepEvent>("sequencer-step", (event) => {
       setSequencerState((prev) => ({
@@ -216,6 +249,25 @@ export default function App() {
       unlistenToggleVisualMetronome = un;
     });
 
+    listen("sequencer-advance-page", () => {
+      // Disparar evento personalizado de avance de página
+      window.dispatchEvent(new CustomEvent("midi-advance-page"));
+    }).then((un) => {
+      unlistenAdvancePage = un;
+    });
+
+    listen("toggle-workstation-mode", () => {
+      setWorkstationMode((prev) => (prev === "keys" ? "seq" : "keys"));
+    }).then((un) => {
+      unlistenToggleWorkstation = un;
+    });
+
+    listen<FxRouting>("fx-routing-changed", (event) => {
+      setFxRouting(event.payload);
+    }).then((un) => {
+      unlistenFxRouting = un;
+    });
+
     // Atajo de teclado: Barra espaciadora para Play/Pause
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
@@ -233,9 +285,32 @@ export default function App() {
       if (unlistenState) unlistenState();
       if (unlistenPattern) unlistenPattern();
       if (unlistenToggleVisualMetronome) unlistenToggleVisualMetronome();
+      if (unlistenAdvancePage) unlistenAdvancePage();
+      if (unlistenToggleWorkstation) unlistenToggleWorkstation();
+      if (unlistenFxRouting) unlistenFxRouting();
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, []);
+
+  const refreshSoundfonts = async () => {
+    try {
+      const sfs = await invoke<SoundFontInfo[]>("list_soundfonts");
+      const order = ["piano", "rhodes", "mellotron", "rx7"];
+      const sorted = [...sfs].sort((a, b) => {
+        if (!a.isUser && !b.isUser) {
+          const idxA = order.findIndex((k) => a.filename.toLowerCase().includes(k));
+          const idxB = order.findIndex((k) => b.filename.toLowerCase().includes(k));
+          return (idxA === -1 ? 99 : idxA) - (idxB === -1 ? 99 : idxB);
+        }
+        if (!a.isUser && b.isUser) return -1;
+        if (a.isUser && !b.isUser) return 1;
+        return a.displayName.localeCompare(b.displayName);
+      });
+      setAvailableSoundfonts(sorted.length > 0 ? sorted : sfs);
+    } catch (err) {
+      console.error("Error al actualizar lista de soundfonts:", err);
+    }
+  };
 
   const handleSelectSoundfont = async (filename: string) => {
     try {
@@ -251,15 +326,39 @@ export default function App() {
       } else {
         setWorkstationMode("keys");
       }
+
+      setIsInstrumentModalOpen(false);
     } catch (err) {
       console.error("Error al cargar SoundFont:", err);
       throw err;
     }
   };
 
-  const handleSelectPreset = async (patch: number, index: number) => {
+  const handleImportSoundfont = async () => {
     try {
-      await invoke("select_soundfont_preset", { patchNumber: patch });
+      const imported = await invoke<SoundFontInfo | null>("pick_and_import_soundfont");
+      if (imported) {
+        await refreshSoundfonts();
+        await handleSelectSoundfont(imported.filename);
+      }
+    } catch (err) {
+      console.error("Error al importar SoundFont:", err);
+    }
+  };
+
+  const handleDeleteSoundfont = async (filename: string) => {
+    try {
+      await invoke("remove_user_soundfont", { filename });
+      await refreshSoundfonts();
+    } catch (err) {
+      console.error("Error al eliminar SoundFont:", err);
+    }
+  };
+
+  const handleSelectPreset = async (patch: number, index: number, bank?: number) => {
+    try {
+      const bankNumber = bank ?? (currentSoundfont?.presets[index]?.bank ?? 0);
+      await invoke("select_soundfont_preset", { patchNumber: patch, bankNumber });
       setActivePresetIndex(index);
     } catch (err) {
       console.error("Error al seleccionar preset:", err);
@@ -398,11 +497,27 @@ export default function App() {
             const padEl = el?.closest("[data-pad-slot]");
             setHoveredDropPad(null);
 
-            if (padEl && payload.paths.length > 0) {
-              const slot = parseInt(padEl.getAttribute("data-pad-slot") || "-1", 10);
+            if (payload.paths.length > 0) {
               const path = payload.paths[0];
-              if (slot >= 0 && slot < 8 && path.toLowerCase().endsWith(".wav")) {
-                handleDropFileOnPad(slot, path);
+              // Si se arrastra un archivo .sf2 en cualquier parte de la ventana
+              if (path.toLowerCase().endsWith(".sf2")) {
+                invoke<SoundFontInfo>("import_soundfont_from_path", { filePath: path })
+                  .then((imported) => {
+                    refreshSoundfonts();
+                    handleSelectSoundfont(imported.filename);
+                  })
+                  .catch((err) => {
+                    console.error("Error al importar soundfont arrastrado:", err);
+                  });
+                return;
+              }
+
+              // Si se arrastra un .wav sobre un slot de pad
+              if (padEl) {
+                const slot = parseInt(padEl.getAttribute("data-pad-slot") || "-1", 10);
+                if (slot >= 0 && slot < 8 && path.toLowerCase().endsWith(".wav")) {
+                  handleDropFileOnPad(slot, path);
+                }
               }
             }
           } else if (payload.type === "leave") {
@@ -517,7 +632,7 @@ export default function App() {
       await invoke("sequencer_clear");
       setSequencerState((prev) => ({
         ...prev,
-        pattern: Array.from({ length: 8 }, () => Array(16).fill(0)),
+        pattern: Array.from({ length: 8 }, () => Array(32).fill(0)),
       }));
     } catch (err) {
       console.error("Error al limpiar secuenciador:", err);
@@ -561,15 +676,6 @@ export default function App() {
     }
   };
 
-  const handleSequencerToggleSwing = async () => {
-    try {
-      const isSwingEnabled = await invoke<boolean>("sequencer_toggle_swing");
-      setSequencerState((prev) => ({ ...prev, isSwingEnabled }));
-    } catch (err) {
-      console.error("Error al alternar swing:", err);
-    }
-  };
-
   const handleSequencerSelectPad = async (padIdx: number) => {
     try {
       await invoke("sequencer_set_selected_pad", { padIndex: padIdx });
@@ -604,6 +710,49 @@ export default function App() {
     setTimeout(() => {
       triggerVirtualPad(padIdx + 1, 36 + padIdx, false);
     }, 120);
+  };
+
+  const handleSequencerSetQuantizeMode = async (mode: QuantizeMode) => {
+    try {
+      await invoke("sequencer_set_quantize_mode", { mode });
+      setSequencerState((prev) => ({ ...prev, quantizeMode: mode }));
+    } catch (err) {
+      console.error("Error al cambiar modo de cuantización:", err);
+    }
+  };
+
+  const handleSequencerSetQuantizeStrength = async (strength: number) => {
+    try {
+      await invoke("sequencer_set_quantize_strength", { strength });
+      setSequencerState((prev) => ({ ...prev, quantizeStrength: strength }));
+    } catch (err) {
+      console.error("Error al cambiar fuerza de cuantización:", err);
+    }
+  };
+
+  const handleSequencerRequantize = async () => {
+    try {
+      await invoke("sequencer_requantize");
+    } catch (err) {
+      console.error("Error al re-cuantizar patrón:", err);
+    }
+  };
+
+  const handleSequencerSetLatencyCompensation = async (ticks: number) => {
+    try {
+      await invoke("sequencer_set_latency_compensation", { ticks });
+      setSequencerState((prev) => ({ ...prev, latencyCompensationTicks: ticks }));
+    } catch (err) {
+      console.error("Error al configurar compensación de latencia:", err);
+    }
+  };
+
+  const handleSequencerUndo = async () => {
+    try {
+      await invoke("sequencer_undo");
+    } catch (err) {
+      console.error("Error al deshacer acción en secuenciador:", err);
+    }
   };
 
   const activePortName =
@@ -754,7 +903,6 @@ export default function App() {
               onTriggerPad={handleSequencerTriggerPad}
               onToggleClick={handleSequencerToggleClick}
               onToggleBank={handleSequencerToggleBank}
-              onToggleSwing={handleSequencerToggleSwing}
               onClearSelectedTrack={handleSequencerClearSelectedTrack}
               onClearTrack={handleSequencerClearSelectedTrack}
               onSelectPad={handleSequencerSelectPad}
@@ -764,6 +912,10 @@ export default function App() {
               selectedLearnTarget={selectedLearnTarget}
               onSelectLearnTarget={setSelectedLearnTarget}
               midiLearnMapping={midiLearnMapping}
+              onSetQuantizeMode={handleSequencerSetQuantizeMode}
+              onSetQuantizeStrength={handleSequencerSetQuantizeStrength}
+              onRequantize={handleSequencerRequantize}
+              onUndo={handleSequencerUndo}
             />
           </HardwareSkeleton>
         </div>
@@ -776,6 +928,8 @@ export default function App() {
         availableSoundfonts={availableSoundfonts}
         currentSoundfont={currentSoundfont}
         onSelectSoundfont={handleSelectSoundfont}
+        onImportSoundfont={handleImportSoundfont}
+        onDeleteSoundfont={handleDeleteSoundfont}
         onClose={() => setIsInstrumentModalOpen(false)}
       />
 
@@ -787,6 +941,9 @@ export default function App() {
         onRefreshMidi={refreshPorts}
         onSelectPort={selectPort}
         onResetMidiMappings={resetMidiMappings}
+        latencyCompensationTicks={sequencerState.latencyCompensationTicks}
+        onSetLatencyCompensation={handleSequencerSetLatencyCompensation}
+        activePortName={activePortName}
       />
 
       {/* Splash Inicial de 3 Segundos Noir con Revelado Cinematográfico */}

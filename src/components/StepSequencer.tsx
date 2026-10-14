@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect } from "react";
 import { ChevronDown, ChevronRight, Check, FolderOpen, RotateCcw, Eraser, Trash2, Music } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { PadSlotInfo, PadEngineMode, SequencerStateInfo, StepResolution } from "../types/sampler";
-import { MidiLearnTarget, MidiLearnMapping, getMidiNoteName } from "../types/midiLearn";
+import { PadSlotInfo, PadEngineMode, QuantizeMode, SequencerStateInfo, StepResolution } from "../types/sampler";
+import { MidiLearnTarget, MidiLearnMapping, getMidiNoteName, getActionMappingLabel } from "../types/midiLearn";
 
 export interface Sf2DrumSample {
   note: number;
@@ -174,7 +174,6 @@ interface StepSequencerProps {
   onTriggerPad?: (padIdx: number) => void;
   onToggleClick?: () => void;
   onToggleBank?: () => void;
-  onToggleSwing?: () => void;
   onClearSelectedTrack?: (padIdx?: number) => void;
   onClearTrack?: (padIdx: number) => void;
   onSelectPad?: (padIdx: number) => void;
@@ -186,6 +185,10 @@ interface StepSequencerProps {
   selectedLearnTarget?: MidiLearnTarget | null;
   onSelectLearnTarget?: (target: MidiLearnTarget) => void;
   midiLearnMapping?: MidiLearnMapping;
+  onSetQuantizeMode?: (mode: QuantizeMode) => void;
+  onSetQuantizeStrength?: (strength: number) => void;
+  onRequantize?: () => void;
+  onUndo?: () => void;
 }
 
 const DRUM_KIT_NAMES = [
@@ -312,7 +315,6 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
   onTriggerPad,
   onToggleClick,
   onToggleBank,
-  onToggleSwing,
   onClearSelectedTrack,
   onClearTrack,
   onSelectPad,
@@ -322,9 +324,14 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
   selectedLearnTarget = null,
   onSelectLearnTarget,
   midiLearnMapping,
+  onSetQuantizeMode,
+  onSetQuantizeStrength,
+  onRequantize,
+  onUndo,
 }) => {
   const {
     isPlaying,
+    isPaused,
     isRecording,
     bpm,
     currentStep,
@@ -332,8 +339,9 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
     pattern,
     currentBank = "a",
     isClickEnabled = false,
-    isSwingEnabled = false,
     selectedPad = 0,
+    quantizeMode = "sixteenth",
+    quantizeStrength = 1.0,
   } = sequencerState;
 
   const [isEditingBpm, setIsEditingBpm] = useState(false);
@@ -349,8 +357,67 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
   const [drumNotes, setDrumNotes] = useState<number[]>([36, 38, 42, 46, 39, 45, 48, 49]);
   const [customDrumNames, setCustomDrumNames] = useState<Record<number, string>>({});
   const [localDragOverPad, setLocalDragOverPad] = useState<number | null>(null);
+  const [activePage, setActivePage] = useState<0 | 1>(0);
 
-  // Cargar notas de batería activas desde el backend
+  // Auto-sincronizar página visual durante la reproducción en 1/32
+  useEffect(() => {
+    if (isPlaying && resolution === "thirtySecond") {
+      const targetPage = (currentStep < 16 ? 0 : 1) as 0 | 1;
+      setActivePage(targetPage);
+    }
+  }, [isPlaying, currentStep, resolution]);
+
+  // Resetear a página 0 si la resolución ya no es 1/32
+  useEffect(() => {
+    if (resolution !== "thirtySecond") {
+      setActivePage(0);
+    }
+  }, [resolution]);
+
+  // Alternar página 1/2 vía evento disparado por botón físico MIDI
+  useEffect(() => {
+    const handleMidiPage = () => {
+      setActivePage((prev) => (prev === 0 ? 1 : 0));
+    };
+    window.addEventListener("midi-advance-page", handleMidiPage);
+    return () => window.removeEventListener("midi-advance-page", handleMidiPage);
+  }, []);
+
+  // Menú selector de Resolución Grid
+  const [isGridMenuOpen, setIsGridMenuOpen] = useState(false);
+  const gridMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (gridMenuRef.current && !gridMenuRef.current.contains(event.target as Node)) {
+        setIsGridMenuOpen(false);
+      }
+    };
+    if (isGridMenuOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [isGridMenuOpen]);
+
+  // Popover selector de Cuantización (Q)
+  const [isQMenuOpen, setIsQMenuOpen] = useState(false);
+  const qMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (qMenuRef.current && !qMenuRef.current.contains(event.target as Node)) {
+        setIsQMenuOpen(false);
+      }
+    };
+    if (isQMenuOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [isQMenuOpen]);
   useEffect(() => {
     invoke<number[]>("get_drum_pad_notes")
       .then((notes) => {
@@ -571,11 +638,18 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                 {/* 16 Botones de Paso TR-Style (Cuerpo Mecánico Biselado + Lente LED Interno) */}
                 <div className="flex-1 flex items-center gap-1">
                   {STEPS_ARRAY.map((stepIdx) => {
-                    const velocity = pattern[padIdx]?.[stepIdx] || 0;
+                    const actualStep = resolution === "thirtySecond" ? activePage * 16 + stepIdx : stepIdx;
+                    const isStepDisabled = resolution === "eighth" && stepIdx >= 8;
+                    const velocity = isStepDisabled ? 0 : pattern[padIdx]?.[actualStep] || 0;
                     const isActive = velocity > 0;
-                    const isPlayhead = isPlaying && currentStep === stepIdx;
+                    const isPlayhead = (isPlaying || isPaused) && currentStep === actualStep && !isStepDisabled;
                     const isGroupDivider = stepIdx > 0 && stepIdx % 4 === 0;
-                    const isBeatStart = stepIdx % 4 === 0;
+                    const isBeatStart =
+                      resolution === "eighth"
+                        ? stepIdx % 2 === 0
+                        : resolution === "thirtySecond"
+                        ? actualStep % 8 === 0
+                        : stepIdx % 4 === 0;
                     const isEvenGroup = Math.floor(stepIdx / 4) % 2 === 0;
 
                     return (
@@ -583,38 +657,55 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                         {isGroupDivider && <div className="w-1.5" />}
                         <button
                           type="button"
-                          onClick={() => onToggleStep(padIdx, stepIdx)}
-                          className={`flex-1 min-w-[22px] sm:min-w-[26px] h-9 sm:h-9.5 rounded-[4px] font-mono text-[9.5px] transition-all relative overflow-hidden active:scale-95 cursor-pointer ${
-                            isActive
+                          disabled={isStepDisabled}
+                          onClick={() => {
+                            if (!isStepDisabled) {
+                              onToggleStep(padIdx, actualStep);
+                            }
+                          }}
+                          className={`flex-1 min-w-[22px] sm:min-w-[26px] h-9 sm:h-9.5 rounded-[4px] font-mono text-[9.5px] transition-all relative overflow-hidden active:scale-95 ${
+                            isStepDisabled
+                              ? "opacity-15 bg-[#090a0d] border border-white/[0.04] cursor-not-allowed pointer-events-none"
+                              : isActive
                               ? isPlayhead
-                                ? "bg-emerald-300 text-black border border-white shadow-[0_0_20px_#ffffff] z-10 brightness-110"
-                                : "bg-gradient-to-b from-[#3a2f1c] via-[#2a2113] to-[#18130a] border-x border-[#0e0c07] border-t border-amber-500/70 border-b-[3px] border-b-[#090704] shadow-[0_3px_6px_rgba(0,0,0,0.8),inset_0_0_12px_rgba(245,158,11,0.35)] hover:brightness-125"
+                                ? isPaused
+                                  ? "bg-amber-300 text-black border border-amber-200 shadow-[0_0_16px_rgba(245,158,11,0.8)] z-10 brightness-105 cursor-pointer"
+                                  : "bg-emerald-300 text-black border border-white shadow-[0_0_20px_#ffffff] z-10 brightness-110 cursor-pointer"
+                                : "bg-gradient-to-b from-[#3a2f1c] via-[#2a2113] to-[#18130a] border-x border-[#0e0c07] border-t border-amber-500/70 border-b-[3px] border-b-[#090704] shadow-[0_3px_6px_rgba(0,0,0,0.8),inset_0_0_12px_rgba(245,158,11,0.35)] hover:brightness-125 cursor-pointer"
                               : isPlayhead
-                              ? "bg-[#282d38] border border-emerald-400/80 shadow-[0_0_12px_rgba(16,185,129,0.4)]"
+                              ? isPaused
+                                ? "bg-[#332b1f] border border-amber-400/80 shadow-[0_0_12px_rgba(245,158,11,0.5)] cursor-pointer"
+                                : "bg-[#282d38] border border-emerald-400/80 shadow-[0_0_12px_rgba(16,185,129,0.4)] cursor-pointer"
                               : isEvenGroup
-                              ? "bg-gradient-to-b from-[#2a2d36] via-[#1e2027] to-[#14151a] border-x border-[#0e0f13] border-t border-white/[0.12] border-b-[3px] border-b-[#0a0b0e] shadow-[0_3px_6px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.06)] hover:brightness-125"
-                              : "bg-gradient-to-b from-[#21232b] via-[#17181e] to-[#0f1014] border-x border-[#0b0c0f] border-t border-white/[0.08] border-b-[3px] border-b-[#07080a] shadow-[0_3px_6px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.04)] hover:brightness-125"
+                              ? "bg-gradient-to-b from-[#2a2d36] via-[#1e2027] to-[#14151a] border-x border-[#0e0f13] border-t border-white/[0.12] border-b-[3px] border-b-[#0a0b0e] shadow-[0_3px_6px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.06)] hover:brightness-125 cursor-pointer"
+                              : "bg-gradient-to-b from-[#21232b] via-[#17181e] to-[#0f1014] border-x border-[#0b0c0f] border-t border-white/[0.08] border-b-[3px] border-b-[#07080a] shadow-[0_3px_6px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.04)] hover:brightness-125 cursor-pointer"
                           }`}
                         >
                           {/* Lente Óptica LED Interna Centrada */}
-                          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                            <span
-                              className={`w-4 h-1.5 rounded-sm transition-all ${
-                                isActive
-                                  ? isPlayhead
-                                    ? "bg-white shadow-[0_0_16px_#ffffff] scale-110"
-                                    : "bg-amber-400 shadow-[0_0_10px_#f59e0b,0_0_20px_rgba(245,158,11,0.9)]"
-                                  : isPlayhead
-                                  ? "bg-emerald-400 shadow-[0_0_10px_#10b981]"
-                                  : isBeatStart
-                                  ? "bg-white/35"
-                                  : "bg-white/10"
-                              }`}
-                            />
-                          </div>
+                          {!isStepDisabled && (
+                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                              <span
+                                className={`w-4 h-1.5 rounded-sm transition-all ${
+                                  isActive
+                                    ? isPlayhead
+                                      ? isPaused
+                                        ? "bg-amber-200 shadow-[0_0_12px_#f59e0b] scale-110"
+                                        : "bg-white shadow-[0_0_16px_#ffffff] scale-110"
+                                      : "bg-amber-400 shadow-[0_0_10px_#f59e0b,0_0_20px_rgba(245,158,11,0.9)]"
+                                    : isPlayhead
+                                    ? isPaused
+                                      ? "bg-amber-400 shadow-[0_0_10px_#f59e0b]"
+                                      : "bg-emerald-400 shadow-[0_0_10px_#10b981]"
+                                    : isBeatStart
+                                    ? "bg-white/35"
+                                    : "bg-white/10"
+                                }`}
+                              />
+                            </div>
+                          )}
 
                           {/* Marca táctil superior de Downbeat */}
-                          {isBeatStart && !isActive && (
+                          {isBeatStart && !isActive && !isStepDisabled && (
                             <span className="absolute top-1 left-1/2 -translate-x-1/2 w-1.5 h-0.5 rounded-full bg-white/35 pointer-events-none" />
                           )}
                         </button>
@@ -633,32 +724,56 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
         {/* Lado Izquierdo: [ KEYS ] / [ SEQ ] + Kit + Banco A/B + Resolución + Extras */}
         <div className="flex items-center gap-2 shrink-0">
           {/* Conmutador Físico de Modo Compacto KEYS / SEQ */}
-          <div className="flex items-center bg-[#040406] border border-white/15 rounded-md p-0.5 shadow-[inset_0_1px_3px_rgba(0,0,0,0.8)]">
-            <button
-              type="button"
-              onClick={() => onChangeViewMode?.("keys")}
-              title="Modo Teclado"
-              className={`px-2.5 py-1 rounded font-mono text-[9.5px] font-bold tracking-wider transition-all cursor-pointer ${
-                !isSeqOpen
-                  ? "bg-gradient-to-b from-cyan-400 to-cyan-600 text-black shadow-[0_0_12px_rgba(6,182,212,0.6)] font-black"
-                  : "text-zinc-400 hover:text-white hover:bg-white/5"
-              }`}
-            >
-              KEYS
-            </button>
-            <button
-              type="button"
-              onClick={() => onChangeViewMode?.("seq")}
-              title="Modo Secuenciador"
-              className={`px-2.5 py-1 rounded font-mono text-[9.5px] font-bold tracking-wider transition-all cursor-pointer ${
-                isSeqOpen
-                  ? "bg-gradient-to-b from-amber-400 to-amber-600 text-black shadow-[0_0_12px_rgba(245,158,11,0.6)] font-black"
-                  : "text-zinc-400 hover:text-white hover:bg-white/5"
-              }`}
-            >
-              SEQ
-            </button>
-          </div>
+          {(() => {
+            const isWsSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "workstationMode";
+            const wsMapped = getActionMappingLabel(midiLearnMapping, "workstationMode");
+            return (
+              <div
+                onClick={() => {
+                  if (isMidiLearnActive) {
+                    onSelectLearnTarget?.({ type: "action", id: "workstationMode" });
+                  }
+                }}
+                className={`flex items-center bg-[#040406] border rounded-md p-0.5 shadow-[inset_0_1px_3px_rgba(0,0,0,0.8)] ${
+                  isWsSelected
+                    ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse"
+                    : isMidiLearnActive
+                    ? "border-amber-500/60 hover:border-amber-400"
+                    : "border-white/15"
+                }`}
+                title={
+                  isMidiLearnActive
+                    ? `Vista Workstation: ${wsMapped ? `Asignado (${wsMapped})` : "Sin asignar"}`
+                    : undefined
+                }
+              >
+                <button
+                  type="button"
+                  onClick={() => !isMidiLearnActive && onChangeViewMode?.("keys")}
+                  title={isMidiLearnActive ? undefined : "Modo Teclado"}
+                  className={`px-2.5 py-1 rounded font-mono text-[9.5px] font-bold tracking-wider transition-all cursor-pointer ${
+                    !isSeqOpen
+                      ? "bg-gradient-to-b from-cyan-400 to-cyan-600 text-black shadow-[0_0_12px_rgba(6,182,212,0.6)] font-black"
+                      : "text-zinc-400 hover:text-white hover:bg-white/5"
+                  }`}
+                >
+                  KEYS
+                </button>
+                <button
+                  type="button"
+                  onClick={() => !isMidiLearnActive && onChangeViewMode?.("seq")}
+                  title={isMidiLearnActive ? undefined : "Modo Secuenciador"}
+                  className={`px-2.5 py-1 rounded font-mono text-[9.5px] font-bold tracking-wider transition-all cursor-pointer ${
+                    isSeqOpen
+                      ? "bg-gradient-to-b from-amber-400 to-amber-600 text-black shadow-[0_0_12px_rgba(245,158,11,0.6)] font-black"
+                      : "text-zinc-400 hover:text-white hover:bg-white/5"
+                  }`}
+                >
+                  SEQ
+                </button>
+              </div>
+            );
+          })()}
 
           <div className="h-4 w-[1px] bg-white/10 mx-0.5" />
 
@@ -728,89 +843,343 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
           </div>
 
           {/* Selector de Banco Compacto: A / B */}
-          <button
-            type="button"
-            onClick={onToggleBank}
-            title={`Cambiar Banco (Actual: ${currentBank.toUpperCase()})`}
-            className={`h-7 px-2.5 rounded-md text-[9.5px] font-mono font-bold tracking-wider border transition-all active:scale-95 shadow-[inset_0_1px_0_rgba(255,255,255,0.1),0_2px_4px_rgba(0,0,0,0.5)] cursor-pointer flex items-center gap-1.5 ${
-              currentBank === "b"
-                ? "bg-purple-900/40 text-purple-200 border-purple-500/60 shadow-[0_0_8px_rgba(168,85,247,0.4)]"
-                : "bg-cyan-950/40 text-cyan-200 border-cyan-500/60 shadow-[0_0_8px_rgba(6,182,212,0.4)]"
-            }`}
-          >
-            <span className="text-zinc-400 font-semibold text-[9px] tracking-wider">BANK</span>
-            <span>{currentBank.toUpperCase()}</span>
-          </button>
+          {(() => {
+            const isBankSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "bank";
+            const bankMapped = getActionMappingLabel(midiLearnMapping, "bank");
+            return (
+              <button
+                type="button"
+                onClick={() => {
+                  if (isMidiLearnActive) {
+                    onSelectLearnTarget?.({ type: "action", id: "bank" });
+                    return;
+                  }
+                  onToggleBank?.();
+                }}
+                title={
+                  isMidiLearnActive
+                    ? `Banco A/B: ${bankMapped ? `Asignado (${bankMapped})` : "Sin asignar"}`
+                    : `Cambiar Banco (Actual: ${currentBank.toUpperCase()})`
+                }
+                className={`h-7 px-2.5 rounded-md text-[9.5px] font-mono font-bold tracking-wider border transition-all active:scale-95 shadow-[inset_0_1px_0_rgba(255,255,255,0.1),0_2px_4px_rgba(0,0,0,0.5)] cursor-pointer flex items-center gap-1.5 ${
+                  isBankSelected
+                    ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                    : isMidiLearnActive
+                    ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                    : currentBank === "b"
+                    ? "bg-purple-900/40 text-purple-200 border-purple-500/60 shadow-[0_0_8px_rgba(168,85,247,0.4)]"
+                    : "bg-cyan-950/40 text-cyan-200 border-cyan-500/60 shadow-[0_0_8px_rgba(6,182,212,0.4)]"
+                }`}
+              >
+                <span className="text-zinc-400 font-semibold text-[9px] tracking-wider">BANK</span>
+                <span>{currentBank.toUpperCase()}</span>
+              </button>
+            );
+          })()}
 
-          {/* Selector de Resolución Compacto con Dropdown / Toggle Cíclico */}
-          <div className="relative">
+          {/* Selector de Resolución con Menú Desplegable Flotante hacia arriba */}
+          {(() => {
+            const isGridSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "grid";
+            const gridMapped = getActionMappingLabel(midiLearnMapping, "grid");
+            return (
+              <div ref={gridMenuRef} className="relative z-50">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isMidiLearnActive) {
+                      onSelectLearnTarget?.({ type: "action", id: "grid" });
+                      return;
+                    }
+                    setIsGridMenuOpen(!isGridMenuOpen);
+                  }}
+                  title={
+                    isMidiLearnActive
+                      ? `Resolución Grilla: ${gridMapped ? `Asignado (${gridMapped})` : "Sin asignar"}`
+                      : "Seleccionar Resolución de Grilla"
+                  }
+                  className={`h-7 px-2.5 rounded-md text-[9.5px] font-mono font-bold flex items-center gap-1.5 shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)] cursor-pointer transition select-none ${
+                    isGridSelected
+                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                      : isMidiLearnActive
+                      ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                      : "bg-[#040406] hover:bg-[#121318] border border-white/15 hover:border-emerald-500/60 text-emerald-400"
+                  }`}
+                >
+                  <span className="text-zinc-400 text-[9px] font-semibold tracking-wider">GRID:</span>
+                  <span>{resolution === "eighth" ? "1/8" : resolution === "sixteenth" ? "1/16" : "1/32"}</span>
+                  <ChevronDown
+                    size={11}
+                    className={`text-zinc-400 transition-transform duration-150 ${
+                      isGridMenuOpen ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
+
+                {/* Menú Desplegable Flotante hacia arriba */}
+                {isGridMenuOpen && (
+                  <div className="absolute bottom-full mb-2 left-0 z-50 w-48 bg-[#0d0e12] border border-white/20 rounded-xl shadow-[0_15px_40px_rgba(0,0,0,0.95),0_0_1px_1px_rgba(255,255,255,0.08)] py-1 text-xs font-mono text-zinc-200 animate-in fade-in zoom-in-95 duration-100">
+                    <div className="px-3 py-1 text-[9px] uppercase font-bold tracking-wider text-zinc-400 border-b border-white/10 mb-1">
+                      Resolución de Grilla
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onChangeResolution("eighth");
+                        setIsGridMenuOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors cursor-pointer text-[10px] ${
+                        resolution === "eighth"
+                          ? "bg-emerald-500/20 text-emerald-400 font-bold"
+                          : "hover:bg-white/5 hover:text-white"
+                      }`}
+                    >
+                      <span>1/8 (Corcheas - 8 pasos)</span>
+                      {resolution === "eighth" && <Check size={12} className="text-emerald-400" />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onChangeResolution("sixteenth");
+                        setIsGridMenuOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors cursor-pointer text-[10px] ${
+                        resolution === "sixteenth"
+                          ? "bg-emerald-500/20 text-emerald-400 font-bold"
+                          : "hover:bg-white/5 hover:text-white"
+                      }`}
+                    >
+                      <span>1/16 (Semicorcheas - 16 pasos)</span>
+                      {resolution === "sixteenth" && <Check size={12} className="text-emerald-400" />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onChangeResolution("thirtySecond");
+                        setIsGridMenuOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors cursor-pointer text-[10px] ${
+                        resolution === "thirtySecond"
+                          ? "bg-emerald-500/20 text-emerald-400 font-bold"
+                          : "hover:bg-white/5 hover:text-white"
+                      }`}
+                    >
+                      <span>1/32 (Fusas - 32 pasos / 2 págs)</span>
+                      {resolution === "thirtySecond" && <Check size={12} className="text-emerald-400" />}
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* Selector de Página Minimalista para Grilla 1/32 (1 / 2) */}
+          {(() => {
+            const isPageSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "page";
+            const pageMapped = getActionMappingLabel(midiLearnMapping, "page");
+            return (
+              resolution === "thirtySecond" && (
+                <div
+                  onClick={() => {
+                    if (isMidiLearnActive) {
+                      onSelectLearnTarget?.({ type: "action", id: "page" });
+                    }
+                  }}
+                  title={
+                    isMidiLearnActive
+                      ? `Página 1/2: ${pageMapped ? `Asignado (${pageMapped})` : "Sin asignar"}`
+                      : undefined
+                  }
+                  className={`flex items-center bg-[#040406] border rounded-md p-0.5 shadow-[inset_0_1px_3px_rgba(0,0,0,0.8)] gap-0.5 cursor-pointer ${
+                    isPageSelected
+                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse"
+                      : isMidiLearnActive
+                      ? "border-amber-500/60 hover:border-amber-400"
+                      : "border-white/15"
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => !isMidiLearnActive && setActivePage(0)}
+                    title={isMidiLearnActive ? undefined : "Página 1 (Pasos 1-16)"}
+                    className={`w-6 h-6 rounded font-mono text-[9px] font-bold transition-all cursor-pointer flex items-center justify-center relative ${
+                      activePage === 0
+                        ? "bg-emerald-500/30 text-emerald-300 border border-emerald-500/50 shadow-[0_0_8px_rgba(16,185,129,0.3)]"
+                        : "text-zinc-400 hover:text-white"
+                    }`}
+                  >
+                    <span>1</span>
+                    {isPlaying && currentStep < 16 && (
+                      <span className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-emerald-400 shadow-[0_0_4px_#10b981]" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => !isMidiLearnActive && setActivePage(1)}
+                    title={isMidiLearnActive ? undefined : "Página 2 (Pasos 17-32)"}
+                    className={`w-6 h-6 rounded font-mono text-[9px] font-bold transition-all cursor-pointer flex items-center justify-center relative ${
+                      activePage === 1
+                        ? "bg-emerald-500/30 text-emerald-300 border border-emerald-500/50 shadow-[0_0_8px_rgba(16,185,129,0.3)]"
+                        : "text-zinc-400 hover:text-white"
+                    }`}
+                  >
+                    <span>2</span>
+                    {isPlaying && currentStep >= 16 && (
+                      <span className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-emerald-400 shadow-[0_0_4px_#10b981]" />
+                    )}
+                  </button>
+                </div>
+              )
+            );
+          })()}
+
+          {/* Clic Metrónomo Minimalista con Icono */}
+          {onToggleClick && (() => {
+            const isClickSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "click";
+            const clickMapped = getActionMappingLabel(midiLearnMapping, "click");
+            return (
+              <button
+                type="button"
+                onClick={() => {
+                  if (isMidiLearnActive) {
+                    onSelectLearnTarget?.({ type: "action", id: "click" });
+                    return;
+                  }
+                  onToggleClick();
+                }}
+                title={
+                  isMidiLearnActive
+                    ? `Metrónomo Sonoro: ${clickMapped ? `Asignado (${clickMapped})` : "Sin asignar"}`
+                    : isClickEnabled
+                    ? "Metrónomo Sonoro: Activo"
+                    : "Metrónomo Sonoro: Inactivo"
+                }
+                className={`h-7 px-2 rounded-md border transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer ${
+                  isClickSelected
+                    ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                    : isMidiLearnActive
+                    ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                    : isClickEnabled
+                    ? "bg-amber-950/40 text-amber-300 border-amber-500/60 shadow-[0_0_8px_rgba(245,158,11,0.4)]"
+                    : "bg-white/[0.03] text-zinc-400 border-white/10 hover:text-white"
+                }`}
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="m4 20 6-16h4l6 16H4Z" />
+                  <path d="M12 4v16" />
+                  <circle cx="12" cy="11" r="1.5" fill="currentColor" />
+                </svg>
+                <span className={`w-1.5 h-1.5 rounded-full ${isClickEnabled ? "bg-amber-400 shadow-[0_0_4px_#f59e0b]" : "bg-zinc-600"}`} />
+              </button>
+            );
+          })()}
+
+          {/* Botón Q y Popover Minimalista de Cuantización */}
+          <div ref={qMenuRef} className="relative z-50">
             <button
               type="button"
-              onClick={() => {
-                const nextRes: StepResolution =
-                  resolution === "eighth"
-                    ? "sixteenth"
-                    : resolution === "sixteenth"
-                    ? "thirtySecond"
-                    : "eighth";
-                onChangeResolution(nextRes);
-              }}
-              title="Resolución Grid"
-              className="h-7 px-2.5 bg-[#040406] hover:bg-[#121318] border border-white/15 rounded-md text-[9.5px] font-mono font-bold text-emerald-400 flex items-center gap-1.5 shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)] cursor-pointer transition"
+              onClick={() => setIsQMenuOpen(!isQMenuOpen)}
+              title={`Cuantización de Entrada: ${quantizeMode.toUpperCase()} (${Math.round(quantizeStrength * 100)}%)`}
+              className={`h-7 w-7 rounded-md text-[10px] font-mono font-bold border transition-all flex items-center justify-center relative active:scale-95 cursor-pointer select-none ${
+                quantizeMode !== "off"
+                  ? "bg-cyan-950/40 text-cyan-300 border-cyan-500/60 shadow-[0_0_8px_rgba(6,182,212,0.4)]"
+                  : "bg-white/[0.03] text-zinc-500 border-white/10 hover:text-white"
+              }`}
             >
-              <span className="text-zinc-400 text-[9px] font-semibold tracking-wider">GRID</span>
-              <span>{resolution === "eighth" ? "1/8" : resolution === "sixteenth" ? "1/16" : "1/32"}</span>
-              <ChevronDown size={11} className="text-zinc-400" />
+              <span>Q</span>
+              {quantizeMode !== "off" && (
+                <span className="absolute top-1 right-1 w-1 h-1 rounded-full bg-cyan-400 shadow-[0_0_4px_#22d3ee]" />
+              )}
             </button>
+
+            {/* Popover Minimalista hacia arriba */}
+            {isQMenuOpen && (
+              <div className="absolute bottom-full mb-2 left-0 z-50 w-52 bg-[#0c0d12] border border-white/20 rounded-xl shadow-[0_15px_40px_rgba(0,0,0,0.95),0_0_1px_1px_rgba(255,255,255,0.08)] p-2.5 text-xs font-mono text-zinc-200 animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-2.5">
+                {/* Selector Horizontal de Modos */}
+                <div className="flex items-center justify-between bg-black/60 border border-white/10 rounded-lg p-0.5">
+                  {(["off", "eighth", "sixteenth", "thirtySecond"] as const).map((m) => (
+                    <button
+                      key={`q-mode-${m}`}
+                      type="button"
+                      onClick={() => onSetQuantizeMode?.(m)}
+                      className={`flex-1 py-1 rounded text-[9px] font-bold uppercase transition-all cursor-pointer ${
+                        quantizeMode === m
+                          ? "bg-cyan-500/25 text-cyan-300 border border-cyan-500/40 shadow-[0_0_6px_rgba(6,182,212,0.3)]"
+                          : "text-zinc-400 hover:text-white"
+                      }`}
+                    >
+                      {m === "off" ? "OFF" : m === "eighth" ? "1/8" : m === "sixteenth" ? "1/16" : "1/32"}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Slider Minimalista de Fuerza */}
+                {quantizeMode !== "off" && (
+                  <div className="flex flex-col gap-1 px-0.5">
+                    <div className="flex items-center justify-between text-[9px] text-zinc-400 font-semibold">
+                      <span>STRENGTH</span>
+                      <span className="text-cyan-300 font-bold tabular-nums">
+                        {Math.round(quantizeStrength * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={quantizeStrength}
+                      onChange={(e) => onSetQuantizeStrength?.(parseFloat(e.target.value))}
+                      className="w-full accent-cyan-400 h-1 bg-white/10 rounded appearance-none cursor-pointer"
+                    />
+                  </div>
+                )}
+
+                {/* Botón Re-cuantizar limpio */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    onRequantize?.();
+                    setIsQMenuOpen(false);
+                  }}
+                  className="w-full py-1 bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-500/40 hover:border-cyan-400 rounded-md text-[9.5px] font-bold text-cyan-200 transition-all active:scale-95 cursor-pointer shadow-[0_0_8px_rgba(6,182,212,0.2)] text-center"
+                >
+                  RE-QUANTIZE
+                </button>
+              </div>
+            )}
           </div>
-
-          {/* Swing MPC 58% */}
-          {onToggleSwing && (
-            <button
-              type="button"
-              onClick={onToggleSwing}
-              title="Swing MPC 58%"
-              className={`h-7 px-2 rounded-md text-[9.5px] font-mono font-bold tracking-wider border transition-all flex items-center gap-1 active:scale-95 cursor-pointer ${
-                isSwingEnabled
-                  ? "bg-pink-950/40 text-pink-300 border-pink-500/60 shadow-[0_0_8px_rgba(236,72,153,0.4)]"
-                  : "bg-white/[0.03] text-zinc-400 border-white/10 hover:text-white"
-              }`}
-            >
-              <span className={`w-1.5 h-1.5 rounded-full ${isSwingEnabled ? "bg-pink-400 shadow-[0_0_4px_#ec4899]" : "bg-zinc-600"}`} />
-              SWING
-            </button>
-          )}
-
-          {/* Clic Metrónomo */}
-          {onToggleClick && (
-            <button
-              type="button"
-              onClick={onToggleClick}
-              title="Metrónomo Sonoro"
-              className={`h-7 px-2 rounded-md text-[9.5px] font-mono font-bold tracking-wider border transition-all flex items-center gap-1 active:scale-95 cursor-pointer ${
-                isClickEnabled
-                  ? "bg-amber-950/40 text-amber-300 border-amber-500/60 shadow-[0_0_8px_rgba(245,158,11,0.4)]"
-                  : "bg-white/[0.03] text-zinc-400 border-white/10 hover:text-white"
-              }`}
-            >
-              <span className={`w-1.5 h-1.5 rounded-full ${isClickEnabled ? "bg-amber-400 shadow-[0_0_4px_#f59e0b]" : "bg-zinc-600"}`} />
-              CLIC
-            </button>
-          )}
         </div>
 
         {/* Lado Derecho: Display VFD de BPM y Transporte Maestro */}
         <div className="flex items-center gap-2.5">
           {/* Display VFD de Tempo (Pantalla Digital Hardware) */}
           <div className="flex items-center bg-[#030305] border border-white/15 rounded-lg p-0.5 shadow-[inset_0_2px_6px_rgba(0,0,0,0.9),0_1px_0_rgba(255,255,255,0.05)]">
-            <button
-              type="button"
-              onClick={() => onAdjustBpm(-1)}
-              title="Tempo -1"
-              className="w-6 h-6 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 rounded font-mono font-bold text-xs transition cursor-pointer"
-            >
-              -
-            </button>
+            {/* BPM Down (-) */}
+            {(() => {
+              const isSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "bpmDown";
+              const mapped = getActionMappingLabel(midiLearnMapping, "bpmDown");
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isMidiLearnActive) {
+                      onSelectLearnTarget?.({ type: "action", id: "bpmDown" });
+                      return;
+                    }
+                    onAdjustBpm(-1);
+                  }}
+                  title={isMidiLearnActive ? `Tempo -1: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Tempo -1"}
+                  className={`w-6 h-6 flex items-center justify-center rounded font-mono font-bold text-xs transition cursor-pointer ${
+                    isSelected
+                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                      : isMidiLearnActive
+                      ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                      : "text-zinc-400 hover:text-white hover:bg-white/10"
+                  }`}
+                >
+                  -
+                </button>
+              );
+            })()}
 
             <div className="flex items-baseline px-2.5 border-x border-white/10 mx-0.5">
               {isEditingBpm ? (
@@ -847,23 +1216,61 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
               <span className="text-[9px] font-mono font-bold text-zinc-400 uppercase tracking-wider ml-1">BPM</span>
             </div>
 
-            <button
-              type="button"
-              onClick={() => onAdjustBpm(1)}
-              title="Tempo +1"
-              className="w-6 h-6 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 rounded font-mono font-bold text-xs transition cursor-pointer"
-            >
-              +
-            </button>
+            {/* BPM Up (+) */}
+            {(() => {
+              const isSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "bpmUp";
+              const mapped = getActionMappingLabel(midiLearnMapping, "bpmUp");
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isMidiLearnActive) {
+                      onSelectLearnTarget?.({ type: "action", id: "bpmUp" });
+                      return;
+                    }
+                    onAdjustBpm(1);
+                  }}
+                  title={isMidiLearnActive ? `Tempo +1: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Tempo +1"}
+                  className={`w-6 h-6 flex items-center justify-center rounded font-mono font-bold text-xs transition cursor-pointer ${
+                    isSelected
+                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                      : isMidiLearnActive
+                      ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                      : "text-zinc-400 hover:text-white hover:bg-white/10"
+                  }`}
+                >
+                  +
+                </button>
+              );
+            })()}
 
-            <button
-              type="button"
-              onClick={onTapTempo}
-              title="Tap Tempo"
-              className="px-2 py-1 ml-1 text-[9.5px] font-mono font-bold uppercase tracking-wider rounded bg-white/[0.06] hover:bg-emerald-500 hover:text-black text-zinc-300 border border-white/10 transition active:scale-95 cursor-pointer"
-            >
-              TAP
-            </button>
+            {/* Tap Tempo */}
+            {(() => {
+              const isSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "tapTempo";
+              const mapped = getActionMappingLabel(midiLearnMapping, "tapTempo");
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isMidiLearnActive) {
+                      onSelectLearnTarget?.({ type: "action", id: "tapTempo" });
+                      return;
+                    }
+                    onTapTempo();
+                  }}
+                  title={isMidiLearnActive ? `Tap Tempo: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Tap Tempo"}
+                  className={`px-2 py-1 ml-1 text-[9.5px] font-mono font-bold uppercase tracking-wider rounded border transition active:scale-95 cursor-pointer ${
+                    isSelected
+                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                      : isMidiLearnActive
+                      ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                      : "bg-white/[0.06] hover:bg-emerald-500 hover:text-black text-zinc-300 border-white/10"
+                  }`}
+                >
+                  TAP
+                </button>
+              );
+            })()}
           </div>
 
           <div className="h-4 w-[1px] bg-white/10 mx-0.5 hidden sm:block" />
@@ -871,100 +1278,247 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
           {/* Bloque de Transporte Maestro (STOP, PLAY, REC) */}
           <div className="flex items-center gap-1.5">
             {/* Stop */}
-            <button
-              type="button"
-              onClick={onStop}
-              title="Stop"
-              className="p-2 rounded-lg bg-[#18191e] hover:bg-[#24262d] text-zinc-400 hover:text-white border border-white/15 transition active:scale-95 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_2px_4px_rgba(0,0,0,0.5)] cursor-pointer"
-            >
-              <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M6 6h12v12H6z" />
-              </svg>
-            </button>
+            {(() => {
+              const isSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "stop";
+              const mapped = getActionMappingLabel(midiLearnMapping, "stop");
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isMidiLearnActive) {
+                      onSelectLearnTarget?.({ type: "action", id: "stop" });
+                      return;
+                    }
+                    onStop();
+                  }}
+                  title={isMidiLearnActive ? `Stop: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Stop"}
+                  className={`p-2 rounded-lg border transition active:scale-95 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_2px_4px_rgba(0,0,0,0.5)] cursor-pointer ${
+                    isSelected
+                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                      : isMidiLearnActive
+                      ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                      : "bg-[#18191e] hover:bg-[#24262d] text-zinc-400 hover:text-white border-white/15"
+                  }`}
+                >
+                  <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M6 6h12v12H6z" />
+                  </svg>
+                </button>
+              );
+            })()}
 
             {/* Play / Pause */}
-            <button
-              type="button"
-              onClick={onTogglePlay}
-              title="Play / Pause (Espacio)"
-              className={`px-4 py-1.5 rounded-lg text-[11px] font-mono font-bold uppercase tracking-wider flex items-center gap-1.5 transition active:scale-95 border cursor-pointer ${
-                isPlaying
-                  ? "bg-gradient-to-b from-emerald-400 to-emerald-600 text-black border-emerald-300 shadow-[0_0_16px_rgba(16,185,129,0.7),inset_0_1px_0_rgba(255,255,255,0.6)]"
-                  : "bg-[#18191e] hover:bg-[#24262d] text-zinc-200 hover:text-white border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_2px_6px_rgba(0,0,0,0.6)]"
-              }`}
-            >
-              {isPlaying ? (
-                <>
-                  <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
-                  </svg>
-                  PAUSE
-                </>
-              ) : (
-                <>
-                  <svg className="w-3.5 h-3.5 text-emerald-400" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                  PLAY
-                </>
-              )}
-            </button>
+            {(() => {
+              const isSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "play";
+              const mapped = getActionMappingLabel(midiLearnMapping, "play");
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isMidiLearnActive) {
+                      onSelectLearnTarget?.({ type: "action", id: "play" });
+                      return;
+                    }
+                    onTogglePlay();
+                  }}
+                  title={isMidiLearnActive ? `Play / Pause: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Play / Pause (Espacio)"}
+                  className={`px-4 py-1.5 rounded-lg text-[11px] font-mono font-bold uppercase tracking-wider flex items-center gap-1.5 transition active:scale-95 border cursor-pointer ${
+                    isSelected
+                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                      : isMidiLearnActive
+                      ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                      : isPlaying
+                      ? "bg-gradient-to-b from-emerald-400 to-emerald-600 text-black border-emerald-300 shadow-[0_0_16px_rgba(16,185,129,0.7),inset_0_1px_0_rgba(255,255,255,0.6)]"
+                      : "bg-[#18191e] hover:bg-[#24262d] text-zinc-200 hover:text-white border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_2px_6px_rgba(0,0,0,0.6)]"
+                  }`}
+                >
+                  {isPlaying ? (
+                    <>
+                      <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+                      </svg>
+                      PAUSE
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-3.5 h-3.5 text-emerald-400" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M8 5v14l11-7z" />
+                      </svg>
+                      PLAY
+                    </>
+                  )}
+                </button>
+              );
+            })()}
 
             {/* Overdub Record */}
-            <button
-              type="button"
-              onClick={onToggleRecord}
-              title="Grabar Overdub"
-              className={`px-3 py-1.5 rounded-lg text-[11px] font-mono font-bold uppercase tracking-wider flex items-center gap-1.5 transition border active:scale-95 cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_2px_4px_rgba(0,0,0,0.5)] ${
-                isRecording
-                  ? "bg-red-500/25 border-red-500 text-red-300 shadow-[0_0_14px_rgba(239,68,68,0.6)] animate-pulse"
-                  : "bg-[#18191e] border-white/15 text-zinc-400 hover:text-zinc-200 hover:bg-[#24262d]"
-              }`}
-            >
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  isRecording ? "bg-red-500 shadow-[0_0_6px_#ef4444]" : "bg-zinc-500"
-                }`}
-              />
-              REC
-            </button>
+            {(() => {
+              const isSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "record";
+              const mapped = getActionMappingLabel(midiLearnMapping, "record");
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isMidiLearnActive) {
+                      onSelectLearnTarget?.({ type: "action", id: "record" });
+                      return;
+                    }
+                    onToggleRecord();
+                  }}
+                  title={isMidiLearnActive ? `Grabar Overdub: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Grabar Overdub"}
+                  className={`px-3 py-1.5 rounded-lg text-[11px] font-mono font-bold uppercase tracking-wider flex items-center gap-1.5 transition border active:scale-95 cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_2px_4px_rgba(0,0,0,0.5)] ${
+                    isSelected
+                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                      : isMidiLearnActive
+                      ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                      : isRecording
+                      ? "bg-red-500/25 border-red-500 text-red-300 shadow-[0_0_14px_rgba(239,68,68,0.6)] animate-pulse"
+                      : "bg-[#18191e] border-white/15 text-zinc-400 hover:text-zinc-200 hover:bg-[#24262d]"
+                  }`}
+                >
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      isRecording ? "bg-red-500 shadow-[0_0_6px_#ef4444]" : "bg-zinc-500"
+                    }`}
+                  />
+                  REC
+                </button>
+              );
+            })()}
           </div>
 
           <div className="h-4 w-[1px] bg-white/10 mx-0.5 hidden sm:block" />
 
           {/* Overlay Metrónomo */}
-          {onToggleVisualMetronome && (
-            <button
-              type="button"
-              onClick={onToggleVisualMetronome}
-              title="Metrónomo Visual"
-              className={`px-2.5 py-1.5 rounded-md text-[9.5px] font-mono font-bold tracking-wider border transition flex items-center gap-1.5 active:scale-95 cursor-pointer ${
-                isVisualMetronomeVisible
-                  ? "bg-emerald-950/40 text-emerald-300 border-emerald-500/50 shadow-[0_0_6px_rgba(16,185,129,0.3)]"
-                  : "bg-white/[0.03] text-zinc-400 border-white/10 hover:text-white"
-              }`}
-            >
-              <span className={`w-1.5 h-1.5 rounded-full ${isVisualMetronomeVisible ? "bg-emerald-400 shadow-[0_0_4px_#10b981]" : "bg-zinc-600"}`} />
-              OVERLAY
-            </button>
-          )}
+          {onToggleVisualMetronome && (() => {
+            const isSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "visualMetronome";
+            const mapped = getActionMappingLabel(midiLearnMapping, "visualMetronome");
+            return (
+              <button
+                type="button"
+                onClick={() => {
+                  if (isMidiLearnActive) {
+                    onSelectLearnTarget?.({ type: "action", id: "visualMetronome" });
+                    return;
+                  }
+                  onToggleVisualMetronome();
+                }}
+                title={isMidiLearnActive ? `Metrónomo Visual: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Metrónomo Visual"}
+                className={`px-2.5 py-1.5 rounded-md text-[9.5px] font-mono font-bold tracking-wider border transition flex items-center gap-1.5 active:scale-95 cursor-pointer ${
+                  isSelected
+                    ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                    : isMidiLearnActive
+                    ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                    : isVisualMetronomeVisible
+                    ? "bg-emerald-950/40 text-emerald-300 border-emerald-500/50 shadow-[0_0_6px_rgba(16,185,129,0.3)]"
+                    : "bg-white/[0.03] text-zinc-400 border-white/10 hover:text-white"
+                }`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${isVisualMetronomeVisible ? "bg-emerald-400 shadow-[0_0_4px_#10b981]" : "bg-zinc-600"}`} />
+                OVERLAY
+              </button>
+            );
+          })()}
+
+          {/* Deshacer Última Grabación / Acción (Undo) */}
+          {onUndo && (() => {
+            const isSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "undo";
+            const mapped = getActionMappingLabel(midiLearnMapping, "undo");
+            return (
+              <button
+                type="button"
+                onClick={() => {
+                  if (isMidiLearnActive) {
+                    onSelectLearnTarget?.({ type: "action", id: "undo" });
+                    return;
+                  }
+                  onUndo();
+                }}
+                title={isMidiLearnActive ? `Deshacer (Undo): ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Deshacer (Undo)"}
+                className={`px-2.5 py-1.5 rounded-md text-[9.5px] font-mono font-bold uppercase tracking-wider border transition active:scale-95 flex items-center gap-1 cursor-pointer ${
+                  isSelected
+                    ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                    : isMidiLearnActive
+                    ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                    : "bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border-white/10"
+                }`}
+              >
+                <svg className="w-3 h-3 text-cyan-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 7v6h6" />
+                  <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" />
+                </svg>
+                <span>UNDO</span>
+              </button>
+            );
+          })()}
+
+          {/* Limpiar Pista Seleccionada (Clear Track) */}
+          {(() => {
+            const isSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "clearTrack";
+            const mapped = getActionMappingLabel(midiLearnMapping, "clearTrack");
+            return (
+              <button
+                type="button"
+                onClick={() => {
+                  if (isMidiLearnActive) {
+                    onSelectLearnTarget?.({ type: "action", id: "clearTrack" });
+                    return;
+                  }
+                  if (onClearSelectedTrack) {
+                    onClearSelectedTrack();
+                  } else if (onClearTrack) {
+                    onClearTrack(selectedPad);
+                  }
+                }}
+                title={isMidiLearnActive ? `Borrar Pista: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Borrar Notas de la Pista Seleccionada"}
+                className={`px-2 py-1.5 rounded-lg border transition active:scale-95 cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_1px_3px_rgba(0,0,0,0.5)] flex items-center gap-1 text-[9.5px] font-mono font-bold ${
+                  isSelected
+                    ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                    : isMidiLearnActive
+                    ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                    : "bg-[#18191e] text-zinc-400 hover:text-amber-400 hover:bg-[#24262d] border-white/10"
+                }`}
+              >
+                <Eraser size={12} className={isSelected ? "text-amber-200" : isMidiLearnActive ? "text-amber-300" : "text-amber-400/90"} />
+                <span>CLR TRK</span>
+              </button>
+            );
+          })()}
 
           {/* Limpiar Patrón Activo */}
-          <button
-            type="button"
-            onClick={onClear}
-            title="Borrar Patrón"
-            className="p-2 rounded-lg bg-[#18191e] text-zinc-400 hover:text-red-400 hover:bg-[#24262d] border border-white/10 transition active:scale-95 cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_1px_3px_rgba(0,0,0,0.5)]"
-          >
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-              />
-            </svg>
-          </button>
+          {(() => {
+            const isSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "clearPattern";
+            const mapped = getActionMappingLabel(midiLearnMapping, "clearPattern");
+            return (
+              <button
+                type="button"
+                onClick={() => {
+                  if (isMidiLearnActive) {
+                    onSelectLearnTarget?.({ type: "action", id: "clearPattern" });
+                    return;
+                  }
+                  onClear();
+                }}
+                title={isMidiLearnActive ? `Borrar Todo el Patrón: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Borrar Todo el Patrón"}
+                className={`p-2 rounded-lg border transition active:scale-95 cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_1px_3px_rgba(0,0,0,0.5)] ${
+                  isSelected
+                    ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                    : isMidiLearnActive
+                    ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                    : "bg-[#18191e] text-zinc-400 hover:text-red-400 hover:bg-[#24262d] border-white/10"
+                }`}
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                  />
+                </svg>
+              </button>
+            );
+          })()}
         </div>
       </div>
 

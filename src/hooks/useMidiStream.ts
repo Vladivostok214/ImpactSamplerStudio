@@ -42,6 +42,27 @@ export function useMidiStream() {
     };
   }, [isMidiLearnActive, selectedLearnTarget, midiLearnMapping]);
 
+  // Mapeo entre IDs de TypeScript y enum SequencerAction de Rust
+  const ACTION_ID_TO_RUST: Record<string, string> = {
+    play: "togglePlay",
+    stop: "stop",
+    record: "toggleRecord",
+    tapTempo: "tapTempo",
+    bpmDown: "bpmDown",
+    bpmUp: "bpmUp",
+    click: "toggleClick",
+    visualMetronome: "toggleVisualMetronome",
+    bank: "toggleBank",
+    grid: "cycleResolution",
+    page: "advancePage",
+    undo: "undo",
+    clearTrack: "clearSelectedTrack",
+    clearPattern: "clearAll",
+    fxRouteKeys: "fxRouteKeys",
+    fxRoutePads: "fxRoutePads",
+    workstationMode: "toggleWorkstationMode",
+  };
+
   // Sincronizar mapeos activos con el motor de audio en Rust
   const syncMappingsToRust = (mapping: MidiLearnMapping) => {
     const fadersArr = [0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => mapping.faders[i] ?? (i === 8 ? 46 : 38 + i));
@@ -52,6 +73,21 @@ export function useMidiStream() {
       knobs: knobsArr,
       pads: padsArr,
     }).catch(console.error);
+
+    const actionBindings: Array<{ message_type: string; number: number; action: string }> = [];
+    if (mapping.actions) {
+      for (const [id, binding] of Object.entries(mapping.actions)) {
+        const rustAction = ACTION_ID_TO_RUST[id];
+        if (rustAction && binding) {
+          actionBindings.push({
+            message_type: binding.messageType,
+            number: binding.number,
+            action: rustAction,
+          });
+        }
+      }
+    }
+    invoke("set_action_midi_mappings", { bindings: actionBindings }).catch(console.error);
   };
 
   // Sincronizar mapeos guardados al montar la aplicación
@@ -156,6 +192,55 @@ export function useMidiStream() {
           setLastLearnedInfo({
             label: `Pad ${idx + 1}`,
             detail: `Asignado a Nota ${ev.noteName || note} (#${note})`,
+          });
+          setSelectedLearnTarget(null);
+          return;
+        }
+
+        if (target.type === "action" && (eventType === "controlchange" || eventType === "noteon")) {
+          const isCc = eventType === "controlchange";
+          const num = isCc ? ev.controller : ev.note;
+          const msgType = isCc ? ("cc" as const) : ("note" as const);
+          const actionId = target.id;
+
+          const ACTION_LABELS: Record<string, string> = {
+            play: "Play / Pause",
+            stop: "Stop",
+            record: "Record (Overdub)",
+            tapTempo: "Tap Tempo",
+            bpmDown: "BPM -1",
+            bpmUp: "BPM +1",
+            click: "Metrónomo Sonoro (Clic)",
+            visualMetronome: "Metrónomo Visual (Overlay)",
+            bank: "Banco A / B",
+            grid: "Resolución Grilla",
+            page: "Página (1/32)",
+            undo: "Undo",
+            clearTrack: "Borrar Pista Activa",
+            clearPattern: "Borrar Todo el Patrón",
+            fxRouteKeys: "FX Route: Teclado",
+            fxRoutePads: "FX Route: Pads",
+            workstationMode: "Vista Workstation (KEYS/SEQ)",
+          };
+
+          setMidiLearnMapping((prev) => {
+            const nextActions = { ...(prev.actions || {}) };
+            // Desvincular si este mismo mensaje ya estaba asignado a otra acción previa
+            for (const [k, v] of Object.entries(nextActions)) {
+              if (v && v.messageType === msgType && v.number === num) {
+                delete nextActions[k];
+              }
+            }
+            nextActions[actionId] = { messageType: msgType, number: num };
+            const next = { ...prev, actions: nextActions };
+            saveMidiMapping(next);
+            syncMappingsToRust(next);
+            return next;
+          });
+
+          setLastLearnedInfo({
+            label: ACTION_LABELS[actionId] || actionId,
+            detail: isCc ? `Asignado a CC ${num}` : `Asignado a Nota ${ev.noteName || num} (#${num})`,
           });
           setSelectedLearnTarget(null);
           return;
