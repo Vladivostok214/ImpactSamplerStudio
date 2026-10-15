@@ -13,9 +13,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use audio::engine::AudioEngine;
 use audio::{
-    AudioDeviceInfo, AudioEngineCommand, FxRouting, KnobMappingInfo, KnobTarget, PadEngineMode,
-    PadPlaybackMode, PadSampleData, PadSlotInfo, PatternBank, QuantizeMode, SequencerAction,
-    SequencerBankToggleResult, SequencerStateInfo, StepResolution, MAX_STEPS, NUM_PADS,
+    ArpMode, ArpRate, ArpStateInfo, AudioDeviceInfo, AudioEngineCommand, FxRouting,
+    KnobMappingInfo, KnobTarget, PadEngineMode, PadPlaybackMode, PadSampleData, PadSlotInfo,
+    PatternBank, QuantizeMode, SequencerAction, SequencerBankToggleResult, SequencerStateInfo,
+    StepResolution, MAX_STEPS, NUM_PADS,
 };
 use midi::parser::parse_midi_message;
 use midi::{MidiManager, MidiPortInfo};
@@ -997,6 +998,53 @@ fn set_midi_mute(muted: bool, state: State<'_, AppState>) -> Result<(), String> 
     Ok(())
 }
 
+// Fase 9: Comandos IPC del Arpegiador
+#[tauri::command]
+fn get_arp_state(state: State<'_, AppState>) -> Result<ArpStateInfo, String> {
+    let engine = state.audio_engine.lock().unwrap();
+    Ok(engine.get_arp_state())
+}
+
+#[tauri::command]
+fn set_arp_enabled(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
+    if let Ok(mut prod) = state.audio_producer.lock() {
+        let _ = prod.push(AudioEngineCommand::SetArpEnabled(enabled));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_arp_hold(hold: bool, state: State<'_, AppState>) -> Result<(), String> {
+    if let Ok(mut prod) = state.audio_producer.lock() {
+        let _ = prod.push(AudioEngineCommand::SetArpHold(hold));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_arp_mode(mode: ArpMode, state: State<'_, AppState>) -> Result<(), String> {
+    if let Ok(mut prod) = state.audio_producer.lock() {
+        let _ = prod.push(AudioEngineCommand::SetArpMode(mode));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_arp_rate(rate: ArpRate, state: State<'_, AppState>) -> Result<(), String> {
+    if let Ok(mut prod) = state.audio_producer.lock() {
+        let _ = prod.push(AudioEngineCommand::SetArpRate(rate));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_arp_octaves(octaves: u8, state: State<'_, AppState>) -> Result<(), String> {
+    if let Ok(mut prod) = state.audio_producer.lock() {
+        let _ = prod.push(AudioEngineCommand::SetArpOctaves(octaves));
+    }
+    Ok(())
+}
+
 fn main() {
     let (producer, consumer) = RingBuffer::<AudioEngineCommand>::new(1024);
     let audio_engine = Arc::new(Mutex::new(AudioEngine::new()));
@@ -1081,6 +1129,13 @@ fn main() {
             set_midi_learn_mappings,
             set_action_midi_mappings,
             rescan_midi_ports,
+            // Fase 9: Arpeggiator
+            get_arp_state,
+            set_arp_enabled,
+            set_arp_hold,
+            set_arp_mode,
+            set_arp_rate,
+            set_arp_octaves,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();

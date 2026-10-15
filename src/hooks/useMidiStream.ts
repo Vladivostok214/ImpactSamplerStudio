@@ -221,6 +221,8 @@ export function useMidiStream() {
             fxRouteKeys: "FX Route: Teclado",
             fxRoutePads: "FX Route: Pads",
             workstationMode: "Vista Workstation (KEYS/SEQ)",
+            toggleArp: "Arpegiador (On/Off)",
+            toggleArpHold: "Arpegiador Hold (Latch)",
           };
 
           setMidiLearnMapping((prev) => {
@@ -249,6 +251,18 @@ export function useMidiStream() {
 
       // --- OPERACIÓN MUSICAL NORMAL (O CUANDO NO ESTÁ EN ESCUCHA ACTIVA) ---
       if (eventType === "noteon") {
+        const vel = ev.velocity;
+        if (vel > 0) {
+          if (mapping.actions?.toggleArp?.messageType === "note" && mapping.actions.toggleArp.number === ev.note) {
+            window.dispatchEvent(new CustomEvent("midi-toggle-arp"));
+            return;
+          }
+          if (mapping.actions?.toggleArpHold?.messageType === "note" && mapping.actions.toggleArpHold.number === ev.note) {
+            window.dispatchEvent(new CustomEvent("midi-toggle-arp-hold"));
+            return;
+          }
+        }
+
         setActiveNotes((prev) => {
           const next = new Map(prev);
           next.set(ev.note, ev.velocity);
@@ -274,6 +288,13 @@ export function useMidiStream() {
           });
         }
       } else if (eventType === "noteoff") {
+        if (mapping.actions?.toggleArp?.messageType === "note" && mapping.actions.toggleArp.number === ev.note) {
+          return;
+        }
+        if (mapping.actions?.toggleArpHold?.messageType === "note" && mapping.actions.toggleArpHold.number === ev.note) {
+          return;
+        }
+
         setActiveNotes((prev) => {
           const next = new Map(prev);
           next.delete(ev.note);
@@ -300,6 +321,16 @@ export function useMidiStream() {
       } else if (eventType === "controlchange") {
         const controller = ev.controller;
         const value = ev.value;
+
+        // Disparo de acciones de Arpegiador mapeadas por MIDI Learn
+        if (value === undefined || value > 0) {
+          if (mapping.actions?.toggleArp?.messageType === "cc" && mapping.actions.toggleArp.number === controller) {
+            window.dispatchEvent(new CustomEvent("midi-toggle-arp"));
+          }
+          if (mapping.actions?.toggleArpHold?.messageType === "cc" && mapping.actions.toggleArpHold.number === controller) {
+            window.dispatchEvent(new CustomEvent("midi-toggle-arp-hold"));
+          }
+        }
 
         // 1. Mapeo dinámico de Faders (con fallback a LX49+ de fábrica y GM)
         let matchedFaderIdx: number | null = null;

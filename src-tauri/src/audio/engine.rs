@@ -6,6 +6,7 @@ use rtrb::{Consumer, Producer, RingBuffer};
 use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
 use tauri::{AppHandle, Emitter};
 
+use super::arpeggiator::{Arpeggiator, ArpOutputEvent, ArpStateInfo};
 use super::fx::{AudioFxRack, FxRouting, KnobMappingInfo, KnobTarget};
 use super::sampler::{PadEngineMode, PadPlaybackMode, PadSampleData, PadSampler, PadSlotInfo};
 use super::sequencer::{SequencerAction, SequencerStateInfo, SequencerStepEvent, StepSequencer};
@@ -44,6 +45,8 @@ pub struct AudioEngine {
     pub shared_fx_routing: Arc<Mutex<FxRouting>>,
     // Fase 5: Step Sequencer (Única fuente de verdad en render state, sincronizada a shared para lecturas)
     pub shared_sequencer: Arc<Mutex<StepSequencer>>,
+    // Fase 9: Arpeggiator (Sincronizado a shared para lecturas de estado)
+    pub shared_arpeggiator: Arc<Mutex<Arpeggiator>>,
 }
 
 unsafe impl Send for AudioEngine {}
@@ -140,6 +143,9 @@ struct AudioRenderState {
     sequencer: StepSequencer,
     shared_sequencer: Arc<Mutex<StepSequencer>>,
     ui_event_producer: Arc<Mutex<Option<Producer<SequencerUiEvent>>>>,
+    // Fase 9: Arpeggiator
+    arpeggiator: Arpeggiator,
+    shared_arpeggiator: Arc<Mutex<Arpeggiator>>,
     // MIDI Learn: Mapeos dinámicos CC
     midi_fader_ccs: [u8; 9],
     midi_knob_ccs: [u8; 8],
@@ -165,6 +171,7 @@ impl AudioRenderState {
         shared_fx_routing: Arc<Mutex<FxRouting>>,
         shared_sequencer: Arc<Mutex<StepSequencer>>,
         ui_event_producer: Arc<Mutex<Option<Producer<SequencerUiEvent>>>>,
+        shared_arpeggiator: Arc<Mutex<Arpeggiator>>,
     ) -> Self {
         let mut pad_sampler = PadSampler::new(sample_rate_f);
         let drum_pad_notes = *shared_drum_pad_notes.lock().unwrap();
@@ -266,6 +273,8 @@ impl AudioRenderState {
             sequencer,
             shared_sequencer,
             ui_event_producer,
+            arpeggiator: Arpeggiator::new(sample_rate_f),
+            shared_arpeggiator,
             midi_fader_ccs: [38, 39, 40, 41, 42, 43, 44, 45, 46],
             midi_knob_ccs: [56, 57, 58, 59, 60, 61, 62, 63],
             is_midi_muted: false,
@@ -284,6 +293,12 @@ impl AudioRenderState {
     fn sync_shared_sequencer(&self) {
         if let Ok(mut seq) = self.shared_sequencer.try_lock() {
             *seq = self.sequencer.clone();
+        }
+    }
+
+    fn sync_shared_arpeggiator(&self) {
+        if let Ok(mut arp) = self.shared_arpeggiator.try_lock() {
+            *arp = self.arpeggiator.clone();
         }
     }
 
@@ -323,7 +338,11 @@ impl AudioRenderState {
                         }
                         AudioEngineCommand::NoteOn { note, velocity } => {
                             if !self.is_midi_muted {
-                                if let Some(synth) = &mut self.synthesizer {
+                                if self.arpeggiator.enabled {
+                                    let vel_7bit = (velocity * 127.0).round().clamp(1.0, 127.0) as u8;
+                                    self.arpeggiator.handle_note_on(note, vel_7bit);
+                                    self.sync_shared_arpeggiator();
+                                } else if let Some(synth) = &mut self.synthesizer {
                                     let vel_7bit = (velocity * 127.0).round().clamp(1.0, 127.0) as i32;
                                     synth.note_on(0, note as i32, vel_7bit);
                                 } else {
@@ -349,7 +368,10 @@ impl AudioRenderState {
                             }
                         }
                         AudioEngineCommand::NoteOff { note } => {
-                            if let Some(synth) = &mut self.synthesizer {
+                            if self.arpeggiator.enabled {
+                                self.arpeggiator.handle_note_off(note);
+                                self.sync_shared_arpeggiator();
+                            } else if let Some(synth) = &mut self.synthesizer {
                                 synth.note_off(0, note as i32);
                             } else {
                                 for v in self.voices.iter_mut() {
@@ -863,6 +885,30 @@ impl AudioRenderState {
                         AudioEngineCommand::SetMidiMute(muted) => {
                             self.is_midi_muted = muted;
                         }
+                        AudioEngineCommand::SetArpEnabled(enabled) => {
+                            if let Some(killed_note) = self.arpeggiator.set_enabled(enabled) {
+                                if let Some(synth) = &mut self.synthesizer {
+                                    synth.note_off(0, killed_note as i32);
+                                }
+                            }
+                            self.sync_shared_arpeggiator();
+                        }
+                        AudioEngineCommand::SetArpHold(hold) => {
+                            self.arpeggiator.set_hold(hold);
+                            self.sync_shared_arpeggiator();
+                        }
+                        AudioEngineCommand::SetArpMode(mode) => {
+                            self.arpeggiator.set_mode(mode);
+                            self.sync_shared_arpeggiator();
+                        }
+                        AudioEngineCommand::SetArpRate(rate) => {
+                            self.arpeggiator.set_rate(rate);
+                            self.sync_shared_arpeggiator();
+                        }
+                        AudioEngineCommand::SetArpOctaves(octaves) => {
+                            self.arpeggiator.set_octaves(octaves);
+                            self.sync_shared_arpeggiator();
+                        }
                     }
                 }
             }
@@ -919,6 +965,25 @@ impl AudioRenderState {
 
         self.pad_left_buf[..num_frames].fill(0.0);
         self.pad_right_buf[..num_frames].fill(0.0);
+
+        // 0.5. Avanzar Arpegiador Melódico Sample-Accurate
+        if self.arpeggiator.enabled {
+            let bpm = self.sequencer.bpm;
+            for _ in 0..num_frames {
+                if let Some(event) = self.arpeggiator.advance_sample(bpm) {
+                    if let Some(synth) = &mut self.synthesizer {
+                        match event {
+                            ArpOutputEvent::NoteTrigger { note, velocity } => {
+                                synth.note_on(0, note as i32, velocity as i32);
+                            }
+                            ArpOutputEvent::NoteRelease { note } => {
+                                synth.note_off(0, note as i32);
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // 1. Renderizar teclado melódico en left_buf / right_buf
         if let Some(synth) = &mut self.synthesizer {
@@ -1172,6 +1237,7 @@ fn build_and_start_stream(
     shared_fx_routing: Arc<Mutex<FxRouting>>,
     shared_sequencer: Arc<Mutex<StepSequencer>>,
     ui_event_producer: Arc<Mutex<Option<Producer<SequencerUiEvent>>>>,
+    shared_arpeggiator: Arc<Mutex<Arpeggiator>>,
     device_invalidated: Arc<AtomicBool>,
 ) -> Result<(Stream, u32, usize), String> {
     let sample_format = supported_config.sample_format();
@@ -1199,6 +1265,7 @@ fn build_and_start_stream(
         shared_fx_routing,
         shared_sequencer,
         ui_event_producer,
+        shared_arpeggiator,
     );
     state.master_gain = initial_gain;
 
@@ -1280,6 +1347,7 @@ impl AudioEngine {
             shared_fx_rack: Arc::new(Mutex::new(AudioFxRack::new(48000.0))),
             shared_fx_routing: Arc::new(Mutex::new(FxRouting::Off)),
             shared_sequencer: Arc::new(Mutex::new(StepSequencer::new(48000.0))),
+            shared_arpeggiator: Arc::new(Mutex::new(Arpeggiator::new(48000.0))),
         }
     }
 
@@ -1331,6 +1399,10 @@ impl AudioEngine {
 
     pub fn get_sequencer_state(&self) -> SequencerStateInfo {
         self.shared_sequencer.lock().unwrap().get_state_info()
+    }
+
+    pub fn get_arp_state(&self) -> ArpStateInfo {
+        self.shared_arpeggiator.lock().unwrap().get_state_info()
     }
 
     pub fn get_pad_slots_info(&self) -> Vec<PadSlotInfo> {
@@ -1449,6 +1521,7 @@ impl AudioEngine {
             self.shared_fx_routing.clone(),
             self.shared_sequencer.clone(),
             self.ui_event_producer.clone(),
+            self.shared_arpeggiator.clone(),
             self.device_invalidated.clone(),
         )?;
 
@@ -1490,6 +1563,7 @@ impl AudioEngine {
         let shared_fx_rack = self.shared_fx_rack.clone();
         let shared_fx_routing = self.shared_fx_routing.clone();
         let shared_sequencer = self.shared_sequencer.clone();
+        let shared_arpeggiator = self.shared_arpeggiator.clone();
         let ui_event_producer = self.ui_event_producer.clone();
         let app_handle = self.app_handle.clone();
 
@@ -1535,6 +1609,7 @@ impl AudioEngine {
                                         shared_fx_routing.clone(),
                                         shared_sequencer.clone(),
                                         ui_event_producer.clone(),
+                                        shared_arpeggiator.clone(),
                                         device_invalidated.clone(),
                                     ) {
                                         Ok((new_stream, new_sample_rate, _channels)) => {

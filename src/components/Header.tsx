@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Sliders, Volume2, VolumeX, RotateCcw, Radio, Activity } from "lucide-react";
+import { Sliders, Volume2, VolumeX, RotateCcw, Radio, Activity, Keyboard } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { NormalizedMidiEvent } from "../types/midi";
 import { MidiDinIcon, MidiStreamPopover } from "./MidiStreamPopover";
@@ -27,6 +27,8 @@ interface HeaderProps {
   onMasterGainChange?: (val: number) => void;
   isMidiLearnActive?: boolean;
   onToggleMidiLearn?: () => void;
+  qwertyEnabled?: boolean;
+  onToggleQwerty?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -41,6 +43,8 @@ export const Header: React.FC<HeaderProps> = ({
   onMasterGainChange,
   isMidiLearnActive = false,
   onToggleMidiLearn,
+  qwertyEnabled = false,
+  onToggleQwerty,
 }) => {
   const [isMidiPopoverOpen, setIsMidiPopoverOpen] = useState(false);
   const [isVolumeOpen, setIsVolumeOpen] = useState(false);
@@ -181,6 +185,26 @@ export const Header: React.FC<HeaderProps> = ({
               onClear={onClearMidiEvents}
             />
           </div>
+
+          {/* QWERTY Virtual Keyboard Toggle Button */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.currentTarget.blur();
+              onToggleQwerty?.();
+            }}
+            className={`p-2 rounded-xl border transition flex items-center justify-center cursor-pointer select-none ${
+              qwertyEnabled
+                ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/50 shadow-[0_0_12px_rgba(16,185,129,0.3)]"
+                : "bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-zinc-200 border-white/[0.08]"
+            }`}
+            title="Teclado de computadora QWERTY (ON/OFF)"
+          >
+            <Keyboard
+              size={16}
+              className={qwertyEnabled ? "drop-shadow-[0_0_6px_rgba(52,211,153,0.8)]" : ""}
+            />
+          </button>
 
           {/* MIDI Learn Toggle Button */}
           <button

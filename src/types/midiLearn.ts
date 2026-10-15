@@ -15,7 +15,9 @@ export type UIActionId =
   | "clearPattern"
   | "fxRouteKeys"
   | "fxRoutePads"
-  | "workstationMode";
+  | "workstationMode"
+  | "toggleArp"
+  | "toggleArpHold";
 
 export interface ActionBinding {
   messageType: "cc" | "note";

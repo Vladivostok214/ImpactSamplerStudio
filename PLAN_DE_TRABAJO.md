@@ -27,8 +27,14 @@ flowchart TD
     F4 --> F5["Fase 5: Secuenciador Rítmico de Pads (Clock Sample-Accurate)"]
     F5 --> F53["Fase 5.3: Microajustes de Ergonomía & Síntesis de UX/UI"]
     F53 --> F6["Fase 6: Infraestructura de Distribución, Empaque (.exe) & Librería Extensible"]
-    F6 --> F7["Fase 7: Wizard Interactivo de Calibración & Perfiles Hardware Universal"]
-    F7 --> F8["Fase 8: Sistema de Sesiones (.impact), Gestión de Proyectos & Exportación"]
+    F6 --> F7["Fase 7: Teclado de Computadora (Entrada QWERTY)"]
+    F7 --> F8["Fase 8: Personalización del Instalador Tradicional & Branding Visual"]
+    F8 --> F9["Fase 9: Motor de Arpegiador Melódico Integrado"]
+    F9 --> F10["Fase 10: Wizard Interactivo de Calibración & Perfiles Hardware Universal"]
+    F10 --> F11["Fase 11: Sistema de Sesiones (.impact), Gestión de Proyectos & Exportación"]
+    F11 --> F12["Fase 12: Drum Kit Creator (WAV Pool a SF2 Compiler)"]
+    F12 --> F13["Fase 13: Sistema de Auto-Actualizaciones OTA (Tauri Updater)"]
+    F13 --> F14["Fase 14: Estrategia Multi-Plataforma (Mobile, Web App & VST3/CLAP)"]
 ```
 
 ---
@@ -305,115 +311,203 @@ flowchart TD
      - Registro formal de perfiles (`InstrumentCatalog` / `InstrumentDefinition`):
        - Identificador único (`id`), patrones de coincidencia de nombres, categoría tímbrica y tipo de motor (`melodic` vs `drum-kit`).
   4. **Paso 4: Mejoras Input Quantize, Reloj por Ticks, Calibración Asistida y Undo ✅ [COMPLETADO]:**
-     - Ver detalle en [PLAN_DE_TRABAJO_PASO_4.md](PLAN_DE_TRABAJO_PASO_4.md).
+     - Ver detalle en [docs/archive/PLAN_DE_TRABAJO_PASO_4.md](docs/archive/PLAN_DE_TRABAJO_PASO_4.md).
      - Reloj ultrapreciso a 96 ticks/negra (384 ticks/compás), grilla adaptativa (1/8, 1/16, 1/32 con páginas 1 y 2), anti-flam, Q-Mode / Q-Strength y botón de re-cuantización.
      - Calibración interactiva de latencia de 8 golpes con silenciamiento de audio y persistencia por dispositivo de audio (validada en hardware real con 0 ticks de desviación).
      - Sistema de Undo (`sequencer_undo`) LIFO de 16 estados sin alocaciones en el hilo de audio.
      - Full Level unificado en 127 fijado permanentemente.
   5. **Paso 4.1: MIDI Learn de Acciones de UI (Controles Asignables) ✅ [COMPLETADO]:**
-     - Ver detalle completo en [PLAN_DE_TRABAJO_PASO_4.md](PLAN_DE_TRABAJO_PASO_4.md#paso-41---midi-learn-de-acciones-de-ui-controles-asignables--completado).
+     - Ver detalle completo en [docs/archive/PLAN_DE_TRABAJO_PASO_4.md](docs/archive/PLAN_DE_TRABAJO_PASO_4.md#paso-41---midi-learn-de-acciones-de-ui-controles-asignables--completado).
      - 17 acciones de interfaz conectadas a MIDI Learn (Transporte, BPM, Tap Tempo, Clic, Metrónomo Visual, Undo, Clear Track, Clear Pattern, Grid, Page, Bank, Workstation Mode y FX Route Keys/Pads).
      - Despacho $O(1)$ lock-free en Rust y soporte de pulsación única 1:1 para botones con toggle de hardware.
      - Sincronización bidireccional de FX Route con notificación nativa a la interfaz.
 
 ---
 
-### Fase 7: Wizard Interactivo de Calibración & Perfiles de Hardware Universal 📋 [PLANIFICADA]
-* **Objetivo:** Transformar la aplicación en una plataforma universal compatible con cualquier teclado y controlador del mercado mediante un asistente guiado interactivo de auto-calibración (Hardware Setup Wizard) que detecte y configure automáticamente rango de teclas, pads, deslizadores, perillas y botones de transporte, guardando perfiles independientes.
-* **Componentes y Especificaciones Técnicas:**
-  1. **Asistente Guiado Paso a Paso (`HardwareSetupWizard.tsx`):**
-     - Modal cinemático con flujo secuencial Noir-Tech y feedback visual en tiempo real:
-       * **Paso 1: Calibración del Rango de Teclado:**
-         - Solicitud: *«Presiona la tecla física más grave (izquierda)»* -> Detección de `NoteOn(min)`.
-         - Solicitud: *«Presiona la tecla física más aguda (derecha)»* -> Detección de `NoteOn(max)`.
-         - Cálculo automático de tamaño (`max - min + 1`): detecta al instante si es un teclado de 25, 32, 49, 61 u 88 teclas y adapta el teclado virtual en pantalla dinámicamente.
-       * **Paso 2: Matriz Rítmica de Pads:**
-         - Solicitud secuencial: *«Golpea el Pad 1»* ... hasta el Pad 8.
-         - Registro de números de nota/canal asignados de fábrica por el controlador.
-         - Botón interactivo: *«Mi controlador no tiene pads / Omitir»*.
-       * **Paso 3: Faders / Deslizadores de Mezcla:**
-         - Solicitud: *«Desplaza el Fader 1 hacia arriba»*, etc.
-         - Filtro de histéresis anti-jitter (exige variación de delta $\ge 10$) para ignorar ruidos analógicos.
-         - Botón: *«Omitir restantes / No tengo más faders»* (para teclados compactos con 0 o 1 fader).
-       * **Paso 4: Knobs / Potenciómetros de Efectos:**
-         - Solicitud: *«Gira el Knob 1 en sentido horario»*, etc.
-         - Detección de movimiento angular y captura de número de CC.
-         - Feedback con micro-destello esmeralda al confirmar cada perilla.
-       * **Paso 5: Botones de Transporte & Comandos:**
-         - Solicitud: *«Presiona PLAY»*, *«Presiona STOP»*, *«Presiona REC»*, *«Presiona TAP»*.
-         - Mapeo de CCs de transporte o comandos físicos.
-       * **Paso 6: Guardado & Perfil:**
-         - Asignación de nombre personalizado al hardware (ej. *«Akai MPK Mini MK3»*, *«Arturia KeyLab Essential 61»*).
-  2. **Estructura de Datos & Motor de Mapeo Dinámico (Rust & TypeScript):**
-     - Estructura `HardwareProfile` persistente:
-       - Rango de notas útiles (`key_range: (u8, u8)`).
-       - Matriz de notas de pads (`pad_notes: [u8; 8]`).
-       - Asignaciones de CCs para faders, knobs y botones de transporte.
-       - Banderas de capacidades (`has_pads`, `has_faders`, `has_transport`).
-     - Sincronización lock-free instantánea con el hilo de audio a 0% CPU.
-  3. **Librería de Perfiles de Fábrica Integrados:**
-     - Perfiles preconfigurados listos para usar sin necesidad de pasar por el asistente:
-       * *Nektar Impact LX49+* (Perfil oficial por defecto).
-       * *Akai MPK Mini MK3 / Play*.
-       * *Arturia MiniLab 3 / KeyLab Essential*.
-       * *Novation Launchkey Series*.
-       * *Teclado Genérico 88 Teclas (Piano)*.
-  4. **Adaptabilidad de Interfaz Dinámica:**
-     - Si el perfil activo carece de faders o pads, la interfaz de la consola oculta o contrae inteligentemente esos módulos para ofrecer un chasis limpio y personalizado al tamaño físico del equipo.
-     - Selector rápido de perfil y botón *«+ Calibrar Nuevo Controlador»* integrados en `AudioSettingsModal.tsx`.
+### Fase 7: Teclado de Computadora (Entrada QWERTY) ✅ [COMPLETADA]
+* **Objetivo:** Permitir disparar notas musicales del teclado melódico y pads de batería utilizando el teclado físico de la computadora (teclas QWERTY), facilitando audiciones rápidas, composición en movilidad sin controlador conectado y pruebas de sonido instantáneas.
+* **Entregables Logrados:**
+  * **Activación & Control UI en el Header (`Header.tsx`):**
+    * Botón toggle compacto con icono reactivo `Keyboard` de `lucide-react` integrado en la barra superior.
+    * Estados visuales Noir-Tech: icono en grafito en reposo (`text-zinc-400`) y verde esmeralda brillante con halo neón al activarse (`text-emerald-400 drop-shadow-[0_0_6px_rgba(52,211,153,0.8)]`).
+    * Desactivado por defecto al inicio de la sesión (sin persistencia innecesaria).
+    * Desvinculación inmediata de foco (`blur()`) tras el clic para proteger la barra espaciadora (`Space` exclusivo para transporte Play/Pause).
+  * **Disposición de Teclas & Mapeo Físico Agnóstico (`event.code`):**
+    * **Notas Blancas:** `A` (C), `S` (D), `D` (E), `F` (F), `G` (G), `H` (A), `J` (B), `K` (C+1), `L` (D+1), `;` (E+1).
+    * **Notas Negras:** `W` (C#), `E` (D#), `T` (F#), `Y` (G#), `U` (A#), `O` (C#+1), `P` (D#+1).
+    * **Pads Rítmicos:** Fila numérica `1` a `8` (`Digit1` a `Digit8`) mapeados a los 8 pads (disponibles tanto en modo `KEYS` como en `SEQ`, permitiendo grabación Overdub).
+    * **Cambio de Octava:** `Z` (−1) y `X` (+1) con rango dinámico de offset `[-2, +2]` respecto a C3 (nota 60).
+    * **Velocity Fija:** 127 (*Full Level* nominal unificado).
+  * **Feedback Visual & Serigrafía Dinámica (`HardwareSkeleton.tsx`):**
+    * Serigrafía sutil de las letras guía directamente sobre las teclas del piano (blancas y negras) con `pointer-events-none` para preservar glissando y mouse.
+    * Las letras se trasladan dinámicamente con el cambio de octava, funcionando como indicador visual natural de la octava asignada.
+    * En las teclas C que coinciden con el rango activo, el marcador de octava láser (`C{n}`) se eleva a `bottom-7` sin colisión visual.
+    * Respeto estricto al rango acústico útil (`keyRange`, ej. Mellotron 43 a 77) omitiendo serigrafía en teclas atenuadas.
+  * **Arquitectura de Despacho & Blindaje Anti-Notas Colgadas (`useQwertyKeyboard.ts`):**
+    * Registro `code -> { type, value }` que asegura que `keyup` libere exactamente la nota disparada, incluso si se cambió de octava con teclas sostenidas.
+    * Liberación total (`releaseAll`) en `blur`, `visibilitychange` (minimizar o `Alt+Tab`), desactivación del toggle y cambio de modo.
+    * Filtro de inputs editable (`INPUT`, `TEXTAREA`, `contenteditable`) y modales conectados al DOM.
+    * Blindaje de foco: liberación automática de foco (`blur()`) al cambiar de instrumento o preset, manteniendo la reactividad del teclado sin bloqueos.
 
 ---
 
-### Fase 8: Sistema de Sesiones (.impact), Gestión de Proyectos & Exportación de Audio 📋 [PLANIFICADA]
-* **Objetivo:** Convertir la aplicación en una estación de trabajo de producción musical completa (Workstation de estudio) con capacidad para guardar, cargar, auto-recuperar y compartir proyectos completos de interpretación mediante un formato de sesión nativo (`.impact`), complementado con un motor de exportación offline de audio (WAV Bounce & Stems).
+### Fase 8: Personalización del Instalador Tradicional & Branding Visual ✅ [COMPLETADA]
+* **Objetivo:** Diseñar la identidad gráfica oficial de ImpactSampler Studio y personalizar el instalador tradicional de Windows (`.exe` NSIS) para ofrecer una presentación comercial de alta gama acorde a la estética Noir-Tech de estudio.
+* **Entregables y Mejoras Implementadas:**
+  1. **Branding e Iconografía Oficial:**
+     - Adopción del diseño maestro de hardware pad 3D con retroiluminación interna e incisión central (`branding/iconoIS.png`).
+     - Optimización del bounding box: el pad ocupa el 94.5% del área útil sin márgenes vacíos perimetrales.
+     - Bundle multirresolución de Windows en `src-tauri/icons/icon.ico` (16, 24, 32, 48, 64, 128, 256 px).
+     - Iconos para Tauri (`32x32.png`, `128x128.png`, `128x128@2x.png`, `icon.png`) y favicons web (`favicon.ico`, `favicon.png` en `public/` y `index.html`).
+  2. **Personalización del Instalador NSIS (`.exe` Tradicional - Fondo Negro Puro):**
+     - Distribución exclusiva mediante instalador ejecutable `.exe` (descartando `.msi`).
+     - **Gráficos Integrados (BMP 24-bit RGB):**
+       - `installerSidebar.bmp` (164x314 px): Gráfico vertical con fondo negro puro (`#000000`), icono del pad 3D ampliado, divisores verde esmeralda y tipografía Segoe UI Black ("IMPACT SAMPLER STUDIO - LX49+ EDITION").
+       - `installerHeader.bmp` (150x57 px): Cabecera compacta horizontal con fondo negro puro y el logotipo oficial apaisado `IMPACT SAMPLER` centrado.
+     - **Modo de Instalación `currentUser`:** Instalación limpia en `%LOCALAPPDATA%\ImpactSampler Studio` sin requerir elevación de privilegios ni provocar alertas intrusivas de UAC.
+     - Idioma 100% en español sin selector redundante (`displayLanguageSelector: false`).
+  3. **Configuración, Versión 1.0.0 & Compilación en Tauri v2:**
+     - Versión oficial actualizada a `1.0.0` en `tauri.conf.json`, `Cargo.toml` y `package.json`.
+     - Directiva `bundle.targets: ["nsis"]` y configuración formal en `bundle.windows.nsis`.
+     - Compilación exitosa generando el paquete final de distribución: `ImpactSampler Studio_1.0.0_x64-setup.exe` (356.73 MiB).
+
+---
+
+### Fase 9: Motor de Arpegiador Melódico Integrado ✅ [COMPLETADA]
+* **Objetivo:** Implementar un arpegiador melódico polifónico de alta fidelidad para el teclado (SoundFonts) en tiempo real con acumulación sample-accurate, popover de configuración Noir-Tech minimalista, modos clásicos esenciales y protección estricta Zero-Touch del secuenciador rítmico.
+* **Componentes y Especificaciones Técnicas Implementadas:**
+  1. **Aislamiento Melódico Puro (Zero-Touch Sequencer):**
+     - El arpegiador opera exclusivamente sobre los eventos `NoteOn` y `NoteOff` del teclado (SoundFonts).
+     - La lógica de `sequencer.rs` y el bus rítmico de pads permanecen intactos al 100%.
+  2. **Motor DSP Lock-Free & Sample-Accurate en Rust (`arpeggiator.rs`):**
+     - Memoria plana estática zero-alloc (`[Option<u8>; 16]` para buffers de notas sostenidas y en memoria Hold).
+     - Reloj basado en acumulación precisa de muestras a nivel de audio (`samples_per_step` derivado de BPM y Sample Rate) evitando desvíos o jitter.
+     - 80% Gate Length de articulación musical orgánica con corte automático de notas antes del siguiente pulso.
+     - Pruebas unitarias integradas al 100% en `arpeggiator.rs` validando orden ascendente, descendente y bidireccional.
+  3. **Modos de Patrón Clásicos (Zero Over-engineering):**
+     - `UP`: Ascendente ordenado.
+     - `DOWN`: Descendente ordenado.
+     - `UP/DOWN`: Ascendente y descendente sin duplicar los extremos.
+  4. **Divisiones Rectas de Tempo & Rango de Octavas:**
+     - Rates rectas: `1/4`, `1/8`, `1/16` y `1/32`.
+     - Rango de transposición: `1`, `2` y `3` octavas (+12, +24 semitonos).
+  5. **Función Latch / Hold con Re-trigger Inteligente:**
+     - Botón `HOLD` con LED ámbar: mantiene el arpegio sonando en bucle al levantar los dedos.
+     - Al tocar un nuevo acorde, el buffer de memoria se reemplaza automáticamente con las nuevas notas sin superposiciones indebidas.
+  6. **Bahía Unificada de Rendimiento & Enrutamiento (`PerformanceBay.tsx`):**
+     - Consolidación del enrutamiento de efectos (`FX ROUTE: KEYS / PADS`) y arpegiador (`ARP / HOLD / SETTINGS`) en un componente unificado (`PerformanceBay.tsx`), eliminando componentes redundantes.
+     - Eliminación de cajas y títulos contenedores (`PERF / FX`), integrando los botones directamente sobre el chasis monolítico de la consola con centrado vertical (`self-center my-auto`).
+     - Sustitución de micro-LEDs y estrías táctiles por retroiluminación perimetral (rim underglow) esmeralda y ámbar con bordes reactivos (`border-emerald-500/60` / `border-amber-500/60`) y resplandor sutil.
+     - Unificación estética total: idéntico sombreado Noir-Tech (`shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_3px_rgba(0,0,0,0.5)]`), padding ergonómico y tipografía mono con los botones de la barra inferior (`OVERLAY`, `UNDO`, `CLR TRK`).
+     - Popover flotante Noir-Tech para ajustes con selectores de Modo, Rate y Octavas con backdrop blur y cierre automático al hacer clic fuera.
+     - Comandos IPC Tauri registrados: `get_arp_state`, `set_arp_enabled`, `set_arp_hold`, `set_arp_mode`, `set_arp_rate`, `set_arp_octaves`.
+  7. **Integración Completa en el Sistema MIDI LEARN:**
+     - Incorporación de los botones `ARP` y `HOLD` al catálogo de acciones (`UIActionId`: `"toggleArp"` y `"toggleArpHold"`).
+     - Persistencia automática de enlaces (mensajes CC o notas) en `localStorage` (`impact_sampler_midi_learn_v1`).
+     - Retroalimentación interactiva en modo Learn: contorno ámbar pulsante (`border-2 border-amber-400 animate-pulse`), tooltips informativos con el identificador asignado y badges flotantes.
+     - Conmutación en tiempo real libre de latencia mediante eventos desacoplados, preservando al 100% la regla inviolable **Zero-Touch Sequencer** (`sequencer.rs` intacto).
+---
+
+### Fase 10: Wizard Interactivo de Calibración & Perfiles de Hardware Universal 📋 [PLANIFICADA]
+* **Objetivo:** Transformar la aplicación en una plataforma universal compatible con cualquier teclado y controlador del mercado mediante un asistente guiado interactivo de auto-calibración (Hardware Setup Wizard) que detecte y configure automáticamente rango de teclas, pads, deslizadores, perillas y botones de transporte, guardando perfiles independientes.
+* **Componentes y Especificaciones Técnicas:**
+  1. **Asistente Guiado Paso a Paso (`HardwareSetupWizard.tsx`):**
+     - Paso 1: Calibración del Rango de Teclado (`NoteOn min / max` -> detecta 25, 32, 49, 61 u 88 teclas).
+     - Paso 2: Matriz Rítmica de Pads (registro de notas asignadas o botón de omitir).
+     - Paso 3: Faders de Mezcla (filtro de histéresis anti-jitter delta $\ge 10$).
+     - Paso 4: Knobs de Efectos (detección angular y captura de CC).
+     - Paso 5: Botones de Transporte & Comandos (Play, Stop, Rec, Tap).
+     - Paso 6: Guardado & Asignación de Perfil (ej. *«Akai MPK Mini MK3»*, *«Arturia KeyLab»*).
+  2. **Estructura de Datos & Motor de Mapeo Dinámico (Rust & TypeScript):**
+     - Estructura `HardwareProfile` persistente (`key_range`, `pad_notes`, CCs y banderas de capacidades).
+     - Sincronización lock-free instantánea con el hilo de audio.
+  3. **Librería de Perfiles de Fábrica Integrados:**
+     - Nektar Impact LX49+ (por defecto), Akai MPK Mini, Arturia MiniLab, Novation Launchkey, Teclado 88 teclas.
+  4. **Adaptabilidad de Interfaz Dinámica:**
+     - Ocultamiento inteligente de módulos de pads o faders si el controlador conectado no los posee.
+
+---
+
+### Fase 11: Sistema de Sesiones (.impact), Gestión de Proyectos & Exportación de Audio 📋 [PLANIFICADA]
+* **Objetivo:** Convertir la aplicación en una estación de trabajo de producción musical completa (Workstation de estudio) con capacidad para guardar, cargar, auto-recuperar y compartir proyectos completos mediante un formato de sesión nativo (`.impact`), complementado con un motor de exportación offline de audio (WAV Bounce & Stems).
 * **Componentes y Especificaciones Técnicas:**
   1. **Estructura Atómica del Archivo de Proyecto (`.impact`):**
-     - Formato JSON estructurado de alto rendimiento que encapsula el estado exacto del estudio:
-       * **Secuenciador Rítmico:**
-         - Matriz de 16 pasos completa para Banco A y Banco B en las 8 pistas de percusión.
-         - Tempo en BPM.
-         - Resolución de Grid activa (`1/8`, `1/16` o `1/32`).
-         - Modo de pads activo (`WAV SAMPLER`, `DRUM SF2` o `MIRROR`).
-         - Mapeo de muestras WAV cargadas en los slots (nombres, rutas y configuración One-Shot/Gate).
-       * **Instrumento & Teclado:**
-         - SoundFont cargado (Piano, Rhodes, Mellotron, RX7 o personalizado).
-         - Banco y Preset seleccionado (ej. `001 - Flute`).
-       * **Rack de Efectos & Ruteo:**
-         - Parámetros de los 8 Knobs (Cutoff, Resonancia, Drive, Reverb Mix, Delay Time, Delay Feedback, Delay Mix, Panning).
-         - Posición del ruteo estéreo (`KEYS`, `BOTH`, `PADS`).
-         - Asignación de parámetros a los potenciómetros físicos.
-       * **Consola de Mezcla (Mixer):**
-         - Ganancias de los Faders 1 a 8 de pads.
-         - Volumen Master del Fader 9.
-       * **Metadatos del Proyecto:**
-         - Título, fecha de creación, última modificación y perfil de hardware asociado.
-  2. **Operaciones de Archivo & Atajos de Teclado Universales:**
-     - Diálogos nativos de Windows para gestión de archivos con `tauri-plugin-dialog`:
-       * `Ctrl + S`: Guardar sesión actual.
-       * `Ctrl + Shift + S`: Guardar como nuevo archivo `.impact`.
-       * `Ctrl + O`: Abrir proyecto existente.
-       * `Ctrl + N`: Crear nueva sesión limpia con confirmación de descarte de cambios.
-     - Indicador discreto en el Header con el nombre de la sesión activa y estado sucio (`• Mi Cancion.impact`).
-     - Lista de proyectos recientes accesibles desde el Header o el Splash Screen inicial en 1 clic.
-  3. **Auto-Guardado & Recuperación ante Cierres (*Crash / Power Loss Recovery*):**
-     - Hilo o temporizador de auto-guardado silencioso cada 60 segundos en almacenamiento temporal local (`autosave.impact`).
-     - Al detectar un cierre inesperado o reinicio del sistema, la aplicación ofrece un diálogo Noir-Tech: *«Se detectó una sesión previa no guardada. ¿Deseas restaurarla?»*.
+     - Estado completo del Secuenciador (bancos A/B, BPM, Grid, modos de pads, muestras WAV).
+     - Instrumento & Teclado (SoundFont, banco y preset).
+     - Rack de Efectos & Ruteo (parámetros de knobs, ruteo FX KEYS/BOTH/PADS).
+     - Consola de Mezcla (faders 1 a 8 de pads y Master Fader 9).
+     - Metadatos (título, autor, fecha, perfil de hardware).
+  2. **Operaciones de Archivo & Atajos Universales:**
+     - Diálogos nativos de Windows (`Ctrl+S`, `Ctrl+Shift+S`, `Ctrl+O`, `Ctrl+N`).
+     - Indicador en Header de sesión activa y estado sucio (`• Mi Cancion.impact`).
+     - Lista de proyectos recientes en Header y Splash Screen.
+  3. **Auto-Guardado & Recuperación ante Cierres (*Crash Recovery*):**
+     - Guardado temporal en segundo plano cada 60 segundos (`autosave.impact`).
+     - Diálogo de restauración si la app detecta un reinicio inesperado.
   4. **Empaquetado Completo de Muestras (*Collect All and Save*):**
-     - Opción de exportar un bundle de proyecto (`.zip` o carpeta de proyecto contenedor) que empaquete el archivo `.impact` junto con todos los archivos `.wav` utilizados en los pads, garantizando que el proyecto no pierda muestras si se abre en otra computadora.
-  5. **Plantillas de Fábrica Inspiracionales (*Factory Presets / Templates*):**
-     - Presets de estudio preconfigurados al dar «Nuevo Proyecto»:
-       * 🌆 *Synthwave 80s:* Yamaha RX7 + Mellotron Strings + Reverb/Delay envolvente + 115 BPM con groove retro.
-       * ☕ *Lo-Fi Bedroom:* Vintage Rhodes Mark I + Warm Drive suave al 85 BPM.
-       * 🎹 *Concert Acoustic:* Grand Piano Steinway + Reverb de sala grande + 120 BPM con faders calibrados.
-       * 🎛️ *Init (Clean Slate):* Grilla y parámetros en cero para componer desde una hoja en blanco.
+     - Exportación de bundle con muestras de audio para portabilidad total entre equipos.
+  5. **Plantillas de Fábrica Inspiracionales (*Templates*):**
+     - Presets *Synthwave 80s*, *Lo-Fi Bedroom*, *Concert Acoustic* e *Init*.
   6. **Motor de Exportación Offline de Audio (*WAV Bounce & Stems*):**
-     - Renderizado de audio en Rust a máxima calidad (24-bit / 48 kHz o 44.1 kHz) sin depender del tiempo real:
-       * **Exportar Master Loop (WAV):** Genera el archivo de audio del loop de 16 pasos perfectamente cortado y listo para arrastrar a cualquier DAW (Ableton, FL Studio, Reaper) o sampler.
-       * **Exportar Stems Separados:** Genera 8 archivos WAV individuales, uno por cada pista de percusión/pad, para mezcla multipista profesional.
+     - Renderizado en Rust a 24-bit / 48 kHz: Master Loop WAV y 8 Stems independientes por pista.
+
+---
+
+### Fase 12: Drum Kit Creator (WAV Pool a SF2 Compiler) 📋 [PLANIFICADA]
+* **Objetivo:** Permitir que el usuario cree sus propios Drum Kits SoundFont (`.sf2`) a partir de una colección indeterminada de archivos `.wav`, compilando un binario `.sf2` estándar compatible con el motor de audio y con DAWs externos.
+* **Componentes y Especificaciones Técnicas:**
+  1. **Carga Masiva de Muestras (Sample Pool):**
+     - Arrastrar y soltar una carpeta o conjunto de archivos `.wav` al modal de creación.
+     - Lista completa de muestras con botón de audición rápida (*preview* instantáneo).
+  2. **Auto-Asignación Inteligente Inicial a los 8 Pads:**
+     - Heurística tímbrica por nombres de archivo para poblar inicialmente los pads P1 a P8 (Kick, Snare, Clap, Closed HH, Open HH, Toms, Crash).
+  3. **Reasignación Dinámica por Clic Derecho:**
+     - Menú contextual sobre cualquier slot de pad: *«Asignar Muestra del SoundFont»* con acceso al listado total de muestras cargadas en el kit para intercambiarlas al instante.
+  4. **Compilación Nativa a SoundFont 2 (`.sf2`):**
+     - Módulo `sf2_builder` en Rust: ensamblado de chunks RIFF SF2 (`INFO`, `sdta` PCM 16-bit intercalado, `pdta` generadores y zonas de preset).
+     - Guardado en `User Library` y carga inmediata como instrumento activo sin reiniciar la aplicación.
+  5. **Mapeo Cromático:**
+     - Los 8 pads disparan sus muestras asignadas, mientras el teclado completo de 49 teclas permite tocar la totalidad de las piezas percusivas del pool.
+
+---
+
+### Fase 13: Sistema de Auto-Actualizaciones OTA (Tauri Updater) 📋 [PLANIFICADA]
+* **Objetivo:** Dotar a la aplicación instalada de un mecanismo transparente y seguro de comprobación y aplicación de actualizaciones con un solo clic, sin reinstalaciones manuales ni pérdida de información del usuario.
+* **Componentes y Especificaciones Técnicas:**
+  1. **Infraestructura de Distribución:**
+     - Servidor de actualizaciones basado en **GitHub Releases**.
+     - Binarios firmados criptográficamente con par de claves mediante `tauri signer`.
+     - Manifiesto `latest.json` con control de versión semántica y enlaces de descarga seguros.
+  2. **Experiencia de Usuario Híbrida y No Intrusiva:**
+     - **Comprobación Silenciosa al Inicio:** Hilo en segundo plano que enciende un badge esmeralda discreto en el Header al detectar nueva versión, con popover informativo y botón *«Descargar y Reiniciar»*.
+     - **Comprobación Manual desde Ajustes:** Sección *«Acerca de & Actualizaciones»* en `AudioSettingsModal.tsx` con número de versión activa y botón interactivo *«Buscar Actualizaciones»*.
+  3. **Blindaje Estricto de Datos de Usuario:**
+     - La actualización sustituye únicamente el binario ejecutable y recursos de fábrica.
+     - Preservación íntegra de librerías del usuario (`User Library`), proyectos `.impact`, configuraciones en `localStorage` (calibración de latencia de 8 golpes y asignaciones de MIDI Learn).
+
+---
+
+### Fase 14: Estrategia Multi-Plataforma (Mobile, Web App & VST3/CLAP) 📋 [PLANIFICADA]
+* **Objetivo:** Planificar y ejecutar la expansión del motor de ImpactSampler Studio a nuevos formatos y dispositivos mediante proyectos derivados independientes que blindan la estabilidad de la versión Desktop de Windows.
+* **Componentes y Especificaciones Técnicas:**
+  1. **Prioridad 1: Aplicación Móvil (iOS / iPadOS & Android):**
+     - Compilación móvil con Tauri v2 y Rust.
+     - Backend de audio adaptado a **Oboe / AAudio** en Android y **CoreAudio** en iOS.
+     - Frontend touch-first multitouch optimizado para tablets y pantallas táctiles, con soporte para controladores USB-C y Lightning.
+  2. **Prioridad 2: Web App (Browser Standalone):**
+     - Compilación DSP a **WebAssembly (WASM)**.
+     - Motor de audio mediante **Web Audio API (`AudioWorkletNode`)** y control físico mediante **Web MIDI API** nativa de Chromium.
+  3. **Prioridad 3: Plugin VST3 / CLAP (Integración en DAWs):**
+     - Instrumento virtual ejecutable en Reaper, Ableton Live, FL Studio, Cubase con framework Rust (ej. `nih-plug`).
+     - Misma estética visual Noir-Tech integrada en la ventana de host VST3.
+     - Sincronización bidireccional estricta: transporte y tempo esclavizados al DAW, con automatización de knobs y faders expuesta a la línea de tiempo.
+  4. **Principio Arquitectónico de Aislamiento:**
+     - Cada formato se desarrolla como un repositorio o workspace desacoplado, asegurando que la versión Desktop conserve su rendimiento nativo WASAPI de baja latencia sin regresiones.
 
 ---
 
 ## 3. Próximo Paso Inmediato
-Fases 1 a 6 completadas al 100%. Fases 7 y 8 planificadas y documentadas en detalle en la hoja de ruta.
-Quedamos atentos a nuevas ideas o requerimientos adicionales para continuar enriqueciendo el plan antes de proceder a la ejecución.
+Fases 1 a 7 completadas al 100%. 
+Fases 8 a 14 planificadas y documentadas en detalle en la hoja de ruta.
+El siguiente hito de desarrollo es la **Fase 8: Personalización del Instalador Tradicional & Branding Visual**.
 

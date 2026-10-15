@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from "react";
 import { Check } from "lucide-react";
 import { PadSlotInfo, KnobMappingInfo, KnobTarget, FxRouting } from "../types/sampler";
-import { MidiLearnTarget, MidiLearnMapping, getActionMappingLabel } from "../types/midiLearn";
+import { MidiLearnTarget, MidiLearnMapping } from "../types/midiLearn";
 
 import { SoundFontInfo } from "../types/soundfont";
+import { QWERTY_BASE_NOTE, QWERTY_NOTE_OFFSETS } from "../hooks/useQwertyKeyboard";
+import { PerformanceBay } from "./PerformanceBay";
 
 interface HardwareSkeletonProps {
   activeNotes: Map<number, number>;
@@ -33,6 +35,8 @@ interface HardwareSkeletonProps {
   selectedLearnTarget?: MidiLearnTarget | null;
   onSelectLearnTarget?: (target: MidiLearnTarget) => void;
   midiLearnMapping?: MidiLearnMapping;
+  qwertyEnabled?: boolean;
+  qwertyOctaveOffset?: number;
   children?: React.ReactNode;
 }
 
@@ -84,8 +88,49 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
   selectedLearnTarget = null,
   onSelectLearnTarget,
   midiLearnMapping,
+  qwertyEnabled = false,
+  qwertyOctaveOffset = 0,
   children,
 }) => {
+  // Mapa de notas a letra física QWERTY según la octava actual
+  const qwertyLabels = React.useMemo(() => {
+    if (!qwertyEnabled) return new Map<number, string>();
+
+    const map = new Map<number, string>();
+    const base = QWERTY_BASE_NOTE + qwertyOctaveOffset * 12;
+
+    const codeToLabel: Record<string, string> = {
+      KeyA: "A",
+      KeyW: "W",
+      KeyS: "S",
+      KeyE: "E",
+      KeyD: "D",
+      KeyF: "F",
+      KeyT: "T",
+      KeyG: "G",
+      KeyY: "Y",
+      KeyH: "H",
+      KeyU: "U",
+      KeyJ: "J",
+      KeyK: "K",
+      KeyO: "O",
+      KeyL: "L",
+      KeyP: "P",
+      Semicolon: ";",
+    };
+
+    for (const [code, offset] of Object.entries(QWERTY_NOTE_OFFSETS)) {
+      const note = base + offset;
+      if (note >= 36 && note <= 84) {
+        if (!keyRange || (note >= keyRange.minNote && note <= keyRange.maxNote)) {
+          map.set(note, codeToLabel[code] || code);
+        }
+      }
+    }
+
+    return map;
+  }, [qwertyEnabled, qwertyOctaveOffset, keyRange]);
+
   const [knobContextMenu, setKnobContextMenu] = useState<{
     knobIdx: number;
     x: number;
@@ -475,8 +520,10 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
               <select
                 value={currentSoundfont?.filename || ""}
                 onChange={(e) => {
-                  if (e.target.value && onSelectSoundfont) {
-                    onSelectSoundfont(e.target.value);
+                  const val = e.target.value;
+                  e.target.blur();
+                  if (val && onSelectSoundfont) {
+                    onSelectSoundfont(val);
                   }
                 }}
                 className="bg-transparent text-emerald-300 font-mono text-[10.5px] font-bold focus:outline-none cursor-pointer w-full truncate pr-1"
@@ -511,6 +558,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                   value={activePresetIndex}
                   onChange={(e) => {
                     const idx = parseInt(e.target.value, 10);
+                    e.target.blur();
                     const preset = currentSoundfont.presets[idx];
                     const patch = preset?.patch ?? 0;
                     const bank = preset?.bank ?? 0;
@@ -684,125 +732,16 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
           </div>
         </div>
 
-        {/* Sección Selector Vertical FX Route (2 Toggles Independientes: KEYS y PADS con detección OFF / BOTH) */}
-        <div className="w-full lg:w-24 shrink-0 flex flex-col items-center justify-between">
-          <div className="text-[9.5px] font-mono uppercase tracking-wider text-zinc-400 font-bold mb-1.5 text-center">
-            FX Route
-          </div>
-
-          {/* Torre / Consola Empotrada con pulsadores independientes KEYS y PADS */}
-          <div className="w-full h-24 bg-[#08080a] rounded-lg border border-white/[0.08] p-1.5 flex flex-col justify-between shadow-[inset_0_2px_6px_rgba(0,0,0,0.9)] relative overflow-hidden">
-            {/* Pulsador KEYS */}
-            {(() => {
-              const isKeysSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "fxRouteKeys";
-              const keysMapped = getActionMappingLabel(midiLearnMapping, "fxRouteKeys");
-              return (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (isMidiLearnActive) {
-                      onSelectLearnTarget?.({ type: "action", id: "fxRouteKeys" });
-                      return;
-                    }
-                    const hasKeys = fxRouting === "keys" || fxRouting === "both";
-                    const hasPads = fxRouting === "pads" || fxRouting === "both";
-                    if (hasKeys) {
-                      onChangeFxRouting?.(hasPads ? "pads" : "off");
-                    } else {
-                      onChangeFxRouting?.(hasPads ? "both" : "keys");
-                    }
-                  }}
-                  title={
-                    isMidiLearnActive
-                      ? `FX Route (Keys): ${keysMapped ? `Asignado (${keysMapped})` : "Sin asignar"}`
-                      : "FX a Teclado"
-                  }
-                  className={`flex-1 w-full rounded flex items-center justify-between px-2 font-mono text-[9.5px] font-bold tracking-wider transition-all mb-1 active:scale-95 cursor-pointer ${
-                    isKeysSelected
-                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
-                      : isMidiLearnActive
-                      ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
-                      : fxRouting === "keys" || fxRouting === "both"
-                      ? "bg-amber-500/20 text-amber-300 border border-amber-400/60 shadow-[0_0_8px_rgba(245,158,11,0.35),inset_0_1px_0_rgba(255,255,255,0.15)] font-black"
-                      : "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.03] border border-transparent"
-                  }`}
-                >
-                  <span>KEYS</span>
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full transition-all ${
-                      fxRouting === "keys" || fxRouting === "both"
-                        ? "bg-amber-400 shadow-[0_0_6px_#f59e0b]"
-                        : "bg-zinc-700/60"
-                    }`}
-                  />
-                </button>
-              );
-            })()}
-
-            {/* Pulsador PADS */}
-            {(() => {
-              const isPadsSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "fxRoutePads";
-              const padsMapped = getActionMappingLabel(midiLearnMapping, "fxRoutePads");
-              return (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (isMidiLearnActive) {
-                      onSelectLearnTarget?.({ type: "action", id: "fxRoutePads" });
-                      return;
-                    }
-                    const hasKeys = fxRouting === "keys" || fxRouting === "both";
-                    const hasPads = fxRouting === "pads" || fxRouting === "both";
-                    if (hasPads) {
-                      onChangeFxRouting?.(hasKeys ? "keys" : "off");
-                    } else {
-                      onChangeFxRouting?.(hasKeys ? "both" : "pads");
-                    }
-                  }}
-                  title={
-                    isMidiLearnActive
-                      ? `FX Route (Pads): ${padsMapped ? `Asignado (${padsMapped})` : "Sin asignar"}`
-                      : "FX a Pads"
-                  }
-                  className={`flex-1 w-full rounded flex items-center justify-between px-2 font-mono text-[9.5px] font-bold tracking-wider transition-all active:scale-95 cursor-pointer ${
-                    isPadsSelected
-                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
-                      : isMidiLearnActive
-                      ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
-                      : fxRouting === "pads" || fxRouting === "both"
-                      ? "bg-amber-500/20 text-amber-300 border border-amber-400/60 shadow-[0_0_8px_rgba(245,158,11,0.35),inset_0_1px_0_rgba(255,255,255,0.15)] font-black"
-                      : "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.03] border border-transparent"
-                  }`}
-                >
-                  <span>PADS</span>
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full transition-all ${
-                      fxRouting === "pads" || fxRouting === "both"
-                        ? "bg-amber-400 shadow-[0_0_6px_#f59e0b]"
-                        : "bg-zinc-700/60"
-                    }`}
-                  />
-                </button>
-              );
-            })()}
-          </div>
-
-          {/* Badge de Estado Dinámico */}
-          <div className="mt-1 text-center w-full flex items-center justify-center">
-            {fxRouting === "off" ? (
-              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded border border-zinc-800 bg-zinc-900/60 text-zinc-500 font-bold uppercase tracking-wider">
-                BYPASS
-              </span>
-            ) : fxRouting === "both" ? (
-              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 font-bold uppercase tracking-wider shadow-[0_0_6px_rgba(245,158,11,0.2)]">
-                KEYS+PADS
-              </span>
-            ) : (
-              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-400 font-bold uppercase tracking-wider">
-                {fxRouting?.toUpperCase()}
-              </span>
-            )}
-          </div>
+        {/* Sección Performance & Routing Bay (Centrado verticalmente) */}
+        <div className="w-full lg:w-28 shrink-0 flex flex-col items-center justify-center self-center my-auto">
+          <PerformanceBay
+            fxRouting={fxRouting}
+            onChangeFxRouting={onChangeFxRouting}
+            isMidiLearnActive={isMidiLearnActive}
+            selectedLearnTarget={selectedLearnTarget}
+            onSelectLearnTarget={onSelectLearnTarget}
+            midiLearnMapping={midiLearnMapping}
+          />
         </div>
       </div>
 
@@ -883,6 +822,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                 const isMiddleC = k.note === 60;
 
                 if (k.isBlack) {
+                  const qwertyLabel = qwertyLabels.get(k.note);
                   return (
                     <div
                       key={k.note}
@@ -904,7 +844,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                         if (k.isOutOfRange) return;
                         if (e.buttons === 1) onReleaseNote(k.note);
                       }}
-                      className={`w-[22px] h-[106px] -mx-[11px] z-20 rounded-b-[2px] transition-all duration-75 ${
+                      className={`w-[22px] h-[106px] -mx-[11px] z-20 rounded-b-[2px] transition-all duration-75 relative ${
                         k.isOutOfRange
                           ? "bg-zinc-950 border-x border-b border-black opacity-20 cursor-not-allowed shadow-none"
                           : k.isActive
@@ -912,9 +852,21 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                           : "bg-gradient-to-b from-[#18191c] via-[#121316] to-[#08080a] border-x border-[#060608] border-b-[4px] border-b-[#020203] shadow-[2px_6px_10px_rgba(0,0,0,0.95),-2px_6px_10px_rgba(0,0,0,0.95)] hover:bg-[#1f2026] cursor-pointer"
                       }`}
                       style={{ flexShrink: 0 }}
-                    />
+                    >
+                      {qwertyLabel && !k.isOutOfRange && (
+                        <span
+                          className={`absolute bottom-1.5 left-1/2 -translate-x-1/2 font-mono text-[9px] font-bold tracking-tight select-none pointer-events-none transition-colors ${
+                            k.isActive ? "text-cyan-950 font-black" : "text-zinc-400/90"
+                          }`}
+                        >
+                          {qwertyLabel}
+                        </span>
+                      )}
+                    </div>
                   );
                 }
+
+                const qwertyLabel = qwertyLabels.get(k.note);
                 return (
                   <div
                     key={k.note}
@@ -945,7 +897,9 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                     {/* Marcador de Octava en teclas C (C1 a C5) con grabado láser */}
                     {isCKey && (
                       <span
-                        className={`absolute bottom-2.5 left-1/2 -translate-x-1/2 font-mono text-[9.5px] font-bold tracking-tight select-none pointer-events-none transition-colors ${
+                        className={`absolute left-1/2 -translate-x-1/2 font-mono font-bold tracking-tight select-none pointer-events-none transition-all ${
+                          qwertyLabel && !k.isOutOfRange ? "bottom-7 text-[8.5px]" : "bottom-2.5 text-[9.5px]"
+                        } ${
                           k.isActive
                             ? "text-black font-extrabold"
                             : isMiddleC
@@ -954,6 +908,19 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                         }`}
                       >
                         C{octaveNum}
+                      </span>
+                    )}
+
+                    {/* Serigrafía de Letra QWERTY */}
+                    {qwertyLabel && !k.isOutOfRange && (
+                      <span
+                        className={`absolute bottom-2.5 left-1/2 -translate-x-1/2 font-mono text-[10px] font-bold tracking-tight select-none pointer-events-none transition-colors ${
+                          k.isActive
+                            ? "text-black font-black"
+                            : "text-zinc-600/90 drop-shadow-[0_1px_0_rgba(255,255,255,0.7)]"
+                        }`}
+                      >
+                        {qwertyLabel}
                       </span>
                     )}
                   </div>

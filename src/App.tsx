@@ -9,6 +9,7 @@ import { InstrumentSelectModal } from "./components/InstrumentSelectModal";
 import { StepSequencer } from "./components/StepSequencer";
 import { GiantMetronomeOverlay } from "./components/GiantMetronomeOverlay";
 import { useMidiStream } from "./hooks/useMidiStream";
+import { useQwertyKeyboard } from "./hooks/useQwertyKeyboard";
 import { SoundFontInfo } from "./types/soundfont";
 import {
   PadSlotInfo,
@@ -89,6 +90,24 @@ export default function App() {
 
   const [isVisualMetronomeVisible, setIsVisualMetronomeVisible] = useState<boolean>(false);
   const [workstationMode, setWorkstationMode] = useState<"keys" | "seq">("keys");
+  const [qwertyEnabled, setQwertyEnabled] = useState<boolean>(false);
+
+  // Rango acústico para instrumentos limitados (ej. Mellotron 43 a 77: G2 a F5)
+  const isMellotron = currentSoundfont?.filename.toLowerCase().includes("mellotron");
+  const keyRange = isMellotron
+    ? { minNote: 43, maxNote: 77, label: "G2 a F5" }
+    : undefined;
+
+  // Entrada por teclado de computadora (QWERTY)
+  const { octaveOffset } = useQwertyKeyboard({
+    enabled: qwertyEnabled,
+    workstationMode,
+    keyRange,
+    onNoteOn: (note, vel) => triggerVirtualNote(note, vel, true),
+    onNoteOff: (note) => triggerVirtualNote(note, 0, false),
+    onPadOn: (padIdx) => triggerVirtualPad(padIdx, 127, true),
+    onPadOff: (padIdx) => triggerVirtualPad(padIdx, 0, false),
+  });
 
   // Splash inicial de 3 segundos con revelado cinematográfico
   const [isBooting, setIsBooting] = useState<boolean>(true);
@@ -328,6 +347,7 @@ export default function App() {
       }
 
       setIsInstrumentModalOpen(false);
+      (document.activeElement as HTMLElement)?.blur?.();
     } catch (err) {
       console.error("Error al cargar SoundFont:", err);
       throw err;
@@ -798,6 +818,8 @@ export default function App() {
         onMasterGainChange={handleMasterGainChange}
         isMidiLearnActive={isMidiLearnActive}
         onToggleMidiLearn={toggleMidiLearn}
+        qwertyEnabled={qwertyEnabled}
+        onToggleQwerty={() => setQwertyEnabled((v) => !v)}
       />
 
       {/* Contenido Principal: Hardware Monolítico Flotante y Centrado Ergonómicamente sobre Negro Profundo */}
@@ -848,11 +870,7 @@ export default function App() {
             knobs={knobs}
             pitchBend={pitchBend}
             modWheel={modWheel}
-            keyRange={
-              currentSoundfont?.filename.toLowerCase().includes("mellotron")
-                ? { minNote: 43, maxNote: 77, label: "G2 a F5" }
-                : undefined
-            }
+            keyRange={keyRange}
             padSlots={padSlots}
             knobMappings={knobMappings}
             onSetKnobMapping={handleSetKnobMapping}
@@ -874,6 +892,8 @@ export default function App() {
             selectedLearnTarget={selectedLearnTarget}
             onSelectLearnTarget={setSelectedLearnTarget}
             midiLearnMapping={midiLearnMapping}
+            qwertyEnabled={qwertyEnabled}
+            qwertyOctaveOffset={octaveOffset}
           >
             {/* Bahía Acoplada de Expansión: Secuenciador Rítmico TR-Style & Barra de Docking Maestra */}
             <StepSequencer

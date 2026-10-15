@@ -60,6 +60,7 @@ export const InstrumentSelectModal: React.FC<InstrumentSelectModalProps> = ({
       if (onClose) {
         onClose();
       }
+      (document.activeElement as HTMLElement)?.blur?.();
     } catch (err) {
       if (isMountedRef.current) {
         setIsLoading(false);
@@ -251,7 +252,10 @@ export const InstrumentSelectModal: React.FC<InstrumentSelectModalProps> = ({
           {!isInitialSplash && onClose && !isLoading && (
             <button
               type="button"
-              onClick={onClose}
+              onClick={(e) => {
+                e.currentTarget.blur();
+                onClose();
+              }}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-white/[0.1] bg-white/[0.05] hover:bg-white/[0.12] hover:border-white/20 text-zinc-300 hover:text-white text-xs font-mono transition cursor-pointer shadow-sm"
               title="Cerrar galería (ESC)"
             >

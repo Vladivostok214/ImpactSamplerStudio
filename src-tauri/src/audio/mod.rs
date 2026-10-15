@@ -1,3 +1,4 @@
+pub mod arpeggiator;
 pub mod engine;
 pub mod fx;
 pub mod sampler;
@@ -7,6 +8,8 @@ use std::sync::Arc;
 use rustysynth::SoundFont;
 use serde::{Deserialize, Serialize};
 
+#[allow(unused_imports)]
+pub use arpeggiator::{ArpMode, ArpRate, ArpStateInfo, Arpeggiator};
 #[allow(unused_imports)]
 pub use fx::{AudioFxRack, FxRouting, KnobMappingInfo, KnobTarget};
 #[allow(unused_imports)]
@@ -77,6 +80,12 @@ pub enum AudioEngineCommand {
     SequencerSetLatencyCompensation(i32),
     SequencerUndo,
     SetMidiMute(bool),
+    // Fase 9: Arpeggiator Commands
+    SetArpEnabled(bool),
+    SetArpHold(bool),
+    SetArpMode(ArpMode),
+    SetArpRate(ArpRate),
+    SetArpOctaves(u8),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
