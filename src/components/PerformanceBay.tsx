@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { SlidersHorizontal } from "lucide-react";
+import { Settings } from "lucide-react";
 import { FxRouting } from "../types/sampler";
 import { MidiLearnTarget, MidiLearnMapping, getActionMappingLabel } from "../types/midiLearn";
 import { ArpMode, ArpRate, ArpStateInfo } from "../types/arpeggiator";
@@ -206,15 +206,109 @@ export const PerformanceBay: React.FC<PerformanceBayProps> = ({
   const isFxKeysActive = fxRouting === "keys" || fxRouting === "both";
   const isFxPadsActive = fxRouting === "pads" || fxRouting === "both";
 
+  // Estilos visuales compartidos por los 4 botones de la columna (solo apariencia)
+  const fxBtnBase =
+    "w-full h-7 px-2 rounded-md flex items-center justify-center gap-1.5 font-mono text-[9.5px] tracking-wider transition-all active:scale-95 cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_3px_rgba(0,0,0,0.5)]";
+  const fxBtnOff =
+    "bg-[#18191e] text-zinc-400 hover:text-zinc-200 hover:bg-[#24262d] border border-white/10 hover:border-white/20 font-bold";
+  const fxBtnCyan =
+    "bg-cyan-950/30 text-cyan-300 border border-cyan-400/60 shadow-[0_0_6px_rgba(34,211,238,0.22),inset_0_1px_0_rgba(255,255,255,0.08)] font-black";
+  const fxBtnLearnSel =
+    "border-2 border-amber-400 bg-amber-950/40 text-amber-200 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse font-bold";
+  const fxBtnLearn =
+    "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400 font-semibold";
+
+  // LED indicador a la izquierda del texto
+  const renderLed = (on: boolean, colorClass: string, glow: string) => (
+    <span
+      className={`w-1 h-1 rounded-full shrink-0 transition-all ${
+        on ? `${colorClass} ${glow}` : "bg-zinc-700"
+      }`}
+    />
+  );
+
   return (
     <div className="w-full flex flex-col items-center justify-center gap-2 relative">
-      {/* Sección FX ROUTE */}
+      {/* 1. Cápsula Unificada de Controles ARP [ ARP | HOLD | ⚙ ] */}
+      <div className="flex items-stretch w-full h-7 rounded-md bg-[#18191e] border border-white/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_3px_rgba(0,0,0,0.5)] overflow-hidden">
+        {/* Segmento ARP */}
+        <button
+          type="button"
+          onClick={handleToggleArpEnabled}
+          title={
+            isMidiLearnActive
+              ? `Arpegiador: ${arpMapped ? `Asignado (${arpMapped})` : "Sin asignar"}`
+              : arpState.enabled
+              ? "Desactivar Arpegiador"
+              : "Activar Arpegiador"
+          }
+          className={`flex-1 h-full px-1.5 flex items-center justify-center gap-1.5 font-mono text-[9.5px] tracking-wider transition-all cursor-pointer border-r border-white/10 ${
+            isArpLearnSelected
+              ? "border-2 border-amber-400 bg-amber-950/40 text-amber-200 shadow-[0_0_15px_rgba(245,158,11,0.8)] animate-pulse font-bold"
+              : isMidiLearnActive
+              ? "bg-amber-950/20 text-amber-300 hover:bg-amber-950/40 font-semibold"
+              : arpState.enabled
+              ? "bg-emerald-950/50 text-emerald-300 shadow-[inset_0_0_8px_rgba(16,185,129,0.3)] font-black"
+              : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04] font-bold"
+          }`}
+        >
+          {!isMidiLearnActive &&
+            renderLed(arpState.enabled, "bg-emerald-400", "shadow-[0_0_5px_#34d399]")}
+          ARP
+        </button>
+
+        {/* Segmento HOLD */}
+        <button
+          type="button"
+          onClick={handleToggleArpHold}
+          title={
+            isMidiLearnActive
+              ? `Hold / Latch: ${holdMapped ? `Asignado (${holdMapped})` : "Sin asignar"}`
+              : arpState.hold
+              ? "Desactivar Hold / Latch"
+              : "Activar Hold / Latch"
+          }
+          className={`flex-1 h-full px-1.5 flex items-center justify-center gap-1.5 font-mono text-[9.5px] tracking-wider transition-all cursor-pointer border-r border-white/10 ${
+            isHoldLearnSelected
+              ? "border-2 border-amber-400 bg-amber-950/40 text-amber-200 shadow-[0_0_15px_rgba(245,158,11,0.8)] animate-pulse font-bold"
+              : isMidiLearnActive
+              ? "bg-amber-950/20 text-amber-300 hover:bg-amber-950/40 font-semibold"
+              : arpState.hold
+              ? "bg-amber-950/50 text-amber-300 shadow-[inset_0_0_8px_rgba(245,158,11,0.3)] font-black"
+              : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04] font-bold"
+          } ${!arpState.enabled && !isMidiLearnActive ? "opacity-40" : ""}`}
+        >
+          {!isMidiLearnActive &&
+            renderLed(arpState.hold, "bg-amber-400", "shadow-[0_0_5px_#fbbf24]")}
+          HOLD
+        </button>
+
+        {/* Segmento Ajustes (Engranaje) */}
+        <button
+          ref={buttonRef}
+          type="button"
+          onClick={() => setIsPopoverOpen(!isPopoverOpen)}
+          title="Ajustes del Arpegiador"
+          className={`w-7 h-full flex items-center justify-center shrink-0 transition-all cursor-pointer ${
+            isPopoverOpen
+              ? "bg-[#24262d] text-emerald-300 shadow-[inset_0_0_8px_rgba(52,211,153,0.35)]"
+              : "text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.04]"
+          }`}
+        >
+          <Settings className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      {/* Separador sutil */}
+      <div className="w-full h-px bg-white/[0.08] my-0.5" />
+
+      {/* 2. Sección FX ROUTE (Limpia: solo título y botones KEYS / PADS) */}
       <div className="flex flex-col items-center w-full gap-1.5">
         <span className="text-[9px] font-mono uppercase tracking-wider text-zinc-400 font-bold leading-none">
           FX ROUTE
         </span>
 
-        <div className="grid grid-cols-2 gap-1.5 w-full">
+        <div className="flex flex-col gap-1.5 w-full">
           {/* Botón KEYS */}
           <button
             type="button"
@@ -224,16 +318,18 @@ export const PerformanceBay: React.FC<PerformanceBayProps> = ({
                 ? `FX Route (Keys): ${keysMapped ? `Asignado (${keysMapped})` : "Sin asignar"}`
                 : "FX a Teclado"
             }
-            className={`w-full py-1.5 px-2 rounded-md flex items-center justify-center font-mono text-[9.5px] tracking-wider transition-all active:scale-95 cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_3px_rgba(0,0,0,0.5)] ${
+            className={`${fxBtnBase} ${
               isKeysLearnSelected
-                ? "border-2 border-amber-400 bg-amber-950/40 text-amber-200 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse font-bold"
+                ? fxBtnLearnSel
                 : isMidiLearnActive
-                ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400 font-semibold"
+                ? fxBtnLearn
                 : isFxKeysActive
-                ? "bg-amber-950/40 text-amber-300 border border-amber-500/60 shadow-[0_0_8px_rgba(245,158,11,0.35),inset_0_1px_0_rgba(255,255,255,0.08)] font-black"
-                : "bg-[#18191e] text-zinc-400 hover:text-zinc-200 hover:bg-[#24262d] border border-white/10 font-bold"
+                ? fxBtnCyan
+                : fxBtnOff
             }`}
           >
+            {!isMidiLearnActive &&
+              renderLed(isFxKeysActive, "bg-cyan-400", "shadow-[0_0_5px_#22d3ee]")}
             KEYS
           </button>
 
@@ -246,98 +342,28 @@ export const PerformanceBay: React.FC<PerformanceBayProps> = ({
                 ? `FX Route (Pads): ${padsMapped ? `Asignado (${padsMapped})` : "Sin asignar"}`
                 : "FX a Pads"
             }
-            className={`w-full py-1.5 px-2 rounded-md flex items-center justify-center font-mono text-[9.5px] tracking-wider transition-all active:scale-95 cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_3px_rgba(0,0,0,0.5)] ${
+            className={`${fxBtnBase} ${
               isPadsLearnSelected
-                ? "border-2 border-amber-400 bg-amber-950/40 text-amber-200 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse font-bold"
+                ? fxBtnLearnSel
                 : isMidiLearnActive
-                ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400 font-semibold"
+                ? fxBtnLearn
                 : isFxPadsActive
-                ? "bg-amber-950/40 text-amber-300 border border-amber-500/60 shadow-[0_0_8px_rgba(245,158,11,0.35),inset_0_1px_0_rgba(255,255,255,0.08)] font-black"
-                : "bg-[#18191e] text-zinc-400 hover:text-zinc-200 hover:bg-[#24262d] border border-white/10 font-bold"
+                ? fxBtnCyan
+                : fxBtnOff
             }`}
           >
+            {!isMidiLearnActive &&
+              renderLed(isFxPadsActive, "bg-cyan-400", "shadow-[0_0_5px_#22d3ee]")}
             PADS
           </button>
         </div>
       </div>
 
-      {/* Separador Serigrafiado Ultra Fino */}
-      <div className="w-full my-0.5 flex items-center justify-center px-1">
-        <div className="w-full h-[1px] bg-white/[0.06]" />
-      </div>
-
-      {/* Sección Arpegiador (Sin rótulo redundante ARPEGGIATOR) */}
-      <div className="flex flex-col items-center w-full gap-1.5">
-        <div className="grid grid-cols-2 gap-1.5 w-full">
-          {/* Botón ARP */}
-          <button
-            type="button"
-            onClick={handleToggleArpEnabled}
-            title={
-              isMidiLearnActive
-                ? `Arpegiador: ${arpMapped ? `Asignado (${arpMapped})` : "Sin asignar"}`
-                : arpState.enabled
-                ? "Desactivar Arpegiador"
-                : "Activar Arpegiador"
-            }
-            className={`w-full py-1.5 px-2 rounded-md flex items-center justify-center font-mono text-[9.5px] tracking-wider transition-all active:scale-95 cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_3px_rgba(0,0,0,0.5)] ${
-              isArpLearnSelected
-                ? "border-2 border-amber-400 bg-amber-950/40 text-amber-200 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse font-bold"
-                : isMidiLearnActive
-                ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400 font-semibold"
-                : arpState.enabled
-                ? "bg-emerald-950/40 text-emerald-300 border border-emerald-500/60 shadow-[0_0_8px_rgba(16,185,129,0.35),inset_0_1px_0_rgba(255,255,255,0.08)] font-black"
-                : "bg-[#18191e] text-zinc-400 hover:text-zinc-200 hover:bg-[#24262d] border border-white/10 font-bold"
-            }`}
-          >
-            ARP
-          </button>
-
-          {/* Botón HOLD */}
-          <button
-            type="button"
-            onClick={handleToggleArpHold}
-            title={
-              isMidiLearnActive
-                ? `Hold / Latch: ${holdMapped ? `Asignado (${holdMapped})` : "Sin asignar"}`
-                : arpState.hold
-                ? "Desactivar Hold / Latch"
-                : "Activar Hold / Latch"
-            }
-            className={`w-full py-1.5 px-2 rounded-md flex items-center justify-center font-mono text-[9.5px] tracking-wider transition-all active:scale-95 cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_3px_rgba(0,0,0,0.5)] ${
-              isHoldLearnSelected
-                ? "border-2 border-amber-400 bg-amber-950/40 text-amber-200 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse font-bold"
-                : isMidiLearnActive
-                ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400 font-semibold"
-                : arpState.hold
-                ? "bg-amber-950/40 text-amber-300 border border-amber-500/60 shadow-[0_0_8px_rgba(245,158,11,0.35),inset_0_1px_0_rgba(255,255,255,0.08)] font-black"
-                : "bg-[#18191e] text-zinc-400 hover:text-zinc-200 hover:bg-[#24262d] border border-white/10 font-bold"
-            }`}
-          >
-            HOLD
-          </button>
-        </div>
-
-        {/* Botón SETTINGS Enrasado */}
-        <button
-          ref={buttonRef}
-          type="button"
-          onClick={() => setIsPopoverOpen(!isPopoverOpen)}
-          title="Ajustes del Arpegiador"
-          className="w-full py-1.5 px-2 rounded-md bg-[#18191e] hover:bg-[#24262d] border border-white/10 hover:border-white/20 text-zinc-400 hover:text-zinc-200 transition-all flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_3px_rgba(0,0,0,0.5)]"
-        >
-          <SlidersHorizontal className="w-2.5 h-2.5" />
-          <span className="text-[9px] font-mono font-bold tracking-wider uppercase">
-            SETTINGS
-          </span>
-        </button>
-      </div>
-
-      {/* Popover Flotante de Ajustes Noir-Tech */}
+      {/* Popover Flotante de Ajustes Noir-Tech (anclado a la izquierda de la placa ARP) */}
       {isPopoverOpen && (
         <div
           ref={popoverRef}
-          className="absolute right-0 top-full mt-1.5 z-50 w-56 bg-[#0c0d12] border border-white/10 rounded-xl shadow-[0_15px_35px_rgba(0,0,0,0.95)] p-2.5 font-mono text-zinc-300 animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-2.5 backdrop-blur-md"
+          className="absolute right-full top-0 mr-2 z-50 w-56 bg-[#0c0d12] border border-white/10 rounded-xl shadow-[0_15px_35px_rgba(0,0,0,0.95)] p-2.5 font-mono text-zinc-300 animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-2.5 backdrop-blur-md"
         >
           <div className="flex items-center justify-between border-b border-white/[0.08] pb-1.5">
             <span className="text-[9.5px] font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">

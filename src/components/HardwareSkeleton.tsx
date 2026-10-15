@@ -155,9 +155,9 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
   }, []);
 
   const AVAILABLE_KNOB_TARGETS: { target: KnobTarget; label: string; desc: string }[] = [
-    { target: "cutoff", label: "CUTOFF", desc: "Filtro Paso Bajo (40Hz - 18kHz)" },
+    { target: "cutoff", label: "CUTOFF", desc: "Filtro DJ Bipolar (LPF <- Centro -> HPF)" },
     { target: "resonance", label: "RES", desc: "Filtro Resonancia Q" },
-    { target: "drive", label: "DRIVE", desc: "Warm Saturation Analógica" },
+    { target: "drive", label: "DRIVE", desc: "Saturación Valvular con Auto-Gain (1x - 12x)" },
     { target: "reverbMix", label: "REVERB", desc: "Reverb Freeverb Estéreo" },
     { target: "delayTime", label: "D-TIME", desc: "Delay Tiempo (40ms - 1s)" },
     { target: "delayFeedback", label: "D-FDBK", desc: "Delay Feedback / Ecos" },
@@ -331,7 +331,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
   return (
     <div className="bg-[#050508] border border-white/[0.12] rounded-2xl shadow-[0_20px_60px_rgba(0,0,0,0.95),0_0_1px_1px_rgba(255,255,255,0.06),inset_0_1px_0_0_rgba(255,255,255,0.1)] flex flex-col overflow-hidden select-none transition-all duration-200">
       {/* 1. Deck Superior del Hardware: Panel de Control Unificado (Wheels, Faders Matrix y Knobs Rack) */}
-      <div className="p-3.5 md:p-4 bg-gradient-to-b from-[#111216] via-[#0d0e12] to-[#08080a] border-b border-white/[0.08] flex flex-col lg:flex-row gap-3 lg:gap-4 items-stretch lg:items-center w-full">
+      <div className="p-3.5 md:p-4 bg-gradient-to-b from-[#111216] via-[#0d0e12] to-[#08080a] border-b border-white/[0.08] flex flex-col lg:flex-row gap-3 lg:gap-4 items-stretch w-full">
         {/* Sección Ruedas (Pitch Bend & Mod Wheel) */}
         <div className="flex items-center gap-2 pr-3 lg:pr-4 pb-3 lg:pb-0 border-b lg:border-b-0 lg:border-r border-white/[0.08] shrink-0">
           {/* Pitch Wheel */}
@@ -508,9 +508,9 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
 
 
         {/* Sección Knobs Matrix & FX Rack (K1 a K8) con Pantalla OLED de Instrumento/Preset */}
-        <div className="flex-1 min-w-0 pr-0 lg:pr-4 pb-3 lg:pb-0 border-b lg:border-b-0 lg:border-r border-white/[0.08] flex flex-col justify-between">
+        <div className="flex-1 min-w-0 pr-0 lg:pr-4 pb-3 lg:pb-0 border-b lg:border-b-0 lg:border-r border-white/[0.08] flex flex-col justify-center gap-2">
           {/* Pantalla OLED de Selección de Instrumento Melódico y Patch / Preset */}
-          <div className="mb-2 p-1 bg-[#040406] border border-white/10 rounded-lg shadow-[inset_0_2px_4px_rgba(0,0,0,0.9),0_1px_0_rgba(255,255,255,0.05)] flex items-center justify-between gap-2 flex-wrap">
+          <div className="p-1 bg-[#040406] border border-white/10 rounded-lg shadow-[inset_0_2px_4px_rgba(0,0,0,0.9),0_1px_0_rgba(255,255,255,0.05)] flex items-center justify-between gap-2 flex-wrap">
             {/* Selector de Instrumento Melódico (Coherente 1:1 con PATCH) */}
             <div className="flex-1 min-w-[170px] h-7 px-2 bg-[#0a0c10] border border-white/10 hover:border-white/25 rounded-md flex items-center gap-1.5 transition-all shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#10b981] shrink-0" />
@@ -620,7 +620,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                   key={idx}
                   onClick={handleKnobContainerClick}
                   onDoubleClick={handleKnobReset}
-                  className={`flex flex-col items-center cursor-pointer group py-1 px-1 rounded-lg transition-all ${
+                  className={`relative flex flex-col items-center cursor-pointer group py-1 px-1 rounded-lg transition-all ${
                     isKnobTargetSelected
                       ? "border-2 border-amber-400 bg-amber-500/20 shadow-[0_0_18px_rgba(245,158,11,0.85)] ring-2 ring-amber-400/50 animate-pulse"
                       : isMidiLearnActive
@@ -732,8 +732,8 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
           </div>
         </div>
 
-        {/* Sección Performance & Routing Bay (Centrado verticalmente) */}
-        <div className="w-full lg:w-28 shrink-0 flex flex-col items-center justify-center self-center my-auto">
+        {/* Sección Performance & Routing Bay (ARP arriba, FX ROUTE abajo - Centrado vertical) */}
+        <div className="w-full lg:w-32 shrink-0 flex flex-col items-center justify-center self-center my-auto">
           <PerformanceBay
             fxRouting={fxRouting}
             onChangeFxRouting={onChangeFxRouting}

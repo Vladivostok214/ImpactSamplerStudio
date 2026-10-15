@@ -30,7 +30,8 @@ flowchart TD
     F6 --> F7["Fase 7: Teclado de Computadora (Entrada QWERTY)"]
     F7 --> F8["Fase 8: Personalización del Instalador Tradicional & Branding Visual"]
     F8 --> F9["Fase 9: Motor de Arpegiador Melódico Integrado"]
-    F9 --> F10["Fase 10: Wizard Interactivo de Calibración & Perfiles Hardware Universal"]
+    F9 --> F91["Fase 9.1: Cápsulas Noir-Tech & DSP Avanzado (DJ Filter & Tube Drive)"]
+    F91 --> F10["Fase 10: Wizard Interactivo de Calibración & Perfiles Hardware Universal"]
     F10 --> F11["Fase 11: Sistema de Sesiones (.impact), Gestión de Proyectos & Exportación"]
     F11 --> F12["Fase 12: Drum Kit Creator (WAV Pool a SF2 Compiler)"]
     F12 --> F13["Fase 13: Sistema de Auto-Actualizaciones OTA (Tauri Updater)"]
@@ -408,6 +409,38 @@ flowchart TD
      - Conmutación en tiempo real libre de latencia mediante eventos desacoplados, preservando al 100% la regla inviolable **Zero-Touch Sequencer** (`sequencer.rs` intacto).
 ---
 
+### Fase 9.1: Cápsulas Segmentadas Noir-Tech, Ergonomía de Transporte & Refactorización DSP de Efectos (Cutoff Bipolar & Tube Drive) ✅ [COMPLETADA]
+* **Objetivo:** Perfeccionar la ergonomía visual de la consola superior e inferior mediante controles segmentados en cápsulas unificadas de hardware Noir-Tech, resolver el desbordamiento horizontal en resolución 1/32 y re-arquitecturar el motor DSP de efectos en Rust para dotar a la perilla de CUTOFF de comportamiento bipolar estilo DJ (LPF/HPF) y al DRIVE de saturación analógica valvular con compensación automática de ganancia (*Auto-Gain*).
+* **Componentes y Especificaciones Técnicas Implementadas:**
+  1. **Cápsulas Segmentadas Noir-Tech en Bahía Superior (`PerformanceBay.tsx` & `HardwareSkeleton.tsx`):**
+     - **Cápsula de Arpegiador Compacta `[ ARP | HOLD | ⚙ ]`:** Unificación de los controles del arpegiador en una sola pieza continua de `h-7` (28px), con divisores internos `border-r border-white/10` y micro-LEDs de estado integrados (esmeralda para ARP, ámbar para HOLD).
+     - **Eliminación de Elementos Redundantes:** Remoción del marco exterior superfluo, el título superior «ARP» y la lectura de texto inferior («UP · 1/16 · 1 OCT»), restaurando la altura compacta (~120px) del deck superior.
+     - **Optimización del Módulo FX ROUTE:** Supresión del badge estático «FX» y del indicador redundante «KEYS/PADS/BOTH», conservando únicamente los pulsadores de acción apilados a ancho completo.
+     - **Centrado Ergonómico de Knobs:** Ajuste del contenedor de perillas en `HardwareSkeleton.tsx` a `justify-center gap-2` y colapso de márgenes muertos, logrando una alineación simétrica y profesional entre la pantalla OLED y el selector de instrumentos.
+  2. **Cápsula Unificada de Transporte Maestro (`StepSequencer.tsx`):**
+     - Empaquetado de los tres botones de transporte en una cápsula monolítica de `h-8` (32px):
+       - **Segmento STOP (■):** Ancho compacto centrado con icono de parada nítido.
+       - **Segmento PLAY / PAUSE (▶ / ❚❚):** Botón central con tipografía monoespaciada en mayúsculas y resplandor en gradiente esmeralda neón al estar en reproducción.
+       - **Segmento REC (●):** Botón derecho con LED indicador rojo y pulsación luminosa al grabar en overdub.
+     - Preservación íntegra de atajos de teclado (barra espaciadora), tooltips sintéticos y enlaces MIDI Learn (`UIActionId`: `"stop"`, `"play"`, `"record"`).
+  3. **Reorganización de la Barra Inferior & Solución de Desbordamiento en 1/32 (`StepSequencer.tsx`):**
+     - **Cápsula Unificada de Metrónomo `[ ♫ • | 👁 • ]`:** Fusión del metrónomo acústico (clic sonoro con LED ámbar) y el metrónomo visual (icono vectorial `Eye` de `lucide-react` con LED esmeralda) en un control segmentado ultra-compacto, reubicado lógicamente junto a la pantalla digital VFD de Tempo BPM (`[ - 120 + TAP ]`).
+     - **Cápsula Unificada de Edición e Historial `[ ↶ UNDO | ⌫ CLR TRK | 🗑 ]`:** Fusión de las acciones de manipulación de notas (`UNDO` cian con icono `RotateCcw`, `CLR TRK` ámbar con `Eraser`, y `Borrar Todo el Patrón` con `Trash2`) en una sola cápsula de `h-8` al extremo derecho.
+     - **Eliminación Total del Overflow:** La simplificación del lado izquierdo y la consolidación del bloque derecho liberaron más de **170px de ancho horizontal**, asegurando que al activar la resolución de grilla en 1/32 y desplegarse los botones de página `[ 1 | 2 ]`, ningún elemento se corte ni desborde la ventana.
+  4. **Filtro Bipolar Estilo DJ en Rust (`src-tauri/src/audio/fx.rs`):**
+     - **Topología TPT / Cytomic State Variable Filter (SVF 12dB/oct):** Reemplazo del filtro Chamberlin anterior por integradores trapezoidales exactos (*Topology-Preserving Transform*), garantizando estabilidad incondicional y pureza de fase hasta Nyquist (20 kHz+).
+     - **Posición Central (Valor 64 / ~50%):** Zona muerta sutil (`0.48 .. 0.52`, CC 61..66). En esta posición el filtro entra en **Bypass Total (Flat)**: la señal pasa 100% limpia sin atenuación de frecuencias ni alteración de fase.
+     - **Giro a la Izquierda (< 64):** Modo **Low-Pass Filter (LPF)**. Corta agudos progresivamente (desde 20 kHz hasta ~45 Hz en el tope izquierdo) con crossfade suave al centro para emular el clásico barrido subacuático de club.
+     - **Giro a la Derecha (> 64):** Modo **High-Pass Filter (HPF)**. Corta graves progresivamente (desde 25 Hz hasta ~13 kHz en el tope derecho) con crossfade suave al centro para transiciones y efectos aéreos.
+     - **Control de Resonancia (`RES`):** El Knob 2 modula el factor Q del filtro (de 0.7071 Butterworth plano hasta 8.5 resonante), aportando un barrido ácido y marcado tanto en LPF como en HPF.
+  5. **Warm Analog Tube Overdrive con Auto-Gain Matching (`src-tauri/src/audio/fx.rs`):**
+     - **Pre-ganancia de Rango Expandido (1.0x a 12.0x / +21.6 dB):** Curva perceptual exponencial (`d^1.35`) que garantiza que incluso notas con dinámica suave entren en la zona de saturación no lineal.
+     - **Saturación No-Lineal Asimétrica Valvular (`tanh` asimétrico):** Semiciclo positivo con factor 1.15x y semiciclo negativo con 0.88x, generando ricos **armónicos de segundo orden (pares)** responsables de la calidez y gordura de bulbos/válvulas, combinados con armónicos de tercer orden para un crunch orgánico.
+     - **Compensación Automática de Ganancia de Salida (*Auto-Gain Matching*):** Atenuación matemática adaptativa (`1.0 / (1.0 + drive_amount * 1.85)`). Mantiene el volumen percibido estable, evitando que el efecto actúe como un amplificador de volumen y permitiendo al usuario escuchar en primer plano la textura, grano, compresión armónica y pegada de la distorsión.
+     - **Suavizado Exponencial:** Integración de `drive_smooth` y blend progresivo al inicio del recorrido para transiciones libres de zipper-noise o clics de audio.
+
+---
+
 ### Fase 10: Wizard Interactivo de Calibración & Perfiles de Hardware Universal 📋 [PLANIFICADA]
 * **Objetivo:** Transformar la aplicación en una plataforma universal compatible con cualquier teclado y controlador del mercado mediante un asistente guiado interactivo de auto-calibración (Hardware Setup Wizard) que detecte y configure automáticamente rango de teclas, pads, deslizadores, perillas y botones de transporte, guardando perfiles independientes.
 * **Componentes y Especificaciones Técnicas:**
@@ -507,7 +540,7 @@ flowchart TD
 ---
 
 ## 3. Próximo Paso Inmediato
-Fases 1 a 7 completadas al 100%. 
-Fases 8 a 14 planificadas y documentadas en detalle en la hoja de ruta.
-El siguiente hito de desarrollo es la **Fase 8: Personalización del Instalador Tradicional & Branding Visual**.
+Fases 1 a 9.1 completadas al 100%. 
+Fases 10 a 14 planificadas y documentadas en detalle en la hoja de ruta.
+El siguiente hito de desarrollo es la **Fase 10: Wizard Interactivo de Calibración & Perfiles de Hardware Universal**.
 

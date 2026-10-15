@@ -41,7 +41,7 @@ impl KnobTarget {
 
     pub fn display_name(&self) -> &'static str {
         match self {
-            KnobTarget::Cutoff => "Filtro Cutoff (Paso Bajo)",
+            KnobTarget::Cutoff => "Filtro DJ Bipolar (LPF <- Centro -> HPF)",
             KnobTarget::Resonance => "Filtro Resonancia (Q)",
             KnobTarget::Drive => "Warm Drive (Saturación)",
             KnobTarget::ReverbMix => "Reverb Mix (Espacialidad)",
@@ -64,13 +64,47 @@ pub struct KnobMappingInfo {
     pub value: f32, // 0.0 a 1.0
 }
 
-// 1. Filtro State Variable Filter (SVF Chamberlin 12dB/oct)
+// 1. Filtro State Variable Filter Bipolar estilo DJ (TPT / Cytomic SVF 12dB/oct)
+// Centro = BYPASS (100% plano, sin pérdida de agudos ni alteración de fase)
+// Giro Izquierda (< Centro) = LPF (Corta Agudos progresivamente)
+// Giro Derecha (> Centro) = HPF (Corta Bajos progresivamente)
+#[derive(Clone)]
+struct TptSvfChannel {
+    s1: f32,
+    s2: f32,
+}
+
+impl TptSvfChannel {
+    fn new() -> Self {
+        Self { s1: 0.0, s2: 0.0 }
+    }
+
+    #[inline(always)]
+    fn process(&mut self, input: f32, k: f32, a1: f32, a2: f32, a3: f32) -> (f32, f32) {
+        let v3 = input - self.s2;
+        let v1 = a1 * self.s1 + a2 * v3;
+        let v2 = self.s2 + a2 * self.s1 + a3 * v3;
+
+        self.s1 = 2.0 * v1 - self.s1;
+        self.s2 = 2.0 * v2 - self.s2;
+
+        let lp = v2;
+        let hp = input - k * v1 - v2;
+
+        (lp, hp)
+    }
+
+    #[inline(always)]
+    fn decay(&mut self) {
+        self.s1 *= 0.95;
+        self.s2 *= 0.95;
+    }
+}
+
 #[derive(Clone)]
 struct SvfFilter {
-    low_l: f32,
-    band_l: f32,
-    low_r: f32,
-    band_r: f32,
+    ch_l: TptSvfChannel,
+    ch_r: TptSvfChannel,
     cutoff_smooth: f32,
     res_smooth: f32,
 }
@@ -78,39 +112,79 @@ struct SvfFilter {
 impl SvfFilter {
     fn new() -> Self {
         Self {
-            low_l: 0.0,
-            band_l: 0.0,
-            low_r: 0.0,
-            band_r: 0.0,
-            cutoff_smooth: 1.0,
+            ch_l: TptSvfChannel::new(),
+            ch_r: TptSvfChannel::new(),
+            cutoff_smooth: 0.5,
             res_smooth: 0.0,
         }
     }
 
     fn process(&mut self, in_l: f32, in_r: f32, target_cutoff: f32, target_res: f32, sample_rate_f: f32) -> (f32, f32) {
         // Suavizado exponencial para cero zipper-noise
-        self.cutoff_smooth += (target_cutoff - self.cutoff_smooth) * 0.005;
-        self.res_smooth += (target_res - self.res_smooth) * 0.005;
+        self.cutoff_smooth += (target_cutoff - self.cutoff_smooth) * 0.015;
+        self.res_smooth += (target_res - self.res_smooth) * 0.015;
 
-        // Frecuencia de corte logarítmica: de 40 Hz a 18000 Hz
-        let min_freq: f32 = 40.0;
-        let max_freq: f32 = 18000.0;
-        let cutoff_hz = min_freq * (max_freq / min_freq).powf(self.cutoff_smooth.clamp(0.01, 1.0));
+        // Zona muerta central (Centro = 0.50 +/- 0.02, equivalente a CC 61..66)
+        // En el centro el filtro está en BYPASS TOTAL (100% plano y transparente)
+        if (self.cutoff_smooth - 0.5).abs() <= 0.02 {
+            self.ch_l.decay();
+            self.ch_r.decay();
+            return (in_l, in_r);
+        }
 
-        let f = (2.0 * (PI * (cutoff_hz / sample_rate_f)).sin()).min(0.85);
-        let q = (1.0 - self.res_smooth * 0.88).max(0.12);
+        // Factor Q de resonancia: va de 0.7071 (Butterworth, sin pico) a 8.5 (barrido resonante contundente)
+        let q_factor = 0.7071 + self.res_smooth.clamp(0.0, 1.0) * 7.8;
+        let k = 1.0 / q_factor;
 
-        // Canal Izquierdo
-        let high_l = in_l - self.low_l - q * self.band_l;
-        self.band_l += f * high_l;
-        self.low_l += f * self.band_l;
+        let nyquist_limit = (sample_rate_f * 0.485).min(21000.0);
 
-        // Canal Derecho
-        let high_r = in_r - self.low_r - q * self.band_r;
-        self.band_r += f * high_r;
-        self.low_r += f * self.band_r;
+        if self.cutoff_smooth < 0.48 {
+            // === LADO IZQUIERDO: LOW-PASS FILTER (LPF - Corta Agudos) ===
+            // De 0.0 (máximo corte ~45Hz) a 0.48 (abierto ~nyquist)
+            let t = (self.cutoff_smooth / 0.48).clamp(0.0, 1.0);
+            let min_freq: f32 = 45.0;
+            let max_freq: f32 = nyquist_limit;
+            let cutoff_hz = (min_freq * (max_freq / min_freq).powf(t)).clamp(20.0, nyquist_limit);
 
-        (self.low_l, self.low_r)
+            let g = (PI * cutoff_hz / sample_rate_f).tan();
+            let a1 = 1.0 / (1.0 + g * (g + k));
+            let a2 = g * a1;
+            let a3 = g * a2;
+
+            let (lp_l, _) = self.ch_l.process(in_l, k, a1, a2, a3);
+            let (lp_r, _) = self.ch_r.process(in_r, k, a1, a2, a3);
+
+            // Crossfade suave al aproximarse al centro para transición 100% transparente
+            if t > 0.85 {
+                let dry_factor = (t - 0.85) / 0.15;
+                (lp_l * (1.0 - dry_factor) + in_l * dry_factor, lp_r * (1.0 - dry_factor) + in_r * dry_factor)
+            } else {
+                (lp_l, lp_r)
+            }
+        } else {
+            // === LADO DERECHO: HIGH-PASS FILTER (HPF - Corta Bajos) ===
+            // De 0.52 (abierto ~25Hz) a 1.0 (máximo corte ~13000Hz)
+            let t = ((self.cutoff_smooth - 0.52) / 0.48).clamp(0.0, 1.0);
+            let min_freq: f32 = 25.0;
+            let max_freq: f32 = 13000.0;
+            let cutoff_hz = (min_freq * (max_freq / min_freq).powf(t)).clamp(20.0, nyquist_limit);
+
+            let g = (PI * cutoff_hz / sample_rate_f).tan();
+            let a1 = 1.0 / (1.0 + g * (g + k));
+            let a2 = g * a1;
+            let a3 = g * a2;
+
+            let (_, hp_l) = self.ch_l.process(in_l, k, a1, a2, a3);
+            let (_, hp_r) = self.ch_r.process(in_r, k, a1, a2, a3);
+
+            // Crossfade suave al aproximarse al centro para transición 100% transparente
+            if t < 0.15 {
+                let dry_factor = (0.15 - t) / 0.15;
+                (hp_l * (1.0 - dry_factor) + in_l * dry_factor, hp_r * (1.0 - dry_factor) + in_r * dry_factor)
+            } else {
+                (hp_l, hp_r)
+            }
+        }
     }
 }
 
@@ -370,6 +444,7 @@ pub struct AudioFxRack {
     pub cutoff_val: f32,
     pub resonance_val: f32,
     pub drive_val: f32,
+    drive_smooth: f32,
     pub reverb_mix_val: f32,
     pub delay_time_val: f32,
     pub delay_feedback_val: f32,
@@ -406,6 +481,7 @@ impl AudioFxRack {
             cutoff_val: 64.0 / 127.0,       // Posición central 64
             resonance_val: 64.0 / 127.0,    // Posición central 64
             drive_val: 0.0,                 // 0
+            drive_smooth: 0.0,
             reverb_mix_val: 0.0,            // 0 (Dry)
             delay_time_val: 0.0,            // 0
             delay_feedback_val: 0.0,        // 0
@@ -491,14 +567,33 @@ impl AudioFxRack {
         l = flt_l;
         r = flt_r;
 
-        // 2. Drive / Saturación cálida
-        if self.drive_val > 0.01 {
-            let drive_gain = 1.0 + self.drive_val * 3.5;
-            let dl = l * drive_gain;
-            let dr = r * drive_gain;
-            // Soft clipping no-lineal suave
-            l = (dl / (1.0 + dl.abs() * 0.65)).clamp(-1.0, 1.0);
-            r = (dr / (1.0 + dr.abs() * 0.65)).clamp(-1.0, 1.0);
+        // 2. Warm Analog Tube Overdrive con Auto-Gain Matching
+        self.drive_smooth += (self.drive_val - self.drive_smooth) * 0.01;
+        if self.drive_smooth > 0.005 {
+            let d = self.drive_smooth.clamp(0.0, 1.0);
+            let drive_amount = d.powf(1.35);
+            // Pre-ganancia: de 1.0x hasta 12.0x (+21.6 dB) para saturar firmemente notas suaves y fuertes
+            let input_gain = 1.0 + drive_amount * 11.0;
+            // Compensación de ganancia de salida: atenúa para que el volumen percibido sea constante
+            let makeup_attenuation = 1.0 / (1.0 + drive_amount * 1.85);
+
+            // Saturación no-lineal asimétrica valvular (genera armónicos pares e impares cálidos)
+            let sat_l = if l * input_gain >= 0.0 {
+                (l * input_gain * 1.15).tanh()
+            } else {
+                (l * input_gain * 0.88).tanh()
+            } * makeup_attenuation;
+
+            let sat_r = if r * input_gain >= 0.0 {
+                (r * input_gain * 1.15).tanh()
+            } else {
+                (r * input_gain * 0.88).tanh()
+            } * makeup_attenuation;
+
+            // Blend suave en la entrada del rango para evitar saltos
+            let blend = (d / 0.08).min(1.0);
+            l = l * (1.0 - blend) + sat_l * blend;
+            r = r * (1.0 - blend) + sat_r * blend;
         }
 
         // 3. Stereo Chorus
