@@ -5,6 +5,7 @@ import { NormalizedMidiEvent } from "../types/midi";
 import { MidiDinIcon, MidiStreamPopover } from "./MidiStreamPopover";
 
 export interface AudioStatusInfo {
+  host?: string;
   deviceName?: string;
   sampleRate?: number;
   bufferSize?: number;
@@ -13,6 +14,8 @@ export interface AudioStatusInfo {
   sample_rate?: number;
   buffer_size?: number;
   is_running?: boolean;
+  driver?: string;
+  channels?: number;
 }
 
 interface HeaderProps {
@@ -56,7 +59,14 @@ export const Header: React.FC<HeaderProps> = ({
 
   const isRunning = audioStatus ? (audioStatus.isRunning ?? audioStatus.is_running ?? true) : true;
   const sampleRate = audioStatus?.sampleRate ?? audioStatus?.sample_rate ?? 48000;
-  const deviceName = audioStatus?.deviceName ?? audioStatus?.device_name ?? "WASAPI Output";
+  const bufferSize = audioStatus?.bufferSize ?? audioStatus?.buffer_size ?? 256;
+  const deviceName = audioStatus?.deviceName ?? audioStatus?.device_name ?? "Salida de Audio";
+  const driver = audioStatus?.driver ?? "Audio";
+  const channels = audioStatus?.channels ?? 2;
+
+  const realLatencyMs = (bufferSize && sampleRate && sampleRate > 0)
+    ? ((bufferSize / sampleRate) * 1000).toFixed(1)
+    : "5.3";
 
   // Cierre de popover de volumen al hacer clic afuera
   useEffect(() => {
@@ -140,22 +150,37 @@ export const Header: React.FC<HeaderProps> = ({
 
             <span className="text-zinc-700 hidden md:inline">•</span>
 
-            {/* Monitor Audio WASAPI */}
+            {/* Monitor Audio Hardware */}
             <div
               className="flex items-center space-x-1.5 text-zinc-300"
-              title={deviceName}
+              title={`${deviceName} (${driver}) · ${channels} canales · Buffer: ${bufferSize} · ${sampleRate}Hz`}
             >
               <Activity
                 size={12}
                 className={isRunning ? "text-emerald-400" : "text-amber-400 animate-pulse"}
               />
-              <span>
-                {isRunning ? `WASAPI ${Math.round(sampleRate / 1000)}kHz` : "Reconectando..."}
+              <span className="max-w-[120px] md:max-w-[160px] truncate font-medium text-zinc-200">
+                {isRunning ? deviceName : "Reconectando..."}
               </span>
-              <span className="text-zinc-600">•</span>
-              <span className={isRunning ? "text-emerald-400 font-medium" : "text-amber-400 font-medium"}>
-                {isRunning ? "≤ 5.3 ms" : "Buscando"}
-              </span>
+              {isRunning ? (
+                <>
+                  <span className="text-zinc-600 hidden lg:inline">•</span>
+                  <span className="text-zinc-400 hidden lg:inline">
+                    {Math.round(sampleRate / 1000)}kHz
+                  </span>
+                  <span className="text-zinc-600">•</span>
+                  <span className="text-emerald-400 font-medium">
+                    ~{realLatencyMs} ms
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="text-zinc-600">•</span>
+                  <span className="text-amber-400 font-medium">
+                    Buscando
+                  </span>
+                </>
+              )}
             </div>
           </div>
         </div>

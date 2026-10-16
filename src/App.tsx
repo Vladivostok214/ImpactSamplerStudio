@@ -11,6 +11,7 @@ import { GiantMetronomeOverlay } from "./components/GiantMetronomeOverlay";
 import { useMidiStream } from "./hooks/useMidiStream";
 import { useQwertyKeyboard } from "./hooks/useQwertyKeyboard";
 import { SoundFontInfo } from "./types/soundfont";
+import { AudioDeviceInfo } from "./types/midi";
 import {
   PadSlotInfo,
   PadEngineMode,
@@ -149,6 +150,48 @@ export default function App() {
             }
           } catch (_) {}
         }
+      })
+      .catch(console.error);
+
+    // Sincronizar estado inicial de audio y verificar si ya está corriendo en el dispositivo preferido
+    invoke<AudioStatusInfo>("get_audio_status")
+      .then(async (status) => {
+        if (status) setAudioStatus(status);
+        try {
+          const savedAudioPrefs = JSON.parse(localStorage.getItem("impact_sampler_audio_preferences") || "null");
+          if (savedAudioPrefs) {
+            const isRunning = status?.isRunning ?? (status as any)?.is_running ?? false;
+            const currentHost = (status?.host || status?.driver || "").toUpperCase();
+            const targetHost = (savedAudioPrefs.host || "WASAPI").toUpperCase();
+            const currentDev = (status?.deviceName || (status as any)?.device_name || "").toLowerCase().trim();
+            const targetDev = (savedAudioPrefs.deviceName || "").toLowerCase().trim();
+
+            // Si Rust ya arrancó directamente con la configuración guardada, NO reinicializar
+            const isDeviceMatch = !targetDev || currentDev === targetDev || currentDev.includes(targetDev) || targetDev.includes(currentDev);
+            if (isRunning && currentHost === targetHost && isDeviceMatch) {
+              console.log(`[Audio Init] Motor de audio ya conectado directamente a '${status?.deviceName || (status as any)?.device_name}' (${status?.host}).`);
+              return;
+            }
+
+            // Si hay discrepancia, aplicar preferencias
+            const devs = await invoke<AudioDeviceInfo[]>("list_audio_devices", { host: savedAudioPrefs.host || "WASAPI" });
+            const isTargetConnected = savedAudioPrefs.deviceName && devs.some(
+              (d) => d.name.trim().toLowerCase() === savedAudioPrefs.deviceName.trim().toLowerCase()
+            );
+
+            if (isTargetConnected) {
+              await invoke("set_audio_config", {
+                host: savedAudioPrefs.host || "WASAPI",
+                deviceName: savedAudioPrefs.deviceName,
+                channelPair: typeof savedAudioPrefs.channelPair === "number" ? savedAudioPrefs.channelPair : 0,
+                bufferSize: typeof savedAudioPrefs.bufferSize === "number" ? savedAudioPrefs.bufferSize : null,
+                sampleRate: typeof savedAudioPrefs.sampleRate === "number" ? savedAudioPrefs.sampleRate : null,
+              });
+            } else {
+              console.log("[Audio Init] Dispositivo preferido no detectado, manteniendo fallback de audio.");
+            }
+          }
+        } catch (_) {}
       })
       .catch(console.error);
 

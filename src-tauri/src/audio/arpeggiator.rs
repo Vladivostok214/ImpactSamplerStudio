@@ -117,6 +117,10 @@ impl Arpeggiator {
         }
     }
 
+    pub fn update_sample_rate(&mut self, sample_rate: f32) {
+        self.sample_rate_f = sample_rate;
+    }
+
     /// Retorna el estado actual para la interfaz
     pub fn get_state_info(&self) -> ArpStateInfo {
         ArpStateInfo {

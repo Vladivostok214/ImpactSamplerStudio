@@ -43,3 +43,10 @@ soundfonts/*.sf2
 
 # Archivos de red / depuración temporales
 *.har
+
+# Steinberg ASIO SDK (propietario, mantener local)
+src-tauri/asio-sdk/
+
+# Rust / Cargo configuraciones de entorno locales
+.cargo/
+src-tauri/.cargo/

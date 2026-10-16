@@ -24,7 +24,7 @@ use soundfont::{
     delete_user_soundfont, import_soundfont_file, load_soundfont_from_file, scan_soundfonts,
     SoundFontInfo,
 };
-use state::{AppState, AudioStatusInfo};
+use state::{AppState, AudioDeviceDetails, AudioStatusInfo};
 
 #[tauri::command]
 fn show_main_window(window: tauri::WebviewWindow) {
@@ -137,19 +137,123 @@ fn rescan_midi_ports(
 }
 
 #[tauri::command]
-fn list_audio_devices() -> Vec<AudioDeviceInfo> {
-    AudioEngine::list_output_devices()
+fn list_audio_hosts() -> Vec<String> {
+    if cfg!(target_os = "windows") {
+        vec!["WASAPI".to_string(), "ASIO".to_string()]
+    } else if cfg!(target_os = "macos") {
+        vec!["CoreAudio".to_string()]
+    } else {
+        vec!["ALSA".to_string()]
+    }
+}
+
+#[tauri::command]
+fn open_asio_control_panel(
+    device_name: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<AudioStatusInfo, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let engine = state.audio_engine.lock().unwrap();
+        engine.open_asio_control_panel(device_name)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (state, device_name);
+        Err("ASIO solo está disponible en Windows".to_string())
+    }
+}
+
+#[tauri::command]
+fn get_device_details(
+    host: String,
+    device_name: String,
+    state: State<'_, AppState>,
+) -> Result<AudioDeviceDetails, String> {
+    let engine = state.audio_engine.lock().unwrap();
+    engine.get_device_details(&host, &device_name)
+}
+
+#[tauri::command]
+fn suspend_audio_engine(state: State<'_, AppState>) -> Result<AudioStatusInfo, String> {
+    let engine = state.audio_engine.lock().unwrap();
+    engine.suspend_audio_engine()
+}
+
+#[tauri::command]
+fn resume_audio_engine(state: State<'_, AppState>) -> Result<AudioStatusInfo, String> {
+    let engine = state.audio_engine.lock().unwrap();
+    engine.resume_audio_engine()
+}
+
+#[tauri::command]
+fn list_audio_devices(host: Option<String>) -> Vec<AudioDeviceInfo> {
+    AudioEngine::list_output_devices(host.as_deref())
 }
 
 #[tauri::command]
 fn get_audio_status(state: State<'_, AppState>) -> AudioStatusInfo {
     let engine = state.audio_engine.lock().unwrap();
+    let current_host = engine.current_host.lock().unwrap().clone();
     AudioStatusInfo {
+        host: current_host.clone(),
         device_name: engine.current_device_name.lock().unwrap().clone(),
+        driver: current_host,
+        channels: *engine.channels.lock().unwrap(),
         sample_rate: *engine.sample_rate.lock().unwrap(),
         buffer_size: *engine.buffer_size.lock().unwrap(),
         is_running: engine.is_running.load(std::sync::atomic::Ordering::SeqCst),
     }
+}
+
+#[tauri::command]
+fn set_audio_config(
+    host: Option<String>,
+    device_name: Option<String>,
+    channel_pair: usize,
+    buffer_size: Option<u32>,
+    sample_rate: Option<u32>,
+    state: State<'_, AppState>,
+) -> Result<AudioStatusInfo, String> {
+    let engine = state.audio_engine.lock().unwrap();
+    engine.apply_audio_config(host, device_name, channel_pair, buffer_size, sample_rate)
+}
+
+#[tauri::command]
+fn set_audio_device(
+    device_name: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<AudioStatusInfo, String> {
+    let engine = state.audio_engine.lock().unwrap();
+    engine.switch_output_device(device_name)
+}
+
+#[tauri::command]
+fn set_audio_channel_pair(
+    pair: usize,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let engine = state.audio_engine.lock().unwrap();
+    engine.set_channel_pair(pair);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_audio_buffer_size(
+    buffer_size: u32,
+    state: State<'_, AppState>,
+) -> Result<AudioStatusInfo, String> {
+    let engine = state.audio_engine.lock().unwrap();
+    engine.set_buffer_size(buffer_size)
+}
+
+#[tauri::command]
+fn set_audio_sample_rate(
+    sample_rate: u32,
+    state: State<'_, AppState>,
+) -> Result<AudioStatusInfo, String> {
+    let engine = state.audio_engine.lock().unwrap();
+    engine.set_sample_rate(sample_rate)
 }
 
 #[tauri::command]
@@ -1067,8 +1171,18 @@ fn main() {
             list_midi_ports,
             connect_midi,
             select_midi_port,
+            list_audio_hosts,
+            open_asio_control_panel,
+            get_device_details,
+            suspend_audio_engine,
+            resume_audio_engine,
             list_audio_devices,
             get_audio_status,
+            set_audio_config,
+            set_audio_device,
+            set_audio_channel_pair,
+            set_audio_buffer_size,
+            set_audio_sample_rate,
             set_master_volume,
             trigger_virtual_note,
             trigger_virtual_cc,

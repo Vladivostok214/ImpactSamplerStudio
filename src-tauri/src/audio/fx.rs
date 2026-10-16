@@ -495,6 +495,13 @@ impl AudioFxRack {
         rack
     }
 
+    pub fn update_sample_rate(&mut self, sample_rate_f: f32) {
+        self.sample_rate_f = sample_rate_f;
+        self.delay = StereoDelay::new(sample_rate_f);
+        self.reverb = StereoReverb::new(sample_rate_f);
+        self.chorus = StereoChorus::new(sample_rate_f);
+    }
+
     pub fn set_knob_value(&mut self, knob_idx: usize, value: f32) {
         if knob_idx < 8 {
             let v = value.clamp(0.0, 1.0);

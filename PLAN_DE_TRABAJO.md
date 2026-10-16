@@ -31,7 +31,8 @@ flowchart TD
     F7 --> F8["Fase 8: Personalización del Instalador Tradicional & Branding Visual"]
     F8 --> F9["Fase 9: Motor de Arpegiador Melódico Integrado"]
     F9 --> F91["Fase 9.1: Cápsulas Noir-Tech & DSP Avanzado (DJ Filter & Tube Drive)"]
-    F91 --> F10["Fase 10: Wizard Interactivo de Calibración & Perfiles Hardware Universal"]
+    F91 --> F92["Fase 9.2: Preparación Multiplataforma & Empaque Universal (macOS .dmg & Windows .exe)"]
+    F92 --> F10["Fase 10: Wizard Interactivo de Calibración & Perfiles Hardware Universal"]
     F10 --> F11["Fase 11: Sistema de Sesiones (.impact), Gestión de Proyectos & Exportación"]
     F11 --> F12["Fase 12: Drum Kit Creator (WAV Pool a SF2 Compiler)"]
     F12 --> F13["Fase 13: Sistema de Auto-Actualizaciones OTA (Tauri Updater)"]
@@ -441,6 +442,38 @@ flowchart TD
 
 ---
 
+### Fase 9.2: Preparación Multiplataforma, Motor de Dispositivos de Audio & Pipeline de Empaque Universal 🚧 [EN PROGRESO]
+* **Objetivo:** Transformar el subsistema de audio y la interfaz de ImpactSampler Studio en un entorno 100% operativo y agnóstico al sistema operativo. Esto incluye la selección real de interfaces de audio (Hot-Swap en caliente sin reinicio), enrutamiento de canales estéreo en interfaces multicanal, control de Buffer Size y Sample Rate basados en las capacidades físicas del hardware, telemetría dinámica en la consola y la integración de un pipeline de CI/CD automatizado con GitHub Actions que compile simultáneamente para **Windows (instalador NSIS `.exe`)** y **macOS (imagen de disco Universal `.dmg`)**.
+* **Documento Detallado de la Fase:** Ver desglose paso a paso y especificaciones técnicas completas en [PLAN_DE_TRABAJO_FASE_9.2.md](PLAN_DE_TRABAJO_FASE_9.2.md).
+* **Componentes y Especificaciones Técnicas:**
+  1. **Motor Real de Dispositivos de Audio & Enrutamiento en Rust (`engine.rs`) ✅ [COMPLETADO]:**
+     - Hot-swap atómico de dispositivos de audio (`set_audio_device`) preservando el estado completo en RAM (SoundFonts, presets, samples de pads, gains, FX rack y secuenciador) sin reinicio.
+     - Detección de canales físicos del DAC y soporte de enrutamiento estéreo para interfaces multicanal (`channels >= 4`, ej. Salidas 1-2 vs Salidas 3-4) silenciando canales inactivos con ceros.
+     - Detección real de Sample Rates mediante `device.supported_output_configs()`, fijación de Buffer Size (`cpal::BufferSize::Fixed`) y recálculo automático de bases de tiempo DSP en FX, secuenciador y arpegiador.
+  2. **Rediseño Operativo de `AudioSettingsModal.tsx` ✅ [COMPLETADO]:**
+     - Reestructuración ergonómica estándar de la industria: Bloque 1 ("Dispositivo de audio y salidas") y Bloque 2 ("Rendimiento y buffer de hardware").
+     - Eliminación de placeholders/mocks y conexión real del botón «Aplicar y Guardar» con comandos IPC y persistencia en `localStorage`.
+     - Preservación íntegra de los módulos de MIDI, calibración asistida de 8 golpes y MIDI Learn.
+  3. **Telemetría Dinámica de Audio en Consola (`Header.tsx`) ✅ [COMPLETADO]:**
+     - Exposición prioritaria del **Dispositivo de Audio Activo** (ej. `Scarlett 4i4`, `Realtek Audio`) para confirmación inmediata de ruteo físico.
+     - Cálculo en tiempo real de la latencia física: $\text{Latencia} = (\text{bufferSize} / \text{sampleRate}) \times 1000 \text{ ms}$.
+     - Manejo de estados transitorios y reconexión automática en caliente mediante hilos guardianes.
+  4. **Soporte Nativo de Drivers ASIO, Transacción Atómica y Reactividad en Caliente ✅ [COMPLETADO]:**
+     - Integración del Steinberg ASIO SDK oficial en Rust (`asio-sys` y `cpal` con feature `asio` en Windows).
+     - Comando IPC atómico unificado (`set_audio_config`) con validación defensiva en Rust para erradicar carreras de estado y el fallo de configuración no soportada.
+     - Botón nativo para invocar el panel de control del fabricante (`open_asio_control_panel`, ej. Zoom F3 Control Panel).
+     - Desbloqueo de DAC estilo REAPER (`suspend_audio_engine` / `resume_audio_engine`), persistencia directa en disco (`audio_preferences.json`) y reutilización segura del singleton COM de ASIO sin descargas accidentales.
+     - Reactividad inmediata en caliente en el modal al alternar entre dispositivos o entre WASAPI y ASIO.
+  5. **Iconografía Apple & Configuración Tauri (`tauri.conf.json`) 📋 [SIGUIENTE PASO]:**
+     - Generación de `src-tauri/icons/icon.icns` y configuración de targets multiplataforma (`"nsis"` para Windows y `"dmg"` para macOS).
+  6. **Preservación del Marco de Ventana Nativo:**
+     - Mantenimiento de `decorations: true` para que los controles de ventana de macOS no interfieran con la interfaz.
+  7. **SoundFonts y Pipeline de CI/CD (GitHub Actions):**
+     - Alojamiento de los 4 SoundFonts (784 MB) en GitHub Releases con inyección por `curl`.
+     - Workflow dual en GitHub Actions (`windows-latest` y `macos-latest`) compilando Universal Binary (`universal-apple-darwin`).
+
+---
+
 ### Fase 10: Wizard Interactivo de Calibración & Perfiles de Hardware Universal 📋 [PLANIFICADA]
 * **Objetivo:** Transformar la aplicación en una plataforma universal compatible con cualquier teclado y controlador del mercado mediante un asistente guiado interactivo de auto-calibración (Hardware Setup Wizard) que detecte y configure automáticamente rango de teclas, pads, deslizadores, perillas y botones de transporte, guardando perfiles independientes.
 * **Componentes y Especificaciones Técnicas:**
@@ -541,6 +574,7 @@ flowchart TD
 
 ## 3. Próximo Paso Inmediato
 Fases 1 a 9.1 completadas al 100%. 
-Fases 10 a 14 planificadas y documentadas en detalle en la hoja de ruta.
-El siguiente hito de desarrollo es la **Fase 10: Wizard Interactivo de Calibración & Perfiles de Hardware Universal**.
+Fase 9.2: Paso 1 completado al 100% (Subpasos 1.1 a 1.5 finalizados exitosamente: Hot-Swap de dispositivos, enrutamiento multicanal, buffer y sample rates reales, telemetría dinámica en consola y soporte nativo de ASIO con persistencia directa en disco).
+El siguiente hito de desarrollo es el **Paso 2 de la Fase 9.2: Iconografía Apple (.icns) & Configuración Tauri Multiplataforma (`tauri.conf.json`)**.
+
 

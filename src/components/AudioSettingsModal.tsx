@@ -1,9 +1,18 @@
 import React, { useEffect, useState, useRef } from "react";
-import { X, Speaker, Cpu, RefreshCw, CheckCircle2, ChevronDown, Check, RotateCcw, Activity } from "lucide-react";
+import { X, Speaker, Cpu, RefreshCw, ChevronDown, Check, RotateCcw, Activity, Sliders } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AudioDeviceInfo, MidiPortInfo, NormalizedMidiEvent } from "../types/midi";
 import { AudioStatusInfo } from "./Header";
+
+interface AudioDeviceDetails {
+  name: string;
+  isAvailable: boolean;
+  channels: number;
+  sampleRates: number[];
+  currentSampleRate: number;
+  currentBufferSize: number;
+}
 
 interface CustomSelectOption<T> {
   value: T;
@@ -18,6 +27,7 @@ interface CustomSelectProps<T> {
   options: CustomSelectOption<T>[];
   icon?: React.ReactNode;
   placeholder?: string;
+  disabled?: boolean;
 }
 
 function CustomSelect<T extends string | number>({
@@ -26,6 +36,7 @@ function CustomSelect<T extends string | number>({
   options,
   icon,
   placeholder = "Seleccionar...",
+  disabled = false,
 }: CustomSelectProps<T>) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -54,10 +65,14 @@ function CustomSelect<T extends string | number>({
     <div ref={containerRef} className="relative w-full">
       <button
         type="button"
-        onClick={() => setIsOpen((prev) => !prev)}
-        className={`w-full bg-black/60 hover:bg-black/80 border ${
-          isOpen ? "border-cyan-400 shadow-[0_0_14px_rgba(6,182,212,0.25)]" : "border-white/10 hover:border-white/20"
-        } rounded-xl py-2 px-3.5 flex items-center justify-between text-left transition-all cursor-pointer shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)] focus:outline-none`}
+        disabled={disabled}
+        onClick={() => !disabled && setIsOpen((prev) => !prev)}
+        className={`w-full bg-black/60 ${
+          disabled
+            ? "opacity-40 cursor-not-allowed border-white/5"
+            : "hover:bg-black/80 cursor-pointer " +
+              (isOpen ? "border-cyan-400 shadow-[0_0_14px_rgba(6,182,212,0.25)]" : "border-white/10 hover:border-white/20")
+        } rounded-xl py-2 px-3.5 flex items-center justify-between text-left transition-all shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)] focus:outline-none`}
       >
         <div className="flex items-center space-x-2.5 min-w-0 pr-2">
           {icon && <span className="text-zinc-400 shrink-0">{icon}</span>}
@@ -155,12 +170,50 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
   onSetLatencyCompensation,
   activePortName = "",
 }) => {
+  const [availableHosts, setAvailableHosts] = useState<string[]>(["WASAPI", "ASIO"]);
+  const [selectedHost, setSelectedHost] = useState<string>("WASAPI");
   const [audioDevices, setAudioDevices] = useState<AudioDeviceInfo[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<string>("");
+  const [selectedChannelPair, setSelectedChannelPair] = useState<number>(0);
   const [bufferSize, setBufferSize] = useState<number>(256);
   const [sampleRate, setSampleRate] = useState<number>(48000);
-  const [audioHost, setAudioHost] = useState<"WASAPI" | "ASIO">("WASAPI");
+  const [isApplying, setIsApplying] = useState<boolean>(false);
+  const [applyError, setApplyError] = useState<string | null>(null);
   const [isResetConfirm, setIsResetConfirm] = useState<boolean>(false);
+  const [isOpeningPanel, setIsOpeningPanel] = useState<boolean>(false);
+
+  // Estado reactivo del dispositivo seleccionado
+  const [isDeviceAvailable, setIsDeviceAvailable] = useState<boolean>(true);
+  const [activeDeviceChannels, setActiveDeviceChannels] = useState<number>(2);
+  const [activeDeviceSampleRates, setActiveDeviceSampleRates] = useState<number[]>([44100, 48000]);
+  const [lastSelectedDeviceByHost, setLastSelectedDeviceByHost] = useState<Record<string, string>>({});
+
+  const probeDevice = async (host: string, devName: string) => {
+    if (!devName) {
+      setIsDeviceAvailable(false);
+      return;
+    }
+    try {
+      const details = await invoke<AudioDeviceDetails>("get_device_details", {
+        host,
+        deviceName: devName,
+      });
+      if (details) {
+        setIsDeviceAvailable(details.isAvailable);
+        setActiveDeviceChannels(details.channels > 0 ? details.channels : 2);
+        if (details.sampleRates && details.sampleRates.length > 0) {
+          setActiveDeviceSampleRates(details.sampleRates);
+        }
+        if (details.isAvailable) {
+          if (details.currentBufferSize) setBufferSize(details.currentBufferSize);
+          if (details.currentSampleRate) setSampleRate(details.currentSampleRate);
+        }
+      }
+    } catch (e) {
+      console.warn("No se pudieron consultar detalles del dispositivo:", e);
+      setIsDeviceAvailable(false);
+    }
+  };
 
   // Estados del Asistente de Calibración de Latencia (Etapa 4)
   const [isCalibrating, setIsCalibrating] = useState<boolean>(false);
@@ -173,13 +226,22 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       onRefreshMidi();
+      setApplyError(null);
+      // Detener y liberar el dispositivo de audio al abrir las opciones (estilo REAPER)
+      invoke<AudioStatusInfo>("suspend_audio_engine").catch(console.error);
+
       Promise.all([
-        invoke<AudioDeviceInfo[]>("list_audio_devices"),
+        invoke<string[]>("list_audio_hosts"),
         invoke<AudioStatusInfo>("get_audio_status"),
       ])
-        .then(([devs, status]) => {
-          setAudioDevices(devs);
-          const activeDeviceName = status?.deviceName || status?.device_name;
+        .then(async ([hosts, status]) => {
+          if (hosts && hosts.length > 0) {
+            setAvailableHosts(hosts);
+          }
+          const rawHost = status?.host || status?.driver || "WASAPI";
+          const activeHost = rawHost.toUpperCase().includes("ASIO") ? "ASIO" : "WASAPI";
+          setSelectedHost(activeHost);
+
           if (status?.bufferSize || status?.buffer_size) {
             setBufferSize(status.bufferSize || status.buffer_size || 256);
           }
@@ -187,28 +249,132 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
             setSampleRate(status.sampleRate || status.sample_rate || 48000);
           }
 
-          // 1. Prioridad: Dispositivo que está actualmente en ejecución activa en WASAPI
-          const activeDev = devs.find(
-            (d) =>
-              activeDeviceName &&
-              d.name.trim().toLowerCase() === activeDeviceName.trim().toLowerCase()
-          );
+          // Leer par de canales guardado en localStorage si existe
+          try {
+            const savedPrefs = JSON.parse(localStorage.getItem("impact_sampler_audio_preferences") || "{}");
+            if (typeof savedPrefs.channelPair === "number") {
+              setSelectedChannelPair(savedPrefs.channelPair);
+            }
+          } catch (_) {}
 
-          // 2. Prioridad: Dispositivo predeterminado del sistema operativo
-          const defaultDev = devs.find((d) => d.isDefault || (d as any).is_default);
-
-          // 3. Fallback: Primer dispositivo encontrado
-          const resolvedDev = activeDev || defaultDev || (devs.length > 0 ? devs[0] : null);
-
-          if (resolvedDev) {
-            setSelectedDevice(resolvedDev.id);
-          } else {
-            setSelectedDevice("");
+          try {
+            const devs = await invoke<AudioDeviceInfo[]>("list_audio_devices", { host: activeHost });
+            setAudioDevices(devs);
+            const activeDeviceName = status?.deviceName || status?.device_name;
+            const activeDev = devs.find(
+              (d) =>
+                activeDeviceName &&
+                (d.name.trim().toLowerCase() === activeDeviceName.trim().toLowerCase() ||
+                 d.name.toLowerCase().includes(activeDeviceName.toLowerCase()) ||
+                 activeDeviceName.toLowerCase().includes(d.name.toLowerCase()))
+            );
+            const defaultDev = devs.find((d) => d.isDefault || (d as any).is_default);
+            const resolvedDev = activeDev || defaultDev || (devs.length > 0 ? devs[0] : null);
+            if (resolvedDev) {
+              setSelectedDevice(resolvedDev.id);
+              setLastSelectedDeviceByHost((prev) => ({ ...prev, [activeHost]: resolvedDev.id }));
+              probeDevice(activeHost, resolvedDev.name);
+            } else {
+              setSelectedDevice("");
+              setIsDeviceAvailable(false);
+            }
+          } catch (e) {
+            console.error("Error al obtener lista de dispositivos:", e);
           }
         })
         .catch(console.error);
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    const unlistenPromise = listen<AudioStatusInfo>("audio-status-changed", (event) => {
+      const st = event.payload;
+      if (!st) return;
+      const h = st.host || st.driver;
+      if (h) {
+        setSelectedHost(h.toUpperCase().includes("ASIO") ? "ASIO" : "WASAPI");
+      }
+      const b = st.bufferSize || st.buffer_size;
+      if (b) setBufferSize(b);
+      const s = st.sampleRate || st.sample_rate;
+      if (s) setSampleRate(s);
+    });
+    return () => {
+      unlistenPromise.then((fn) => fn());
+    };
+  }, []);
+
+  const handleHostChange = async (newHost: string) => {
+    setSelectedHost(newHost);
+    try {
+      const devs = await invoke<AudioDeviceInfo[]>("list_audio_devices", { host: newHost });
+      setAudioDevices(devs);
+
+      // 1. Priorizar el dispositivo recordado recientemente para este host en la sesión
+      const rememberedId = lastSelectedDeviceByHost[newHost];
+      const rememberedDev = devs.find((d) => d.id === rememberedId);
+
+      // 2. Si no hay en memoria de sesión, buscar en las preferencias persistidas
+      let targetDev = rememberedDev;
+      if (!targetDev) {
+        try {
+          const savedPrefs = JSON.parse(localStorage.getItem("impact_sampler_audio_preferences") || "{}");
+          if (savedPrefs.host === newHost && savedPrefs.deviceName) {
+            targetDev = devs.find((d) => d.name.trim().toLowerCase() === savedPrefs.deviceName.trim().toLowerCase());
+          }
+        } catch (_) {}
+      }
+
+      // 3. Fallback: buscar el dispositivo marcado como predeterminado (WASAPI), o el primero
+      const defaultDev = devs.find((d) => d.isDefault || (d as any).is_default);
+      const chosenDev = targetDev || defaultDev || (devs.length > 0 ? devs[0] : null);
+
+      if (chosenDev) {
+        setSelectedDevice(chosenDev.id);
+        setLastSelectedDeviceByHost((prev) => ({ ...prev, [newHost]: chosenDev.id }));
+        probeDevice(newHost, chosenDev.name);
+      } else {
+        setSelectedDevice("");
+        setIsDeviceAvailable(false);
+      }
+    } catch (e) {
+      console.error("Error al cambiar host de audio:", e);
+    }
+  };
+
+  const handleDeviceChange = (newDeviceId: string) => {
+    setSelectedDevice(newDeviceId);
+    setLastSelectedDeviceByHost((prev) => ({ ...prev, [selectedHost]: newDeviceId }));
+    const dev = audioDevices.find((d) => d.id === newDeviceId);
+    if (dev) {
+      probeDevice(selectedHost, dev.name);
+    }
+  };
+
+  const handleOpenControlPanel = async () => {
+    setIsOpeningPanel(true);
+    try {
+      const dev = audioDevices.find((d) => d.id === selectedDevice);
+      const status = await invoke<AudioStatusInfo>("open_asio_control_panel", {
+        deviceName: dev?.name || null,
+      });
+      if (status) {
+        if (status.bufferSize || status.buffer_size) {
+          setBufferSize(status.bufferSize || status.buffer_size || bufferSize);
+        }
+        if (status.sampleRate || status.sample_rate) {
+          setSampleRate(status.sampleRate || status.sample_rate || sampleRate);
+        }
+        if (status.channels) {
+          setActiveDeviceChannels(status.channels);
+        }
+      }
+    } catch (err) {
+      console.error("Error al abrir panel de control ASIO:", err);
+    } finally {
+      setIsOpeningPanel(false);
+    }
+  };
 
   // -------------------------------------------------------------
   // Lógica del Asistente de Calibración Asistida (8 Golpes)
@@ -363,38 +529,146 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
 
   if (!isOpen) return null;
 
+  const currentDev = audioDevices.find((d) => d.id === selectedDevice);
+
   const deviceOptions = audioDevices.map((d) => ({
     value: d.id,
     label: d.name,
     isDefault: d.isDefault ?? (d as any).is_default,
   }));
 
-  const bufferOptions = [
-    { value: 64, label: "64 samples", subLabel: "1.3 ms · Ultra Low" },
-    { value: 128, label: "128 samples", subLabel: "2.6 ms · Rápido" },
-    { value: 256, label: "256 samples", subLabel: "5.3 ms · Balanceado" },
-    { value: 512, label: "512 samples", subLabel: "10.6 ms · Seguro" },
-  ];
+  // Opciones de Salidas Físicas (Pares Estéreo)
+  const channelCount = activeDeviceChannels > 0 ? activeDeviceChannels : currentDev?.channels ?? 2;
+  const numPairs = Math.max(1, Math.floor(channelCount / 2));
+  const channelPairOptions = Array.from({ length: numPairs }).map((_, idx) => {
+    const ch1 = idx * 2 + 1;
+    const ch2 = ch1 + 1;
+    let subLabel = "";
+    if (idx === 0) subLabel = "Salida Principal / Main";
+    else if (idx === 1) subLabel = "Auriculares / Phones";
+    else subLabel = `Salida Auxiliar ${idx}`;
 
-  const sampleRateOptions = [
-    { value: 44100, label: "44.1 kHz", subLabel: "CD Audio" },
-    { value: 48000, label: "48.0 kHz", subLabel: "Estándar Studio" },
-    { value: 96000, label: "96.0 kHz", subLabel: "Hi-Res" },
-  ];
+    return {
+      value: idx,
+      label: `Out ${ch1}/${ch2}`,
+      subLabel,
+    };
+  });
+
+  // Opciones de Buffer Size con latencia dinámica según sampleRate
+  const bufferSizes = [64, 128, 256, 512, 1024];
+  const bufferOptions = bufferSizes.map((size) => {
+    const ms = ((size / (sampleRate || 48000)) * 1000).toFixed(1);
+    let speedLabel = "";
+    if (size <= 64) speedLabel = "Ultra Low Latency";
+    else if (size <= 128) speedLabel = "Bajo Retardo";
+    else if (size <= 256) speedLabel = "Balanceado";
+    else if (size <= 512) speedLabel = "Seguro";
+    else speedLabel = "Alto";
+
+    return {
+      value: size,
+      label: `${size} samples`,
+      subLabel: `${ms} ms · ${speedLabel}`,
+    };
+  });
+
+  // Opciones de Sample Rate dinámicas según el DAC del dispositivo seleccionado
+  const supportedRates =
+    activeDeviceSampleRates.length > 0
+      ? activeDeviceSampleRates
+      : currentDev?.sampleRates && currentDev.sampleRates.length > 0
+      ? currentDev.sampleRates
+      : [44100, 48000];
+
+  const sampleRateOptions = supportedRates.map((rate) => {
+    let subLabel = "";
+    if (rate === 44100) subLabel = "CD Audio";
+    else if (rate === 48000) subLabel = "Estándar Studio";
+    else if (rate === 88200) subLabel = "Hi-Res (88.2 kHz)";
+    else if (rate === 96000) subLabel = "Hi-Res Studio";
+    else if (rate === 192000) subLabel = "Ultra Hi-Res";
+    else subLabel = `${(rate / 1000).toFixed(1)} kHz`;
+
+    return {
+      value: rate,
+      label: `${rate} Hz`,
+      subLabel,
+    };
+  });
+
+  const handleCancel = async () => {
+    try {
+      await invoke("resume_audio_engine");
+    } catch (_) {}
+    onClose();
+  };
+
+  const handleStopCalibrating = async () => {
+    setIsCalibrating(false);
+    try {
+      await invoke("suspend_audio_engine");
+    } catch (_) {}
+  };
+
+  const handleApply = async () => {
+    setIsApplying(true);
+    setApplyError(null);
+    try {
+      const dev = audioDevices.find((d) => d.id === selectedDevice);
+      const deviceName = dev?.name || null;
+      const isAsio = selectedHost === "ASIO";
+
+      // Aplicación atómica de hardware en una sola llamada IPC
+      const res = await invoke<AudioStatusInfo>("set_audio_config", {
+        host: selectedHost,
+        deviceName,
+        channelPair: selectedChannelPair,
+        bufferSize: isAsio ? null : bufferSize,
+        sampleRate: isAsio ? null : sampleRate,
+      });
+
+      if (res) {
+        if (res.bufferSize || res.buffer_size) setBufferSize(res.bufferSize || res.buffer_size || bufferSize);
+        if (res.sampleRate || res.sample_rate) setSampleRate(res.sampleRate || res.sample_rate || sampleRate);
+      }
+
+      // Guardar preferencias en localStorage para persistencia
+      try {
+        const prefs = {
+          host: selectedHost,
+          deviceName,
+          channelPair: selectedChannelPair,
+          bufferSize,
+          sampleRate,
+        };
+        localStorage.setItem("impact_sampler_audio_preferences", JSON.stringify(prefs));
+      } catch (e) {
+        console.warn("No se pudieron guardar las preferencias de audio en localStorage:", e);
+      }
+
+      onClose();
+    } catch (err: any) {
+      console.error("Error al aplicar configuración de audio:", err);
+      setApplyError(typeof err === "string" ? err : err?.message || "Error al aplicar configuración de audio");
+    } finally {
+      setIsApplying(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
       <div className="bg-black/85 backdrop-blur-2xl border border-white/[0.12] w-full max-w-xl rounded-2xl shadow-[0_25px_80px_rgba(0,0,0,0.98),inset_0_1px_0_rgba(255,255,255,0.08)] overflow-visible flex flex-col animate-in fade-in zoom-in-95 duration-150">
         {/* Header */}
         <div className="px-6 py-4 bg-black/50 border-b border-white/[0.08] flex items-center justify-between rounded-t-2xl">
-          <div className="flex items-center space-x-2">
+          <div className="flex items-center space-x-2.5">
             <Cpu className="text-emerald-400" size={18} />
             <h2 className="text-xs font-bold tracking-wider uppercase text-zinc-100 font-sans">
               Configuración de Audio y Hardware
             </h2>
           </div>
           <button
-            onClick={onClose}
+            onClick={handleCancel}
             className="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-white/[0.06] transition cursor-pointer"
           >
             <X size={18} />
@@ -402,77 +676,172 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
         </div>
 
         {/* Body */}
-        <div className="p-6 space-y-6 text-xs font-sans">
-          {/* Driver Host Selector */}
-          <div>
-            <label className="text-zinc-400 block mb-2 font-semibold tracking-wider uppercase text-[10.5px] font-sans">
-              SISTEMA DE AUDIO (AUDIO HOST)
-            </label>
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => setAudioHost("WASAPI")}
-                className={`py-2 px-3.5 rounded-xl border flex items-center justify-between transition cursor-pointer ${
-                  audioHost === "WASAPI"
-                    ? "bg-black/90 border-cyan-400 text-cyan-300 shadow-[0_0_14px_rgba(6,182,212,0.3),inset_0_1px_0_rgba(255,255,255,0.1)] font-semibold"
-                    : "bg-black/50 border-white/10 text-zinc-400 hover:border-white/20 hover:text-zinc-200"
-                }`}
-              >
-                <span className="font-sans text-xs">WASAPI (Windows Nativo)</span>
-                {audioHost === "WASAPI" && <CheckCircle2 size={14} className="text-cyan-400" />}
-              </button>
-              <button
-                type="button"
-                onClick={() => setAudioHost("ASIO")}
-                className={`py-2 px-3.5 rounded-xl border flex items-center justify-between transition cursor-pointer ${
-                  audioHost === "ASIO"
-                    ? "bg-black/90 border-amber-400 text-amber-300 shadow-[0_0_14px_rgba(245,158,11,0.3),inset_0_1px_0_rgba(255,255,255,0.1)] font-semibold"
-                    : "bg-black/50 border-white/10 text-zinc-400 hover:border-white/20 hover:text-zinc-200"
-                }`}
-              >
-                <span className="font-sans text-xs">ASIO (Interfaz Externa)</span>
-                {audioHost === "ASIO" && <CheckCircle2 size={14} className="text-amber-400" />}
-              </button>
+        <div className="p-6 space-y-6 text-xs font-sans max-h-[75vh] overflow-y-auto">
+          {applyError && (
+            <div className="p-3 rounded-xl bg-red-950/60 border border-red-500/50 text-red-200 text-xs">
+              {applyError}
+            </div>
+          )}
+
+          {/* BLOQUE 1: SISTEMA DE AUDIO Y SALIDAS */}
+          <div className="space-y-4">
+            <div className="flex items-center space-x-2 border-b border-white/[0.08] pb-2">
+              <Speaker className="text-cyan-400" size={15} />
+              <span className="text-zinc-200 font-bold uppercase tracking-wider text-[11px] font-sans">
+                Sistema de Audio y Salidas
+              </span>
+            </div>
+
+            {/* Selector de Sistema de Audio (WASAPI vs ASIO) */}
+            <div>
+              <label className="text-zinc-400 block mb-2 font-semibold tracking-wider uppercase text-[10px] font-sans">
+                Sistema de Audio (Audio System)
+              </label>
+              <div className="flex bg-black/60 p-1 rounded-xl border border-white/10 gap-1">
+                {availableHosts.map((h) => {
+                  const isSel = selectedHost.toUpperCase() === h.toUpperCase();
+                  return (
+                    <button
+                      key={h}
+                      type="button"
+                      onClick={() => handleHostChange(h)}
+                      className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-sans font-semibold transition cursor-pointer ${
+                        isSel
+                          ? "bg-cyan-500/20 text-cyan-300 border border-cyan-400/30 shadow-[0_0_12px_rgba(6,182,212,0.25)]"
+                          : "text-zinc-400 hover:text-white hover:bg-white/[0.04]"
+                      }`}
+                    >
+                      {h}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Selector de Dispositivo / Controlador ASIO */}
+            <div>
+              <label className="text-zinc-400 block mb-2 font-semibold tracking-wider uppercase text-[10px] font-sans">
+                {selectedHost === "ASIO" ? "Controlador ASIO (ASIO Driver)" : "Dispositivo de Salida (Audio Device)"}
+              </label>
+              <div className="flex items-center gap-2">
+                <div className="flex-1 min-w-0">
+                  <CustomSelect
+                    value={selectedDevice}
+                    onChange={handleDeviceChange}
+                    options={deviceOptions}
+                    icon={<Speaker size={14} />}
+                    placeholder={selectedHost === "ASIO" ? "Seleccionar controlador ASIO..." : "Seleccionar dispositivo..."}
+                  />
+                </div>
+                {selectedHost === "ASIO" && (
+                  <button
+                    type="button"
+                    disabled={!isDeviceAvailable || isOpeningPanel}
+                    onClick={handleOpenControlPanel}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 shrink-0 shadow-[0_0_10px_rgba(6,182,212,0.15)] ${
+                      !isDeviceAvailable
+                        ? "opacity-40 cursor-not-allowed bg-white/[0.03] text-zinc-500 border border-white/5"
+                        : "bg-white/[0.06] hover:bg-white/[0.12] text-cyan-300 hover:text-cyan-200 border border-cyan-400/30 cursor-pointer"
+                    }`}
+                    title={!isDeviceAvailable ? "Dispositivo no disponible" : "Abrir panel de control del fabricante"}
+                  >
+                    <Sliders size={13} className={isOpeningPanel ? "animate-spin" : ""} />
+                    {isOpeningPanel ? "Panel Abierto..." : "Configuración ⚙"}
+                  </button>
+                )}
+              </div>
+              {!isDeviceAvailable && (
+                <div className="mt-2 p-2.5 rounded-xl bg-red-950/40 border border-red-500/30 text-red-300 text-[11px] font-sans flex items-center gap-2 shadow-[0_0_10px_rgba(239,68,68,0.1)]">
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse shrink-0" />
+                  <span>Sin interfaz física conectada o controlador no disponible en el sistema.</span>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="text-zinc-400 block mb-2 font-semibold tracking-wider uppercase text-[10px] font-sans">
+                Salidas Físicas (Output Channels)
+              </label>
+              <CustomSelect
+                value={selectedChannelPair}
+                onChange={(val) => setSelectedChannelPair(Number(val))}
+                options={channelPairOptions}
+                disabled={!isDeviceAvailable}
+              />
+              {currentDev && channelCount > 2 ? (
+                <span className="text-[10px] text-zinc-500 font-sans mt-1 block">
+                  Interfaz multicanal ({channelCount} salidas DAC detectadas). Los canales inactivos se enmudecen automáticamente.
+                </span>
+              ) : (
+                <span className="text-[10px] text-zinc-500 font-sans mt-1 block">
+                  Salida estéreo estándar (Canal Izquierdo y Derecho).
+                </span>
+              )}
             </div>
           </div>
 
-          {/* Audio Output Device */}
-          <div>
-            <label className="text-zinc-400 block mb-2 font-semibold tracking-wider uppercase text-[10.5px] font-sans">
-              DISPOSITIVO DE SALIDA DE AUDIO
-            </label>
-            <CustomSelect
-              value={selectedDevice}
-              onChange={(val) => setSelectedDevice(val)}
-              options={deviceOptions}
-              icon={<Speaker size={14} />}
-              placeholder="Seleccionar dispositivo..."
-            />
-          </div>
-
-          {/* Buffer Size & Sample Rate */}
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="text-zinc-400 block mb-2 font-semibold tracking-wider uppercase text-[10.5px] font-sans">
-                TAMAÑO DE BUFFER (LATENCIA)
-              </label>
-              <CustomSelect
-                value={bufferSize}
-                onChange={(val) => setBufferSize(val)}
-                options={bufferOptions}
-              />
+          {/* BLOQUE 2: RENDIMIENTO Y BUFFER */}
+          <div className="space-y-4 pt-2 border-t border-white/[0.08]">
+            <div className="flex items-center space-x-2 border-b border-white/[0.08] pb-2">
+              <Cpu className="text-emerald-400" size={15} />
+              <span className="text-zinc-200 font-bold uppercase tracking-wider text-[11px] font-sans">
+                Rendimiento y Buffer de Hardware
+              </span>
             </div>
 
-            <div>
-              <label className="text-zinc-400 block mb-2 font-semibold tracking-wider uppercase text-[10.5px] font-sans">
-                SAMPLE RATE
-              </label>
-              <CustomSelect
-                value={sampleRate}
-                onChange={(val) => setSampleRate(val)}
-                options={sampleRateOptions}
-              />
-            </div>
+            {selectedHost === "ASIO" ? (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-zinc-400 block mb-2 font-semibold tracking-wider uppercase text-[10px] font-sans">
+                    Tamaño de Buffer Activo
+                  </label>
+                  <div className={`w-full bg-black/60 border ${!isDeviceAvailable ? "border-white/5 opacity-40" : "border-white/10"} rounded-xl py-2 px-3.5 flex items-center justify-between text-zinc-200 text-xs font-mono shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]`}>
+                    <span className="font-medium text-zinc-100">{isDeviceAvailable ? `${bufferSize} samples` : "---"}</span>
+                    <span className="text-[10.5px] text-zinc-400">
+                      {isDeviceAvailable ? `~${((bufferSize / (sampleRate || 48000)) * 1000).toFixed(1)} ms` : "---"}
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-zinc-400 block mb-2 font-semibold tracking-wider uppercase text-[10px] font-sans">
+                    Frecuencia de Muestreo Activa
+                  </label>
+                  <div className={`w-full bg-black/60 border ${!isDeviceAvailable ? "border-white/5 opacity-40" : "border-white/10"} rounded-xl py-2 px-3.5 flex items-center justify-between text-zinc-200 text-xs font-mono shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]`}>
+                    <span className="font-medium text-zinc-100">{isDeviceAvailable ? `${sampleRate} Hz` : "---"}</span>
+                    <span className="text-[9px] uppercase font-bold text-cyan-400 px-1.5 py-0.5 rounded bg-white/[0.06] border border-cyan-400/30">
+                      Hardware ASIO
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-zinc-400 block mb-2 font-semibold tracking-wider uppercase text-[10px] font-sans">
+                    Tamaño de Buffer (Buffer Size)
+                  </label>
+                  <CustomSelect
+                    value={bufferSize}
+                    onChange={(val) => setBufferSize(Number(val))}
+                    options={bufferOptions}
+                    disabled={!isDeviceAvailable}
+                  />
+                </div>
+
+                <div>
+                  <label className="text-zinc-400 block mb-2 font-semibold tracking-wider uppercase text-[10px] font-sans">
+                    Frecuencia de Muestreo (Sample Rate)
+                  </label>
+                  <CustomSelect
+                    value={sampleRate}
+                    onChange={(val) => setSampleRate(Number(val))}
+                    options={sampleRateOptions}
+                    disabled={!isDeviceAvailable}
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           {/* MIDI Ports Detected with Interactive Selector */}
@@ -563,7 +932,12 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
                 )}
                 <button
                   type="button"
-                  onClick={() => {
+                  onClick={async () => {
+                    try {
+                      await invoke("resume_audio_engine");
+                    } catch (e) {
+                      console.error("Error al reanudar audio para calibración:", e);
+                    }
                     setIsCalibrating(true);
                     setCalibPhase("countdown");
                     setCalibCountdown(4);
@@ -615,12 +989,29 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-3.5 bg-black/50 border-t border-white/[0.08] flex justify-end rounded-b-2xl">
+        <div className="px-6 py-3.5 bg-black/50 border-t border-white/[0.08] flex items-center justify-end space-x-3 rounded-b-2xl">
           <button
-            onClick={onClose}
-            className="px-5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-sans font-bold text-xs tracking-wider transition shadow-[0_0_12px_rgba(16,185,129,0.4)] cursor-pointer"
+            type="button"
+            onClick={handleCancel}
+            disabled={isApplying}
+            className="px-4 py-1.5 rounded-lg border border-white/10 hover:border-white/20 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white font-sans font-medium text-xs transition cursor-pointer"
           >
-            Listo
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={handleApply}
+            disabled={isApplying || !isDeviceAvailable}
+            className="px-5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed text-black font-sans font-bold text-xs tracking-wider transition shadow-[0_0_12px_rgba(16,185,129,0.4)] cursor-pointer flex items-center gap-2"
+          >
+            {isApplying ? (
+              <>
+                <RefreshCw size={13} className="animate-spin" />
+                Aplicando...
+              </>
+            ) : (
+              "Aplicar y Guardar"
+            )}
           </button>
         </div>
 
@@ -751,7 +1142,7 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
                           localStorage.setItem("impact_sampler_latency_by_device", JSON.stringify(saved));
                         } catch (_) {}
                       }
-                      setIsCalibrating(false);
+                      handleStopCalibrating();
                     }}
                     className="flex-1 py-2 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-sans text-xs font-bold tracking-wider transition shadow-[0_0_12px_rgba(16,185,129,0.4)] cursor-pointer"
                   >
@@ -764,7 +1155,7 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
             {calibPhase !== "result" && (
               <button
                 type="button"
-                onClick={() => setIsCalibrating(false)}
+                onClick={handleStopCalibrating}
                 className="absolute top-4 right-4 text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-white/[0.06] transition cursor-pointer"
               >
                 <X size={18} />

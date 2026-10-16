@@ -29,6 +29,7 @@ export interface AudioDeviceInfo {
   name: string;
   isDefault: boolean;
   sampleRates: number[];
+  channels?: number;
 }
 
 export interface AudioConfig {

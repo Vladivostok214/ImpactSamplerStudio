@@ -383,6 +383,12 @@ impl StepSequencer {
         self.samples_per_tick = self.sample_rate * seconds_per_tick;
     }
 
+    pub fn update_sample_rate(&mut self, sample_rate: f32) {
+        self.sample_rate = sample_rate;
+        self.click_decay = 1.0 - (1.0 / (sample_rate * 0.018).max(1.0));
+        self.recalculate_samples_per_tick();
+    }
+
     pub fn toggle_click(&mut self) -> bool {
         self.is_click_enabled = !self.is_click_enabled;
         self.is_click_enabled

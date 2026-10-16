@@ -95,4 +95,5 @@ pub struct AudioDeviceInfo {
     pub name: String,
     pub is_default: bool,
     pub sample_rates: Vec<u32>,
+    pub channels: u16,
 }

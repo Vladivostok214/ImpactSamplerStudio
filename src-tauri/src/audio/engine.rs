@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
@@ -12,15 +12,84 @@ use super::sampler::{PadEngineMode, PadPlaybackMode, PadSampleData, PadSampler, 
 use super::sequencer::{SequencerAction, SequencerStateInfo, SequencerStepEvent, StepSequencer};
 use super::{AudioDeviceInfo, AudioEngineCommand, SequencerUiEvent};
 
-struct StreamHolder(Option<Stream>);
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SavedAudioPreferences {
+    pub host: String,
+    pub device_name: Option<String>,
+    pub channel_pair: usize,
+    pub buffer_size: Option<u32>,
+    pub sample_rate: Option<u32>,
+}
+
+pub fn get_audio_preferences_path() -> Option<std::path::PathBuf> {
+    if let Ok(app_data) = std::env::var("APPDATA") {
+        let dir = std::path::PathBuf::from(app_data).join("ImpactSamplerStudio");
+        let _ = std::fs::create_dir_all(&dir);
+        Some(dir.join("audio_preferences.json"))
+    } else {
+        None
+    }
+}
+
+pub fn load_saved_audio_preferences() -> Option<SavedAudioPreferences> {
+    let path = get_audio_preferences_path()?;
+    if !path.exists() {
+        return None;
+    }
+    let data = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str::<SavedAudioPreferences>(&data).ok()
+}
+
+pub fn save_audio_preferences(prefs: &SavedAudioPreferences) {
+    if let Some(path) = get_audio_preferences_path() {
+        if let Ok(json) = serde_json::to_string_pretty(prefs) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub enum ActiveBackend {
+    Cpal(Stream),
+    #[cfg(target_os = "windows")]
+    Asio {
+        driver: Arc<asio_sys::Driver>,
+        callback_id: asio_sys::CallbackId,
+        is_running: Arc<AtomicBool>,
+    },
+}
+
+impl Drop for ActiveBackend {
+    fn drop(&mut self) {
+        match self {
+            ActiveBackend::Cpal(_) => {}
+            #[cfg(target_os = "windows")]
+            ActiveBackend::Asio { driver, callback_id, is_running } => {
+                is_running.store(false, Ordering::Relaxed);
+                driver.remove_callback(*callback_id);
+                let _ = driver.stop();
+                let _ = driver.dispose_buffers();
+            }
+        }
+    }
+}
+
+struct StreamHolder(Option<ActiveBackend>);
 unsafe impl Send for StreamHolder {}
 unsafe impl Sync for StreamHolder {}
 
 pub struct AudioEngine {
     stream: Arc<Mutex<StreamHolder>>,
+    pub current_host: Arc<Mutex<String>>,
+    pub target_host: Arc<Mutex<Option<String>>>,
     pub current_device_name: Arc<Mutex<String>>,
+    pub target_device_name: Arc<Mutex<Option<String>>>,
     pub sample_rate: Arc<Mutex<u32>>,
+    pub target_sample_rate: Arc<Mutex<Option<u32>>>,
     pub buffer_size: Arc<Mutex<u32>>,
+    pub target_buffer_size: Arc<Mutex<Option<u32>>>,
+    pub channels: Arc<Mutex<usize>>,
+    pub selected_channel_pair: Arc<AtomicUsize>,
     pub is_running: Arc<AtomicBool>,
     pub device_invalidated: Arc<AtomicBool>,
     command_consumer: Arc<Mutex<Option<Consumer<AudioEngineCommand>>>>,
@@ -47,6 +116,8 @@ pub struct AudioEngine {
     pub shared_sequencer: Arc<Mutex<StepSequencer>>,
     // Fase 9: Arpeggiator (Sincronizado a shared para lecturas de estado)
     pub shared_arpeggiator: Arc<Mutex<Arpeggiator>>,
+    #[cfg(target_os = "windows")]
+    pub standby_asio_driver: Arc<Mutex<Option<Arc<asio_sys::Driver>>>>,
 }
 
 unsafe impl Send for AudioEngine {}
@@ -146,6 +217,7 @@ struct AudioRenderState {
     // Fase 9: Arpeggiator
     arpeggiator: Arpeggiator,
     shared_arpeggiator: Arc<Mutex<Arpeggiator>>,
+    selected_channel_pair: Arc<AtomicUsize>,
     // MIDI Learn: Mapeos dinámicos CC
     midi_fader_ccs: [u8; 9],
     midi_knob_ccs: [u8; 8],
@@ -172,6 +244,7 @@ impl AudioRenderState {
         shared_sequencer: Arc<Mutex<StepSequencer>>,
         ui_event_producer: Arc<Mutex<Option<Producer<SequencerUiEvent>>>>,
         shared_arpeggiator: Arc<Mutex<Arpeggiator>>,
+        selected_channel_pair: Arc<AtomicUsize>,
     ) -> Self {
         let mut pad_sampler = PadSampler::new(sample_rate_f);
         let drum_pad_notes = *shared_drum_pad_notes.lock().unwrap();
@@ -275,6 +348,7 @@ impl AudioRenderState {
             ui_event_producer,
             arpeggiator: Arpeggiator::new(sample_rate_f),
             shared_arpeggiator,
+            selected_channel_pair,
             midi_fader_ccs: [38, 39, 40, 41, 42, 43, 44, 45, 46],
             midi_knob_ccs: [56, 57, 58, 59, 60, 61, 62, 63],
             is_midi_muted: false,
@@ -1147,17 +1221,21 @@ impl AudioRenderState {
         let l_slice = &self.left_buf[..num_frames];
         let r_slice = &self.right_buf[..num_frames];
 
-        if self.channels == 2 {
+        if self.channels >= 2 {
+            output.fill(0.0);
+            let pair = self.selected_channel_pair.load(Ordering::Relaxed);
+            let left_ch = (pair * 2).min(self.channels - 2);
+            let right_ch = left_ch + 1;
+
             for i in 0..num_frames {
-                output[i * 2] = (l_slice[i] * gain).clamp(-1.0, 1.0);
-                output[i * 2 + 1] = (r_slice[i] * gain).clamp(-1.0, 1.0);
+                let base = i * self.channels;
+                output[base + left_ch] = (l_slice[i] * gain).clamp(-1.0, 1.0);
+                output[base + right_ch] = (r_slice[i] * gain).clamp(-1.0, 1.0);
             }
         } else {
             for i in 0..num_frames {
                 let mono = (l_slice[i] + r_slice[i]) * 0.5 * gain;
-                for ch in 0..self.channels {
-                    output[i * self.channels + ch] = mono.clamp(-1.0, 1.0);
-                }
+                output[i] = mono.clamp(-1.0, 1.0);
             }
         }
     }
@@ -1171,20 +1249,23 @@ impl AudioRenderState {
         let l_slice = &self.left_buf[..num_frames];
         let r_slice = &self.right_buf[..num_frames];
 
-        if self.channels == 2 {
+        if self.channels >= 2 {
+            output.fill(0);
+            let pair = self.selected_channel_pair.load(Ordering::Relaxed);
+            let left_ch = (pair * 2).min(self.channels - 2);
+            let right_ch = left_ch + 1;
+
             for i in 0..num_frames {
                 let l_val = (l_slice[i] * gain).clamp(-1.0, 1.0);
                 let r_val = (r_slice[i] * gain).clamp(-1.0, 1.0);
-                output[i * 2] = (l_val * 32767.0) as i16;
-                output[i * 2 + 1] = (r_val * 32767.0) as i16;
+                let base = i * self.channels;
+                output[base + left_ch] = (l_val * 32767.0) as i16;
+                output[base + right_ch] = (r_val * 32767.0) as i16;
             }
         } else {
             for i in 0..num_frames {
                 let mono = ((l_slice[i] + r_slice[i]) * 0.5 * gain).clamp(-1.0, 1.0);
-                let s_i16 = (mono * 32767.0) as i16;
-                for ch in 0..self.channels {
-                    output[i * self.channels + ch] = s_i16;
-                }
+                output[i] = (mono * 32767.0) as i16;
             }
         }
     }
@@ -1198,22 +1279,25 @@ impl AudioRenderState {
         let l_slice = &self.left_buf[..num_frames];
         let r_slice = &self.right_buf[..num_frames];
 
-        if self.channels == 2 {
+        if self.channels >= 2 {
+            output.fill(32768);
+            let pair = self.selected_channel_pair.load(Ordering::Relaxed);
+            let left_ch = (pair * 2).min(self.channels - 2);
+            let right_ch = left_ch + 1;
+
             for i in 0..num_frames {
                 let l_val = (l_slice[i] * gain).clamp(-1.0, 1.0);
                 let r_val = (r_slice[i] * gain).clamp(-1.0, 1.0);
                 let s_u16_l = ((l_val * 0.5 + 0.5) * 65535.0) as u16;
                 let s_u16_r = ((r_val * 0.5 + 0.5) * 65535.0) as u16;
-                output[i * 2] = s_u16_l;
-                output[i * 2 + 1] = s_u16_r;
+                let base = i * self.channels;
+                output[base + left_ch] = s_u16_l;
+                output[base + right_ch] = s_u16_r;
             }
         } else {
             for i in 0..num_frames {
                 let mono = ((l_slice[i] + r_slice[i]) * 0.5 * gain).clamp(-1.0, 1.0);
-                let s_u16 = ((mono * 0.5 + 0.5) * 65535.0) as u16;
-                for ch in 0..self.channels {
-                    output[i * self.channels + ch] = s_u16;
-                }
+                output[i] = ((mono * 0.5 + 0.5) * 65535.0) as u16;
             }
         }
     }
@@ -1239,9 +1323,38 @@ fn build_and_start_stream(
     ui_event_producer: Arc<Mutex<Option<Producer<SequencerUiEvent>>>>,
     shared_arpeggiator: Arc<Mutex<Arpeggiator>>,
     device_invalidated: Arc<AtomicBool>,
+    selected_channel_pair: Arc<AtomicUsize>,
+    requested_buffer_size: Option<u32>,
+    requested_sample_rate: Option<u32>,
 ) -> Result<(Stream, u32, usize), String> {
     let sample_format = supported_config.sample_format();
-    let config: StreamConfig = supported_config.into();
+    let mut config: StreamConfig = supported_config.into();
+    let default_sample_rate = config.sample_rate.0;
+
+    if let Some(target_sr) = requested_sample_rate {
+        let mut is_supported = false;
+        if let Ok(configs) = device.supported_output_configs() {
+            for c in configs {
+                if target_sr >= c.min_sample_rate().0 && target_sr <= c.max_sample_rate().0 {
+                    is_supported = true;
+                    break;
+                }
+            }
+        }
+        if is_supported {
+            config.sample_rate = cpal::SampleRate(target_sr);
+        } else {
+            let dev_label = device.name().unwrap_or_else(|_| "Dispositivo".to_string());
+            println!(
+                "[Audio Engine] Frecuencia solicitada {} Hz no soportada por '{}'. Auto-ajustando a {} Hz nativo.",
+                target_sr, dev_label, default_sample_rate
+            );
+        }
+    }
+
+    if let Some(target_buf) = requested_buffer_size {
+        config.buffer_size = cpal::BufferSize::Fixed(target_buf);
+    }
 
     let sample_rate = config.sample_rate.0;
     let channels = config.channels as usize;
@@ -1266,8 +1379,15 @@ fn build_and_start_stream(
         shared_sequencer,
         ui_event_producer,
         shared_arpeggiator,
+        selected_channel_pair,
     );
     state.master_gain = initial_gain;
+
+    // Sincronizar todos los módulos DSP al nuevo sample rate activo
+    state.fx_rack.update_sample_rate(sample_rate as f32);
+    state.sequencer.update_sample_rate(sample_rate as f32);
+    state.arpeggiator.update_sample_rate(sample_rate as f32);
+    state.pad_sampler.update_sample_rate(sample_rate as f32);
 
     // Restaurar SoundFont melódico si ya había uno cargado
     if let Ok(sf_guard) = shared_soundfont.lock() {
@@ -1315,17 +1435,277 @@ fn build_and_start_stream(
     Ok((stream, sample_rate, channels))
 }
 
+#[cfg(target_os = "windows")]
+fn start_asio_streaming(
+    driver: Arc<asio_sys::Driver>,
+    command_consumer: Arc<Mutex<Option<Consumer<AudioEngineCommand>>>>,
+    shared_soundfont: Arc<Mutex<Option<Arc<SoundFont>>>>,
+    shared_patch: Arc<AtomicI32>,
+    shared_master_gain: Arc<Mutex<f32>>,
+    shared_pad_samples: Arc<Mutex<[Option<Arc<PadSampleData>>; 8]>>,
+    shared_pad_modes: Arc<Mutex<[PadPlaybackMode; 8]>>,
+    shared_pad_gains: Arc<Mutex<[f32; 8]>>,
+    shared_pad_engine_mode: Arc<Mutex<PadEngineMode>>,
+    shared_drum_soundfont: Arc<Mutex<Option<Arc<SoundFont>>>>,
+    shared_drum_patch: Arc<AtomicI32>,
+    shared_drum_pad_notes: Arc<Mutex<[i32; 8]>>,
+    shared_fx_rack: Arc<Mutex<AudioFxRack>>,
+    shared_fx_routing: Arc<Mutex<FxRouting>>,
+    shared_sequencer: Arc<Mutex<StepSequencer>>,
+    ui_event_producer: Arc<Mutex<Option<Producer<SequencerUiEvent>>>>,
+    shared_arpeggiator: Arc<Mutex<Arpeggiator>>,
+    selected_channel_pair: Arc<AtomicUsize>,
+    requested_sample_rate: Option<u32>,
+) -> Result<(ActiveBackend, u32, u32, usize), String> {
+    if let Some(target_sr) = requested_sample_rate {
+        if driver.can_sample_rate(target_sr as f64).unwrap_or(false) {
+            let _ = driver.set_sample_rate(target_sr as f64);
+        }
+    }
+
+    let sample_rate = driver.sample_rate().unwrap_or(44100.0) as u32;
+    let data_type = driver
+        .output_data_type()
+        .map_err(|e| format!("Error obteniendo tipo de muestra ASIO: {:?}", e))?;
+
+    let streams = driver
+        .prepare_output_stream(None, 2, None)
+        .map_err(|e| format!("Error preparando buffers ASIO: {:?}", e))?;
+    let output_stream = streams
+        .output
+        .ok_or_else(|| "No se generaron buffers de salida en el driver ASIO".to_string())?;
+    let buffer_size = output_stream.buffer_size as u32;
+
+    let left_b0 = output_stream.buffer_infos[0].buffers[0] as usize;
+    let left_b1 = output_stream.buffer_infos[0].buffers[1] as usize;
+    let right_b0 = output_stream.buffer_infos[1].buffers[0] as usize;
+    let right_b1 = output_stream.buffer_infos[1].buffers[1] as usize;
+
+    let initial_gain = *shared_master_gain.lock().unwrap();
+    let mut state = AudioRenderState::new(
+        sample_rate as f32,
+        2,
+        command_consumer,
+        shared_soundfont.clone(),
+        shared_patch.clone(),
+        shared_master_gain.clone(),
+        shared_pad_samples,
+        shared_pad_modes,
+        shared_pad_gains,
+        shared_pad_engine_mode,
+        shared_drum_soundfont,
+        shared_drum_patch,
+        shared_drum_pad_notes,
+        shared_fx_rack,
+        shared_fx_routing,
+        shared_sequencer,
+        ui_event_producer,
+        shared_arpeggiator,
+        selected_channel_pair,
+    );
+    state.master_gain = initial_gain;
+
+    state.fx_rack.update_sample_rate(sample_rate as f32);
+    state.sequencer.update_sample_rate(sample_rate as f32);
+    state.arpeggiator.update_sample_rate(sample_rate as f32);
+    state.pad_sampler.update_sample_rate(sample_rate as f32);
+
+    if let Ok(sf_guard) = shared_soundfont.lock() {
+        if let Some(sf) = sf_guard.as_ref() {
+            let settings = SynthesizerSettings::new(sample_rate as i32);
+            if let Ok(mut synth) = Synthesizer::new(sf, &settings) {
+                let patch = shared_patch.load(Ordering::SeqCst);
+                synth.process_midi_message(0, 0xC0, patch, 0);
+                state.synthesizer = Some(synth);
+            }
+        }
+    }
+
+    let is_running = Arc::new(AtomicBool::new(true));
+    let is_running_clone = is_running.clone();
+    let frames = buffer_size as usize;
+    let mut temp_buf = vec![0.0f32; frames * 2];
+
+    let callback_id = driver.add_callback(move |info| {
+        if !is_running_clone.load(Ordering::Relaxed) {
+            return;
+        }
+        let buf_idx = info.buffer_index;
+        let left_ptr = if buf_idx == 0 {
+            left_b0 as *mut std::ffi::c_void
+        } else {
+            left_b1 as *mut std::ffi::c_void
+        };
+        let right_ptr = if buf_idx == 0 {
+            right_b0 as *mut std::ffi::c_void
+        } else {
+            right_b1 as *mut std::ffi::c_void
+        };
+
+        state.render_f32(&mut temp_buf);
+
+        match data_type {
+            asio_sys::AsioSampleType::ASIOSTInt32LSB => {
+                let l = left_ptr as *mut i32;
+                let r = right_ptr as *mut i32;
+                for i in 0..frames {
+                    unsafe {
+                        *l.add(i) = (temp_buf[i * 2] * 2147483647.0) as i32;
+                        *r.add(i) = (temp_buf[i * 2 + 1] * 2147483647.0) as i32;
+                    }
+                }
+            }
+            asio_sys::AsioSampleType::ASIOSTFloat32LSB => {
+                let l = left_ptr as *mut f32;
+                let r = right_ptr as *mut f32;
+                for i in 0..frames {
+                    unsafe {
+                        *l.add(i) = temp_buf[i * 2];
+                        *r.add(i) = temp_buf[i * 2 + 1];
+                    }
+                }
+            }
+            asio_sys::AsioSampleType::ASIOSTInt16LSB => {
+                let l = left_ptr as *mut i16;
+                let r = right_ptr as *mut i16;
+                for i in 0..frames {
+                    unsafe {
+                        *l.add(i) = (temp_buf[i * 2] * 32767.0) as i16;
+                        *r.add(i) = (temp_buf[i * 2 + 1] * 32767.0) as i16;
+                    }
+                }
+            }
+            asio_sys::AsioSampleType::ASIOSTInt24LSB => {
+                let l = left_ptr as *mut u8;
+                let r = right_ptr as *mut u8;
+                for i in 0..frames {
+                    let sample_l = (temp_buf[i * 2] * 8388607.0) as i32;
+                    let sample_r = (temp_buf[i * 2 + 1] * 8388607.0) as i32;
+                    let bytes_l = sample_l.to_le_bytes();
+                    let bytes_r = sample_r.to_le_bytes();
+                    unsafe {
+                        *l.add(i * 3) = bytes_l[0];
+                        *l.add(i * 3 + 1) = bytes_l[1];
+                        *l.add(i * 3 + 2) = bytes_l[2];
+                        *r.add(i * 3) = bytes_r[0];
+                        *r.add(i * 3 + 1) = bytes_r[1];
+                        *r.add(i * 3 + 2) = bytes_r[2];
+                    }
+                }
+            }
+            _ => {
+                let l = left_ptr as *mut i32;
+                let r = right_ptr as *mut i32;
+                for i in 0..frames {
+                    unsafe {
+                        *l.add(i) = (temp_buf[i * 2] * 2147483647.0) as i32;
+                        *r.add(i) = (temp_buf[i * 2 + 1] * 2147483647.0) as i32;
+                    }
+                }
+            }
+        }
+    });
+
+    driver
+        .start()
+        .map_err(|e| format!("Error al iniciar streaming ASIO: {:?}", e))?;
+
+    Ok((
+        ActiveBackend::Asio {
+            driver,
+            callback_id,
+            is_running,
+        },
+        sample_rate,
+        buffer_size,
+        2,
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn build_and_start_asio_stream(
+    driver_name: &str,
+    existing_driver: Option<Arc<asio_sys::Driver>>,
+    command_consumer: Arc<Mutex<Option<Consumer<AudioEngineCommand>>>>,
+    shared_soundfont: Arc<Mutex<Option<Arc<SoundFont>>>>,
+    shared_patch: Arc<AtomicI32>,
+    shared_master_gain: Arc<Mutex<f32>>,
+    shared_pad_samples: Arc<Mutex<[Option<Arc<PadSampleData>>; 8]>>,
+    shared_pad_modes: Arc<Mutex<[PadPlaybackMode; 8]>>,
+    shared_pad_gains: Arc<Mutex<[f32; 8]>>,
+    shared_pad_engine_mode: Arc<Mutex<PadEngineMode>>,
+    shared_drum_soundfont: Arc<Mutex<Option<Arc<SoundFont>>>>,
+    shared_drum_patch: Arc<AtomicI32>,
+    shared_drum_pad_notes: Arc<Mutex<[i32; 8]>>,
+    shared_fx_rack: Arc<Mutex<AudioFxRack>>,
+    shared_fx_routing: Arc<Mutex<FxRouting>>,
+    shared_sequencer: Arc<Mutex<StepSequencer>>,
+    ui_event_producer: Arc<Mutex<Option<Producer<SequencerUiEvent>>>>,
+    shared_arpeggiator: Arc<Mutex<Arpeggiator>>,
+    selected_channel_pair: Arc<AtomicUsize>,
+    _requested_buffer_size: Option<u32>,
+    requested_sample_rate: Option<u32>,
+) -> Result<(ActiveBackend, u32, u32, usize), String> {
+    let driver = match existing_driver {
+        Some(d) => d,
+        None => {
+            let asio = asio_sys::Asio::new();
+            let d = asio
+                .load_driver(driver_name)
+                .map_err(|e| format!("Error cargando controlador ASIO '{}': {:?}", driver_name, e))?;
+            Arc::new(d)
+        }
+    };
+
+    start_asio_streaming(
+        driver,
+        command_consumer,
+        shared_soundfont,
+        shared_patch,
+        shared_master_gain,
+        shared_pad_samples,
+        shared_pad_modes,
+        shared_pad_gains,
+        shared_pad_engine_mode,
+        shared_drum_soundfont,
+        shared_drum_patch,
+        shared_drum_pad_notes,
+        shared_fx_rack,
+        shared_fx_routing,
+        shared_sequencer,
+        ui_event_producer,
+        shared_arpeggiator,
+        selected_channel_pair,
+        requested_sample_rate,
+    )
+}
+
 impl AudioEngine {
     pub fn new() -> Self {
         let factory_samples = load_factory_pad_samples(48000);
         let default_drum_sf = load_default_drum_soundfont();
         let (ui_prod, ui_cons) = RingBuffer::<SequencerUiEvent>::new(128);
 
+        let default_host = if cfg!(target_os = "windows") {
+            "WASAPI".to_string()
+        } else if cfg!(target_os = "macos") {
+            "CoreAudio".to_string()
+        } else {
+            "ALSA".to_string()
+        };
+
         Self {
             stream: Arc::new(Mutex::new(StreamHolder(None))),
+            current_host: Arc::new(Mutex::new(default_host)),
+            target_host: Arc::new(Mutex::new(None)),
             current_device_name: Arc::new(Mutex::new("No iniciado".to_string())),
+            target_device_name: Arc::new(Mutex::new(None)),
             sample_rate: Arc::new(Mutex::new(48000)),
+            target_sample_rate: Arc::new(Mutex::new(None)),
             buffer_size: Arc::new(Mutex::new(256)),
+            target_buffer_size: Arc::new(Mutex::new(Some(256))),
+            channels: Arc::new(Mutex::new(2)),
+            selected_channel_pair: Arc::new(AtomicUsize::new(0)),
             is_running: Arc::new(AtomicBool::new(false)),
             device_invalidated: Arc::new(AtomicBool::new(false)),
             command_consumer: Arc::new(Mutex::new(None)),
@@ -1348,6 +1728,8 @@ impl AudioEngine {
             shared_fx_routing: Arc::new(Mutex::new(FxRouting::Off)),
             shared_sequencer: Arc::new(Mutex::new(StepSequencer::new(48000.0))),
             shared_arpeggiator: Arc::new(Mutex::new(Arpeggiator::new(48000.0))),
+            #[cfg(target_os = "windows")]
+            standby_asio_driver: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -1462,7 +1844,24 @@ impl AudioEngine {
         *self.shared_fx_routing.lock().unwrap() = routing;
     }
 
-    pub fn list_output_devices() -> Vec<AudioDeviceInfo> {
+    pub fn list_output_devices(host_opt: Option<&str>) -> Vec<AudioDeviceInfo> {
+        #[cfg(target_os = "windows")]
+        if host_opt == Some("ASIO") {
+            let asio = asio_sys::Asio::new();
+            let names = asio.driver_names();
+            return names
+                .into_iter()
+                .enumerate()
+                .map(|(idx, name)| AudioDeviceInfo {
+                    id: format!("asio_{}", idx),
+                    name,
+                    is_default: false,
+                    sample_rates: vec![44100, 48000, 88200, 96000, 176400, 192000],
+                    channels: 2,
+                })
+                .collect();
+        }
+
         let host = cpal::default_host();
         let default_device = host.default_output_device().and_then(|d| d.name().ok());
         let mut devices = Vec::new();
@@ -1471,16 +1870,630 @@ impl AudioEngine {
             for (idx, dev) in dev_iter.enumerate() {
                 if let Ok(name) = dev.name() {
                     let is_default = default_device.as_ref().map_or(false, |d| d == &name);
+                    let channels = dev.default_output_config().map(|c| c.channels()).unwrap_or(2);
+
+                    let candidates = [44100, 48000, 88200, 96000, 176400, 192000];
+                    let mut supported_rates = Vec::new();
+                    if let Ok(configs) = dev.supported_output_configs() {
+                        let cfg_list: Vec<_> = configs.collect();
+                        for &rate in &candidates {
+                            for config in &cfg_list {
+                                if rate >= config.min_sample_rate().0 && rate <= config.max_sample_rate().0 {
+                                    if !supported_rates.contains(&rate) {
+                                        supported_rates.push(rate);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if supported_rates.is_empty() {
+                        if let Ok(def_cfg) = dev.default_output_config() {
+                            supported_rates.push(def_cfg.sample_rate().0);
+                        } else {
+                            supported_rates = vec![44100, 48000];
+                        }
+                    }
+                    supported_rates.sort_unstable();
+
                     devices.push(AudioDeviceInfo {
                         id: format!("dev_{}", idx),
                         name,
                         is_default,
-                        sample_rates: vec![44100, 48000, 96000],
+                        sample_rates: supported_rates,
+                        channels,
                     });
                 }
             }
         }
         devices
+    }
+
+    pub fn set_channel_pair(&self, pair: usize) {
+        self.selected_channel_pair.store(pair, Ordering::Relaxed);
+        println!("[Audio Engine] Par de canales estéreo asignado a: {}", pair);
+    }
+
+    pub fn apply_audio_config(
+        &self,
+        host_name: Option<String>,
+        device_name: Option<String>,
+        channel_pair: usize,
+        buffer_size: Option<u32>,
+        sample_rate: Option<u32>,
+    ) -> Result<crate::state::AudioStatusInfo, String> {
+        let chosen_host = host_name
+            .or_else(|| self.target_host.lock().unwrap().clone())
+            .unwrap_or_else(|| self.current_host.lock().unwrap().clone());
+
+        // 1. Guardar preferencias de hardware y canal
+        *self.target_host.lock().unwrap() = Some(chosen_host.clone());
+        *self.target_device_name.lock().unwrap() = device_name.clone();
+        *self.target_buffer_size.lock().unwrap() = buffer_size;
+        *self.target_sample_rate.lock().unwrap() = sample_rate;
+        self.selected_channel_pair.store(channel_pair, Ordering::Relaxed);
+
+        // 2. Detener stream activo para liberar recursos del DAC
+        {
+            let mut s_guard = self.stream.lock().unwrap();
+            *s_guard = StreamHolder(None);
+        }
+        self.is_running.store(false, Ordering::SeqCst);
+
+        // 3. Modo ASIO nativo en Windows
+        #[cfg(target_os = "windows")]
+        if chosen_host == "ASIO" {
+            let asio = asio_sys::Asio::new();
+            let target_name = match device_name {
+                Some(ref name) if !name.is_empty() => name.clone(),
+                _ => {
+                    let names = asio.driver_names();
+                    names.into_iter().next().ok_or_else(|| "No se encontró ningún controlador ASIO instalado en el sistema".to_string())?
+                }
+            };
+
+            // Reutilizar el driver en standby si es del mismo dispositivo, o liberarlo si es diferente
+            let driver_to_use = {
+                let mut standby = self.standby_asio_driver.lock().unwrap();
+                if let Some(ref d) = *standby {
+                    if d.name() == target_name {
+                        Some(d.clone())
+                    } else {
+                        let old = standby.take();
+                        drop(old);
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+            let (active_backend, effective_sr, effective_buf, channels) = build_and_start_asio_stream(
+                &target_name,
+                driver_to_use,
+                self.command_consumer.clone(),
+                self.shared_soundfont.clone(),
+                self.shared_patch.clone(),
+                self.shared_master_gain.clone(),
+                self.shared_pad_samples.clone(),
+                self.shared_pad_modes.clone(),
+                self.shared_pad_gains.clone(),
+                self.shared_pad_engine_mode.clone(),
+                self.shared_drum_soundfont.clone(),
+                self.shared_drum_patch.clone(),
+                self.shared_drum_pad_notes.clone(),
+                self.shared_fx_rack.clone(),
+                self.shared_fx_routing.clone(),
+                self.shared_sequencer.clone(),
+                self.ui_event_producer.clone(),
+                self.shared_arpeggiator.clone(),
+                self.selected_channel_pair.clone(),
+                buffer_size,
+                sample_rate,
+            )?;
+
+            let driver_to_standby = match &active_backend {
+                ActiveBackend::Asio { driver, .. } => Some(driver.clone()),
+                _ => None,
+            };
+            if let Some(d) = driver_to_standby {
+                *self.standby_asio_driver.lock().unwrap() = Some(d);
+            }
+
+            *self.current_host.lock().unwrap() = "ASIO".to_string();
+            *self.current_device_name.lock().unwrap() = target_name.clone();
+            *self.sample_rate.lock().unwrap() = effective_sr;
+            *self.buffer_size.lock().unwrap() = effective_buf;
+            *self.channels.lock().unwrap() = channels;
+            self.is_running.store(true, Ordering::SeqCst);
+            *self.stream.lock().unwrap() = StreamHolder(Some(active_backend));
+
+            println!(
+                "[Audio Engine Apply OK] Conectado exitosamente vía ASIO a '{}' ({} Hz, buffer: {}, canales: {})",
+                target_name, effective_sr, effective_buf, channels
+            );
+
+            let status = crate::state::AudioStatusInfo {
+                host: "ASIO".to_string(),
+                device_name: target_name.clone(),
+                driver: "ASIO".to_string(),
+                channels,
+                sample_rate: effective_sr,
+                buffer_size: effective_buf,
+                is_running: true,
+            };
+
+            let saved_prefs = SavedAudioPreferences {
+                host: "ASIO".to_string(),
+                device_name: Some(target_name),
+                channel_pair,
+                buffer_size: Some(effective_buf),
+                sample_rate: Some(effective_sr),
+            };
+            save_audio_preferences(&saved_prefs);
+
+            if let Ok(handle_guard) = self.app_handle.lock() {
+                if let Some(handle) = handle_guard.as_ref() {
+                    let _ = handle.emit("audio-status-changed", &status);
+                }
+            }
+
+            return Ok(status);
+        }
+
+        // 4. Modo CPAL (WASAPI en Windows, CoreAudio en macOS, ALSA en Linux)
+        #[cfg(target_os = "windows")]
+        {
+            let mut standby = self.standby_asio_driver.lock().unwrap();
+            if let Some(old) = standby.take() {
+                drop(old);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+        let host = cpal::default_host();
+        let mut resolved = None;
+        if let Some(target) = &device_name {
+            let target_lower = target.trim().to_lowercase();
+            if let Ok(dev_iter) = host.output_devices() {
+                for dev in dev_iter {
+                    if let Ok(name) = dev.name() {
+                        if name.trim().to_lowercase() == target_lower || name.to_lowercase().contains(&target_lower) {
+                            resolved = Some((dev, name));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        let (device, dev_name) = match resolved {
+            Some(pair) => pair,
+            None => {
+                let default_dev = host
+                    .default_output_device()
+                    .ok_or_else(|| "No se encontró ningún dispositivo de salida de audio".to_string())?;
+                let def_name = default_dev
+                    .name()
+                    .unwrap_or_else(|_| "Dispositivo Predeterminado".to_string());
+                (default_dev, def_name)
+            }
+        };
+
+        let supported_config = device
+            .default_output_config()
+            .map_err(|e| format!("Error al obtener configuración de audio para '{}': {}", dev_name, e))?;
+
+        let (stream, effective_sr, channels) = build_and_start_stream(
+            &device,
+            supported_config,
+            self.command_consumer.clone(),
+            self.shared_soundfont.clone(),
+            self.shared_patch.clone(),
+            self.shared_master_gain.clone(),
+            self.shared_pad_samples.clone(),
+            self.shared_pad_modes.clone(),
+            self.shared_pad_gains.clone(),
+            self.shared_pad_engine_mode.clone(),
+            self.shared_drum_soundfont.clone(),
+            self.shared_drum_patch.clone(),
+            self.shared_drum_pad_notes.clone(),
+            self.shared_fx_rack.clone(),
+            self.shared_fx_routing.clone(),
+            self.shared_sequencer.clone(),
+            self.ui_event_producer.clone(),
+            self.shared_arpeggiator.clone(),
+            self.device_invalidated.clone(),
+            self.selected_channel_pair.clone(),
+            buffer_size,
+            sample_rate,
+        )?;
+
+        *self.current_host.lock().unwrap() = chosen_host.clone();
+        *self.current_device_name.lock().unwrap() = dev_name.clone();
+        *self.sample_rate.lock().unwrap() = effective_sr;
+        if let Some(buf) = buffer_size {
+            *self.buffer_size.lock().unwrap() = buf;
+        }
+        *self.channels.lock().unwrap() = channels;
+        self.is_running.store(true, Ordering::SeqCst);
+        *self.stream.lock().unwrap() = StreamHolder(Some(ActiveBackend::Cpal(stream)));
+
+        println!(
+            "[Audio Engine Apply OK] Conectado exitosamente vía {} a '{}' ({} Hz, {} canales, par: {}, buffer: {:?})",
+            chosen_host, dev_name, effective_sr, channels, channel_pair, buffer_size
+        );
+
+        let driver_name = format!("{:?}", host.id()).to_uppercase();
+        let status = crate::state::AudioStatusInfo {
+            host: chosen_host.clone(),
+            device_name: dev_name.clone(),
+            driver: match driver_name.as_str() {
+                "WASAPI" => "WASAPI".to_string(),
+                "COREAUDIO" => "CoreAudio".to_string(),
+                "ALSA" => "ALSA".to_string(),
+                _ => driver_name,
+            },
+            channels,
+            sample_rate: effective_sr,
+            buffer_size: *self.buffer_size.lock().unwrap(),
+            is_running: true,
+        };
+
+        let saved_prefs = SavedAudioPreferences {
+            host: chosen_host,
+            device_name: Some(dev_name),
+            channel_pair,
+            buffer_size: Some(*self.buffer_size.lock().unwrap()),
+            sample_rate: Some(effective_sr),
+        };
+        save_audio_preferences(&saved_prefs);
+
+        if let Ok(handle_guard) = self.app_handle.lock() {
+            if let Some(handle) = handle_guard.as_ref() {
+                let _ = handle.emit("audio-status-changed", &status);
+            }
+        }
+
+        Ok(status)
+    }
+
+    pub fn set_buffer_size(&self, buffer_size: u32) -> Result<crate::state::AudioStatusInfo, String> {
+        let dev = self.target_device_name.lock().unwrap().clone();
+        let pair = self.selected_channel_pair.load(Ordering::Relaxed);
+        let sr = *self.target_sample_rate.lock().unwrap();
+        self.apply_audio_config(None, dev, pair, Some(buffer_size), sr)
+    }
+
+    pub fn set_sample_rate(&self, sample_rate: u32) -> Result<crate::state::AudioStatusInfo, String> {
+        let dev = self.target_device_name.lock().unwrap().clone();
+        let pair = self.selected_channel_pair.load(Ordering::Relaxed);
+        let buf = *self.target_buffer_size.lock().unwrap();
+        self.apply_audio_config(None, dev, pair, buf, Some(sample_rate))
+    }
+
+    pub fn switch_output_device(&self, device_name: Option<String>) -> Result<crate::state::AudioStatusInfo, String> {
+        let pair = self.selected_channel_pair.load(Ordering::Relaxed);
+        let buf = *self.target_buffer_size.lock().unwrap();
+        let sr = *self.target_sample_rate.lock().unwrap();
+        self.apply_audio_config(None, device_name, pair, buf, sr)
+    }
+
+    pub fn suspend_audio_engine(&self) -> Result<crate::state::AudioStatusInfo, String> {
+        let is_asio = self.current_host.lock().unwrap().as_str() == "ASIO";
+        #[cfg(target_os = "windows")]
+        if is_asio {
+            let mut s_guard = self.stream.lock().unwrap();
+            if let Some(ActiveBackend::Asio { driver, .. }) = s_guard.0.as_ref() {
+                *self.standby_asio_driver.lock().unwrap() = Some(driver.clone());
+            }
+            *s_guard = StreamHolder(None);
+        } else {
+            let mut s_guard = self.stream.lock().unwrap();
+            *s_guard = StreamHolder(None);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut s_guard = self.stream.lock().unwrap();
+            *s_guard = StreamHolder(None);
+        }
+
+        self.is_running.store(false, Ordering::SeqCst);
+        println!("[Audio Engine] Audio detenido / DAC liberado para configuración (Estilo REAPER)");
+
+        let current_host = self.current_host.lock().unwrap().clone();
+        let status = crate::state::AudioStatusInfo {
+            host: current_host.clone(),
+            device_name: self.current_device_name.lock().unwrap().clone(),
+            driver: current_host,
+            channels: *self.channels.lock().unwrap(),
+            sample_rate: *self.sample_rate.lock().unwrap(),
+            buffer_size: *self.buffer_size.lock().unwrap(),
+            is_running: false,
+        };
+
+        if let Ok(handle_guard) = self.app_handle.lock() {
+            if let Some(handle) = handle_guard.as_ref() {
+                let _ = handle.emit("audio-status-changed", &status);
+            }
+        }
+
+        Ok(status)
+    }
+
+    pub fn resume_audio_engine(&self) -> Result<crate::state::AudioStatusInfo, String> {
+        if self.is_running.load(Ordering::SeqCst) {
+            let current_host = self.current_host.lock().unwrap().clone();
+            return Ok(crate::state::AudioStatusInfo {
+                host: current_host.clone(),
+                device_name: self.current_device_name.lock().unwrap().clone(),
+                driver: current_host,
+                channels: *self.channels.lock().unwrap(),
+                sample_rate: *self.sample_rate.lock().unwrap(),
+                buffer_size: *self.buffer_size.lock().unwrap(),
+                is_running: true,
+            });
+        }
+
+        let host = self.current_host.lock().unwrap().clone();
+        let dev = self.current_device_name.lock().unwrap().clone();
+        let pair = self.selected_channel_pair.load(Ordering::Relaxed);
+        let buf = *self.buffer_size.lock().unwrap();
+        let sr = *self.sample_rate.lock().unwrap();
+
+        self.apply_audio_config(Some(host), Some(dev), pair, Some(buf), Some(sr))
+    }
+
+    pub fn get_device_details(&self, host_name: &str, device_name: &str) -> Result<crate::state::AudioDeviceDetails, String> {
+        #[cfg(target_os = "windows")]
+        if host_name.eq_ignore_ascii_case("ASIO") {
+            let asio = asio_sys::Asio::new();
+            let driver_res = {
+                let mut standby = self.standby_asio_driver.lock().unwrap();
+                if let Some(ref d) = *standby {
+                    if d.name() == device_name {
+                        Ok(d.clone())
+                    } else {
+                        let old = standby.take();
+                        drop(old);
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        asio.load_driver(device_name).map(Arc::new)
+                    }
+                } else {
+                    asio.load_driver(device_name).map(Arc::new)
+                }
+            };
+
+            match driver_res {
+                Ok(driver) => {
+                    *self.standby_asio_driver.lock().unwrap() = Some(driver.clone());
+                    let channels = driver.channels().map(|c| c.outs as usize).unwrap_or(0);
+                    let is_available = channels > 0;
+                    let current_sr = driver.sample_rate().unwrap_or(48000.0) as u32;
+
+                    unsafe extern "C" {
+                        #[link_name = "\u{1}?ASIOGetBufferSize@@YAJPEAJ000@Z"]
+                        fn ASIOGetBufferSize(
+                            min: *mut std::os::raw::c_long,
+                            max: *mut std::os::raw::c_long,
+                            pref: *mut std::os::raw::c_long,
+                            gran: *mut std::os::raw::c_long,
+                        ) -> i32;
+                    }
+                    let mut min = 0;
+                    let mut max = 0;
+                    let mut pref = 0;
+                    let mut gran = 0;
+                    let current_buf = unsafe {
+                        if ASIOGetBufferSize(&mut min, &mut max, &mut pref, &mut gran) == 0 && pref > 0 {
+                            pref as u32
+                        } else {
+                            *self.buffer_size.lock().unwrap()
+                        }
+                    };
+
+                    let test_rates = [44100, 48000, 88200, 96000, 176400, 192000];
+                    let mut sample_rates = Vec::new();
+                    for &r in &test_rates {
+                        if driver.can_sample_rate(r as f64).unwrap_or(false) {
+                            sample_rates.push(r);
+                        }
+                    }
+                    if sample_rates.is_empty() {
+                        sample_rates.push(current_sr);
+                    }
+
+                    return Ok(crate::state::AudioDeviceDetails {
+                        name: device_name.to_string(),
+                        is_available,
+                        channels,
+                        sample_rates,
+                        current_sample_rate: current_sr,
+                        current_buffer_size: current_buf,
+                    });
+                }
+                Err(_) => {
+                    return Ok(crate::state::AudioDeviceDetails {
+                        name: device_name.to_string(),
+                        is_available: false,
+                        channels: 0,
+                        sample_rates: vec![],
+                        current_sample_rate: 48000,
+                        current_buffer_size: 256,
+                    });
+                }
+            }
+        }
+
+        // Host CPAL / WASAPI / CoreAudio / ALSA
+        #[cfg(target_os = "windows")]
+        {
+            let mut standby = self.standby_asio_driver.lock().unwrap();
+            if let Some(old) = standby.take() {
+                drop(old);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+        let host = cpal::default_host();
+        let mut target_dev = None;
+        let target_lower = device_name.trim().to_lowercase();
+        if let Ok(dev_iter) = host.output_devices() {
+            for dev in dev_iter {
+                if let Ok(name) = dev.name() {
+                    if name.trim().to_lowercase() == target_lower || name.to_lowercase().contains(&target_lower) {
+                        target_dev = Some((dev, name));
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Some((dev, matched_name)) = target_dev {
+            let config_res = dev.default_output_config();
+            let channels = config_res.as_ref().map(|c| c.channels() as usize).unwrap_or(2);
+            let current_sr = config_res.as_ref().map(|c| c.sample_rate().0).unwrap_or(48000);
+
+            let candidates = [44100, 48000, 88200, 96000, 176400, 192000];
+            let mut supported_rates = Vec::new();
+            if let Ok(configs) = dev.supported_output_configs() {
+                let cfg_list: Vec<_> = configs.collect();
+                for &rate in &candidates {
+                    for config in &cfg_list {
+                        if rate >= config.min_sample_rate().0 && rate <= config.max_sample_rate().0 {
+                            if !supported_rates.contains(&rate) {
+                                supported_rates.push(rate);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            if supported_rates.is_empty() {
+                supported_rates.push(current_sr);
+            }
+            supported_rates.sort_unstable();
+
+            Ok(crate::state::AudioDeviceDetails {
+                name: matched_name,
+                is_available: true,
+                channels,
+                sample_rates: supported_rates,
+                current_sample_rate: current_sr,
+                current_buffer_size: *self.buffer_size.lock().unwrap(),
+            })
+        } else {
+            Ok(crate::state::AudioDeviceDetails {
+                name: device_name.to_string(),
+                is_available: false,
+                channels: 0,
+                sample_rates: vec![],
+                current_sample_rate: 48000,
+                current_buffer_size: 256,
+            })
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn open_asio_control_panel(&self, target_device_name: Option<String>) -> Result<crate::state::AudioStatusInfo, String> {
+        let is_asio = self.current_host.lock().unwrap().as_str() == "ASIO";
+        if !is_asio {
+            return Err("El modo ASIO no está activo actualmente".to_string());
+        }
+
+        let req_name = target_device_name
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| self.current_device_name.lock().unwrap().clone());
+
+        // 1. Asegurar que el stream esté detenido y buffers liberados
+        {
+            let mut s_guard = self.stream.lock().unwrap();
+            *s_guard = StreamHolder(None);
+        }
+        self.is_running.store(false, Ordering::SeqCst);
+
+        // 2. Obtener el driver ASIO (de standby o cargando el solicitado)
+        let driver_clone = {
+            let standby = self.standby_asio_driver.lock().unwrap();
+            if let Some(ref d) = *standby {
+                if d.name() == req_name {
+                    d.clone()
+                } else {
+                    drop(standby);
+                    *self.standby_asio_driver.lock().unwrap() = None;
+                    let asio = asio_sys::Asio::new();
+                    let d = Arc::new(asio.load_driver(&req_name).map_err(|e| format!("Error cargando driver ASIO '{}': {:?}", req_name, e))?);
+                    *self.standby_asio_driver.lock().unwrap() = Some(d.clone());
+                    d
+                }
+            } else {
+                drop(standby);
+                let asio = asio_sys::Asio::new();
+                let d = Arc::new(asio.load_driver(&req_name).map_err(|e| format!("Error cargando driver ASIO '{}': {:?}", req_name, e))?);
+                *self.standby_asio_driver.lock().unwrap() = Some(d.clone());
+                d
+            }
+        };
+
+        println!("[ASIO Control Panel] Buffers liberados y DAC desbloqueado. Abriendo panel de control para '{}'...", req_name);
+
+        // 3. Invocar panel de control del fabricante (Zoom F3, etc.)
+        unsafe extern "C" {
+            #[link_name = "?ASIOControlPanel@@YAJXZ"]
+            fn ASIOControlPanel() -> i32;
+        }
+        let res = unsafe { ASIOControlPanel() };
+        println!("[ASIO Control Panel] Invocación de panel finalizada con código: {}", res);
+
+        // 4. Consultar valores actualizados del hardware tras el panel externo
+        let new_sr = driver_clone.sample_rate().unwrap_or(*self.sample_rate.lock().unwrap() as f64) as u32;
+        unsafe extern "C" {
+            #[link_name = "\u{1}?ASIOGetBufferSize@@YAJPEAJ000@Z"]
+            fn ASIOGetBufferSize(
+                min: *mut std::os::raw::c_long,
+                max: *mut std::os::raw::c_long,
+                pref: *mut std::os::raw::c_long,
+                gran: *mut std::os::raw::c_long,
+            ) -> i32;
+        }
+        let mut min = 0;
+        let mut max = 0;
+        let mut pref = 0;
+        let mut gran = 0;
+        let new_buf = unsafe {
+            if ASIOGetBufferSize(&mut min, &mut max, &mut pref, &mut gran) == 0 && pref > 0 {
+                pref as u32
+            } else {
+                *self.buffer_size.lock().unwrap()
+            }
+        };
+
+        *self.sample_rate.lock().unwrap() = new_sr;
+        *self.buffer_size.lock().unwrap() = new_buf;
+        let channels = driver_clone.channels().map(|c| c.outs as usize).unwrap_or(2);
+        *self.channels.lock().unwrap() = channels;
+
+        println!(
+            "[ASIO Control Panel] Hardware sincronizado: '{}' ({} Hz, buffer: {}). Audio permanece en espera.",
+            req_name, new_sr, new_buf
+        );
+
+        let status = crate::state::AudioStatusInfo {
+            host: "ASIO".to_string(),
+            device_name: req_name,
+            driver: "ASIO".to_string(),
+            channels,
+            sample_rate: new_sr,
+            buffer_size: new_buf,
+            is_running: false,
+        };
+
+        if let Ok(handle_guard) = self.app_handle.lock() {
+            if let Some(handle) = handle_guard.as_ref() {
+                let _ = handle.emit("audio-status-changed", &status);
+            }
+        }
+
+        Ok(status)
     }
 
     pub fn start(
@@ -1489,6 +2502,57 @@ impl AudioEngine {
     ) -> Result<(), String> {
         *self.command_consumer.lock().unwrap() = Some(consumer);
 
+        // 1. Intentar restaurar configuración preferida del usuario guardada en disco
+        if let Some(prefs) = load_saved_audio_preferences() {
+            #[cfg(target_os = "windows")]
+            if prefs.host.eq_ignore_ascii_case("ASIO") {
+                let asio = asio_sys::Asio::new();
+                let names = asio.driver_names();
+                let target_name = prefs.device_name.as_deref().unwrap_or("");
+                let is_connected = !target_name.is_empty() && names.iter().any(|n| n.eq_ignore_ascii_case(target_name));
+                if is_connected {
+                    println!("[Audio Engine] Iniciando directamente con controlador ASIO preferido '{}'...", target_name);
+                    match self.apply_audio_config(
+                        Some("ASIO".to_string()),
+                        prefs.device_name.clone(),
+                        prefs.channel_pair,
+                        prefs.buffer_size,
+                        prefs.sample_rate,
+                    ) {
+                        Ok(_) => {
+                            self.spawn_watchdog();
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            println!("[Audio Engine] Falló inicio con ASIO preferido ({}). Recurriendo a fallback WASAPI.", e);
+                        }
+                    }
+                } else {
+                    println!("[Audio Engine] Controlador ASIO '{}' no detectado en el sistema. Recurriendo a fallback WASAPI.", target_name);
+                }
+            }
+
+            if !prefs.host.eq_ignore_ascii_case("ASIO") {
+                println!("[Audio Engine] Iniciando con host preferido '{}'...", prefs.host);
+                match self.apply_audio_config(
+                    Some(prefs.host.clone()),
+                    prefs.device_name.clone(),
+                    prefs.channel_pair,
+                    prefs.buffer_size,
+                    prefs.sample_rate,
+                ) {
+                    Ok(_) => {
+                        self.spawn_watchdog();
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        println!("[Audio Engine] Falló inicio con host '{}' ({}). Recurriendo a fallback WASAPI.", prefs.host, e);
+                    }
+                }
+            }
+        }
+
+        // 2. Fallback por defecto: WASAPI predeterminado del sistema operativo
         let host = cpal::default_host();
         let device = host
             .default_output_device()
@@ -1502,6 +2566,9 @@ impl AudioEngine {
         let supported_config = device
             .default_output_config()
             .map_err(|e| format!("Error al obtener configuración de audio: {}", e))?;
+
+        let target_buf = *self.target_buffer_size.lock().unwrap();
+        let target_sr = *self.target_sample_rate.lock().unwrap();
 
         let (stream, sample_rate, channels) = build_and_start_stream(
             &device,
@@ -1523,11 +2590,15 @@ impl AudioEngine {
             self.ui_event_producer.clone(),
             self.shared_arpeggiator.clone(),
             self.device_invalidated.clone(),
+            self.selected_channel_pair.clone(),
+            target_buf,
+            target_sr,
         )?;
 
         *self.sample_rate.lock().unwrap() = sample_rate;
+        *self.channels.lock().unwrap() = channels;
         self.is_running.store(true, Ordering::SeqCst);
-        *self.stream.lock().unwrap() = StreamHolder(Some(stream));
+        *self.stream.lock().unwrap() = StreamHolder(Some(ActiveBackend::Cpal(stream)));
 
         println!(
             "[Audio Engine OK] Stream iniciado en '{}' ({} Hz, {} canales)",
@@ -1544,10 +2615,16 @@ impl AudioEngine {
             return;
         }
 
+        let current_host = self.current_host.clone();
         let stream_holder = self.stream.clone();
         let device_invalidated = self.device_invalidated.clone();
         let current_device_name = self.current_device_name.clone();
+        let target_device_name = self.target_device_name.clone();
+        let target_buffer_size = self.target_buffer_size.clone();
+        let target_sample_rate = self.target_sample_rate.clone();
         let sample_rate = self.sample_rate.clone();
+        let channels_holder = self.channels.clone();
+        let selected_channel_pair = self.selected_channel_pair.clone();
         let is_running = self.is_running.clone();
         let command_consumer = self.command_consumer.clone();
         let shared_soundfont = self.shared_soundfont.clone();
@@ -1574,6 +2651,12 @@ impl AudioEngine {
                     std::thread::sleep(std::time::Duration::from_millis(500));
 
                     if device_invalidated.load(Ordering::SeqCst) {
+                        let host_str = current_host.lock().unwrap().clone();
+                        if host_str == "ASIO" {
+                            device_invalidated.store(false, Ordering::SeqCst);
+                            continue;
+                        }
+
                         stream_holder.lock().unwrap().0.take();
                         is_running.store(false, Ordering::SeqCst);
                         *current_device_name.lock().unwrap() = "Reconectando audio...".to_string();
@@ -1582,56 +2665,85 @@ impl AudioEngine {
                             let _ = handle.emit("audio-status-changed", ());
                         }
 
-                        println!("[Audio Watchdog] Dispositivo invalidado. Buscando nuevo endpoint de audio en Windows...");
+                        println!("[Audio Watchdog] Dispositivo invalidado. Buscando endpoint de audio...");
 
                         while device_invalidated.load(Ordering::SeqCst) {
                             std::thread::sleep(std::time::Duration::from_millis(500));
 
                             let host = cpal::default_host();
-                            if let Some(device) = host.default_output_device() {
-                                let dev_name = device.name().unwrap_or_else(|_| "Dispositivo Predeterminado".to_string());
-                                if let Ok(supported_config) = device.default_output_config() {
-                                    match build_and_start_stream(
-                                        &device,
-                                        supported_config,
-                                        command_consumer.clone(),
-                                        shared_soundfont.clone(),
-                                        shared_patch.clone(),
-                                        shared_master_gain.clone(),
-                                        shared_pad_samples.clone(),
-                                        shared_pad_modes.clone(),
-                                        shared_pad_gains.clone(),
-                                        shared_pad_engine_mode.clone(),
-                                        shared_drum_soundfont.clone(),
-                                        shared_drum_patch.clone(),
-                                        shared_drum_pad_notes.clone(),
-                                        shared_fx_rack.clone(),
-                                        shared_fx_routing.clone(),
-                                        shared_sequencer.clone(),
-                                        ui_event_producer.clone(),
-                                        shared_arpeggiator.clone(),
-                                        device_invalidated.clone(),
-                                    ) {
-                                        Ok((new_stream, new_sample_rate, _channels)) => {
-                                            *stream_holder.lock().unwrap() = StreamHolder(Some(new_stream));
-                                            *sample_rate.lock().unwrap() = new_sample_rate;
-                                            *current_device_name.lock().unwrap() = dev_name.clone();
-                                            is_running.store(true, Ordering::SeqCst);
-                                            device_invalidated.store(false, Ordering::SeqCst);
-
-                                            println!(
-                                                "[Audio Watchdog OK] Reconexión exitosa a '{}' ({} Hz). Instrumentos y samples restaurados.",
-                                                dev_name, new_sample_rate
-                                            );
-
-                                            if let Some(handle) = app_handle.lock().unwrap().as_ref() {
-                                                let _ = handle.emit("audio-status-changed", ());
+                            let target_opt = target_device_name.lock().unwrap().clone();
+                            let mut chosen = None;
+                            if let Some(target) = &target_opt {
+                                let target_lower = target.trim().to_lowercase();
+                                if let Ok(dev_iter) = host.output_devices() {
+                                    for dev in dev_iter {
+                                        if let Ok(name) = dev.name() {
+                                            if name.trim().to_lowercase() == target_lower || name.to_lowercase().contains(&target_lower) {
+                                                chosen = Some((dev, name));
+                                                break;
                                             }
-                                            break;
                                         }
-                                        Err(e) => {
-                                            eprintln!("[Audio Watchdog] Esperando a que el dispositivo esté listo: {}", e);
+                                    }
+                                }
+                            }
+
+                            let (device, dev_name) = match chosen {
+                                Some(pair) => pair,
+                                None => {
+                                    if let Some(default_dev) = host.default_output_device() {
+                                        let def_name = default_dev.name().unwrap_or_else(|_| "Dispositivo Predeterminado".to_string());
+                                        (default_dev, def_name)
+                                    } else {
+                                        continue;
+                                    }
+                                }
+                            };
+
+                            if let Ok(supported_config) = device.default_output_config() {
+                                match build_and_start_stream(
+                                    &device,
+                                    supported_config,
+                                    command_consumer.clone(),
+                                    shared_soundfont.clone(),
+                                    shared_patch.clone(),
+                                    shared_master_gain.clone(),
+                                    shared_pad_samples.clone(),
+                                    shared_pad_modes.clone(),
+                                    shared_pad_gains.clone(),
+                                    shared_pad_engine_mode.clone(),
+                                    shared_drum_soundfont.clone(),
+                                    shared_drum_patch.clone(),
+                                    shared_drum_pad_notes.clone(),
+                                    shared_fx_rack.clone(),
+                                    shared_fx_routing.clone(),
+                                    shared_sequencer.clone(),
+                                    ui_event_producer.clone(),
+                                    shared_arpeggiator.clone(),
+                                    device_invalidated.clone(),
+                                    selected_channel_pair.clone(),
+                                    *target_buffer_size.lock().unwrap(),
+                                    *target_sample_rate.lock().unwrap(),
+                                ) {
+                                    Ok((new_stream, new_sample_rate, new_channels)) => {
+                                        *stream_holder.lock().unwrap() = StreamHolder(Some(ActiveBackend::Cpal(new_stream)));
+                                        *sample_rate.lock().unwrap() = new_sample_rate;
+                                        *channels_holder.lock().unwrap() = new_channels;
+                                        *current_device_name.lock().unwrap() = dev_name.clone();
+                                        is_running.store(true, Ordering::SeqCst);
+                                        device_invalidated.store(false, Ordering::SeqCst);
+
+                                        println!(
+                                            "[Audio Watchdog OK] Reconexión exitosa a '{}' ({} Hz, {} canales). Estado preservado.",
+                                            dev_name, new_sample_rate, new_channels
+                                        );
+
+                                        if let Some(handle) = app_handle.lock().unwrap().as_ref() {
+                                            let _ = handle.emit("audio-status-changed", ());
                                         }
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[Audio Watchdog] Esperando a que el dispositivo esté listo: {}", e);
                                     }
                                 }
                             }
