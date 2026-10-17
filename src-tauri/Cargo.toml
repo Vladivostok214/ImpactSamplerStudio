@@ -4,6 +4,8 @@ version = "1.0.0"
 edition = "2024"
 default-run = "impact_sampler"
 
+autobins = false
+
 [dependencies]
 tauri = { version = "2.0.0", features = [] }
 midir = "0.10"
@@ -26,18 +28,7 @@ cpal = "0.15"
 tauri-build = { version = "2.0.0", features = [] }
 
 [[bin]]
-name = "sniffer"
-path = "src/bin/sniffer.rs"
-
-[[bin]]
 name = "impact_sampler"
 path = "src/main.rs"
 
-[[bin]]
-name = "audio_test"
-path = "src/bin/audio_test.rs"
-
-[[bin]]
-name = "gen_samples"
-path = "src/bin/gen_samples.rs"
 
