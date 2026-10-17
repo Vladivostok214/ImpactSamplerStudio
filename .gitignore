@@ -34,6 +34,7 @@ target/
 *.jpg
 *.jpeg
 !src/assets/**
+!src-tauri/icons/**
 scratch/
 
 # SoundFonts pesados (>100MB superan el límite de GitHub)

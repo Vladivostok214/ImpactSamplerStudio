@@ -1845,6 +1845,8 @@ impl AudioEngine {
     }
 
     pub fn list_output_devices(host_opt: Option<&str>) -> Vec<AudioDeviceInfo> {
+        #[cfg(not(target_os = "windows"))]
+        let _ = host_opt;
         #[cfg(target_os = "windows")]
         if host_opt == Some("ASIO") {
             let asio = asio_sys::Asio::new();
@@ -2180,6 +2182,7 @@ impl AudioEngine {
     }
 
     pub fn suspend_audio_engine(&self) -> Result<crate::state::AudioStatusInfo, String> {
+        #[cfg(target_os = "windows")]
         let is_asio = self.current_host.lock().unwrap().as_str() == "ASIO";
         #[cfg(target_os = "windows")]
         if is_asio {
@@ -2245,6 +2248,8 @@ impl AudioEngine {
     }
 
     pub fn get_device_details(&self, host_name: &str, device_name: &str) -> Result<crate::state::AudioDeviceDetails, String> {
+        #[cfg(not(target_os = "windows"))]
+        let _ = host_name;
         #[cfg(target_os = "windows")]
         if host_name.eq_ignore_ascii_case("ASIO") {
             let asio = asio_sys::Asio::new();

@@ -7,6 +7,12 @@ unsafe extern "C" {
     fn ASIOControlPanel() -> i32;
 }
 
+#[cfg(not(target_os = "windows"))]
+fn main() {
+    println!("ASIO test is only supported on Windows.");
+}
+
+#[cfg(target_os = "windows")]
 fn main() {
     println!("=== TEST DE AUDIO ASIO DIRECTO CON ZOOM F3 ===");
     let asio = asio_sys::Asio::new();
