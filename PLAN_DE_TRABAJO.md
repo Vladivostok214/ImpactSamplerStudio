@@ -573,12 +573,13 @@ flowchart TD
 ---
 
 ## 3. Próximo Paso Inmediato
-Fase 9.2: Pasos 1, 2, 3 y 4 completados al 100%:
+Fase 9.2: Pasos 1, 2, 3, 4 y 5 completados al 100%:
 * **Paso 1:** Motor de Audio Multiplataforma, Hot-Swap, ASIO & Telemetría Real completado.
 * **Paso 2:** Iconografía Apple (`icon.icns`), configuración Tauri y layout DMG completado.
 * **Paso 3:** Adaptabilidad de Ventana macOS (`decorations: true`), reingeniería ergonómica en 1080px (cinta superior del secuenciador y desahogo de dock de transporte), visibilidad instantánea y validación limpia con `cargo check` y `npm run build`.
 * **Paso 4:** Infraestructura de Descarga de SoundFonts para CI/CD completada (Release `soundfonts-v1.0.0` con 4 `.sf2`, scripts PowerShell/Bash y validación SHA256 verificada al 100%).
+* **Paso 5:** Workflow de GitHub Actions para macOS Universal DMG completado (`.github/workflows/build-macos.yml` con `workflow_dispatch`, targets duales `aarch64` y `x86_64` y subida de artefacto DMG).
 
-El siguiente hito de desarrollo es el **Paso 5 de la Fase 9.2: Workflow Automatizado de GitHub Actions** (creación de `.github/workflows/build.yml` con matriz dual Windows/macOS y compilación Universal Binary `universal-apple-darwin`).
+El siguiente hito de desarrollo es el **Paso 6 de la Fase 9.2: Prueba Piloto de Compilación en la Nube** (subir el workflow al repositorio, ejecutar el pipeline bajo demanda en GitHub Actions y validar el instalador `.dmg` generado).
 
 

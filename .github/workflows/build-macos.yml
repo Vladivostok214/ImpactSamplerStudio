@@ -1,0 +1,51 @@
+name: Build macOS Universal DMG
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout del Repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js (v20 LTS)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Configurar Rust Stable (Targets Duales Apple Silicon + Intel)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Configurar Caché de Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Instalar Dependencias Frontend (npm ci)
+        run: npm ci
+
+      - name: Aprovisionar SoundFonts Oficiales de Fábrica
+        run: |
+          chmod +x scripts/download_soundfonts.sh
+          ./scripts/download_soundfonts.sh soundfonts
+
+      - name: Compilar Instalador Universal DMG (Tauri v2)
+        run: npm run tauri build -- --target universal-apple-darwin
+
+      - name: Subir Instalador macOS Universal como Artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImpactSampler-Studio-macOS-Universal-DMG
+          path: |
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+          if-no-files-found: error
+          retention-days: 14

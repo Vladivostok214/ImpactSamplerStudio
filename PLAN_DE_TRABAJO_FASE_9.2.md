@@ -211,12 +211,33 @@ flowchart LR
     * Ejecución de prueba local sobre `soundfonts/` verificada en 4 segundos (4/4 archivos válidos).
     * Prueba de estrés de descarga remota directa desde el CDN de GitHub ejecutada en `scratch/test_sf2`: los 4 archivos se descargaron y validaron al 100% contra sus hashes SHA256 oficiales sin discrepancias.
 
-### Paso 5: Workflow Automatizado de GitHub Actions 📋 [SIGUIENTE PASO]
-* Crear `.github/workflows/build.yml` con la matriz dual (`windows-latest` y `macos-latest`).
-* Configurar compilación de Universal Binary (`universal-apple-darwin`).
+### Paso 5: Workflow de GitHub Actions para macOS Universal DMG (Bajo Demanda) ✅ [COMPLETADO]
+* **Objetivo:** Automatizar la compilación y empaque desatendido del instalador montable para macOS (`.dmg`) mediante un runner de Apple Silicon en GitHub Actions, ejecutado estrictamente bajo demanda manual (`workflow_dispatch`) para optimizar el consumo de cuota mensual y simplificar el mantenimiento, manteniendo la compilación de Windows de forma nativa y local.
+* **Análisis de Ingeniería & Decisiones de Alcance:**
+  * **Aislamiento de Plataformas (Estrategia Híbrida):**
+    * *Windows (.exe):* Se mantiene localmente. El entorno local de Windows ya cuenta con NSIS, ASIO SDK, LLVM/Clang y persistencia de drivers nativos, compilando en segundos sin consumir minutos en la nube ni requerir gestión de secretos o variables complejas en CI.
+    * *macOS (.dmg):* Se delega a GitHub Actions (`macos-latest`). Es la única plataforma que requiere hardware y toolchains propietarios de Apple (`lipo`, `hdiutil`, SDKs de Cocoa/CoreAudio).
+  * **Disparador Exclusivo `workflow_dispatch`:**
+    * El workflow no se activará automáticamente con cada `push` o `pull_request`, evitando el consumo innecesario de minutos de cómputo en commits menores o de documentación. Solo se ejecutará cuando el desarrollador presione manualmente *"Run workflow"* en la pestaña Actions de GitHub.
+  * **Arquitectura Universal Binary (`universal-apple-darwin`):**
+    * El runner instalará los toolchains `aarch64-apple-darwin` (Apple Silicon M1-M4) y `x86_64-apple-darwin` (Intel), fusionándolos en un único ejecutable binario universal compatible con cualquier Mac.
+* **Entregables Logrados:**
+  * **Tarea 5.1: Creación del Workflow `.github/workflows/build-macos.yml` ✅:**
+    * Creado el workflow con nombre `Build macOS Universal DMG`, configurado con `on: workflow_dispatch` y permisos de lectura.
+  * **Tarea 5.2: Aprovisionamiento de Toolchains y Dependencias ✅:**
+    * Configurado Node.js 20 con caché de npm (`actions/setup-node@v4`).
+    * Configurado Rust `stable` con targets `aarch64-apple-darwin` y `x86_64-apple-darwin` (`dtolnay/rust-toolchain@stable`).
+    * Configurada caché inteligente de compilación de Rust (`swatinem/rust-cache@v2`).
+    * Configurada instalación reproducible con `npm ci`.
+  * **Tarea 5.3: Inyección Automatizada de SoundFonts de Fábrica ✅:**
+    * Integrado `chmod +x scripts/download_soundfonts.sh` y ejecución para aprovisionar los 4 SoundFonts oficiales con validación SHA256 antes del empaque.
+  * **Tarea 5.4: Compilación y Empaquetado del DMG Universal ✅:**
+    * Paso configurado con `npm run tauri build -- --target universal-apple-darwin`, produciendo el `.dmg` estilizado.
+  * **Tarea 5.5: Publicación de Artefactos ✅:**
+    * Configurada acción `actions/upload-artifact@v4` con nombre `ImpactSampler-Studio-macOS-Universal-DMG` y 14 días de retención.
 
-### Paso 6: Prueba Piloto de Compilación en la Nube
-* Ejecutar el pipeline en GitHub Actions y validar los instaladores `.exe` y `.dmg`.
+### Paso 6: Prueba Piloto de Compilación en la Nube 📋 [SIGUIENTE PASO]
+* Disparar el workflow manualmente desde GitHub Actions y verificar la generación y descarga del `.dmg` Universal.
 
 ---
 
@@ -230,3 +251,5 @@ flowchart LR
    * Preservar `decorations: true` para que los controles nativos de ventana se ubiquen en la barra superior sin invadir el Header.
 4. **Operatividad Total del Subsistema de Audio (Aprobado):**  
    * El Paso 1 integra la solución completa de hot-swap de tarjetas, ruteo de canales estéreo, buffer configurable y sample rates reales del hardware.
+5. **Estrategia de Compilación Híbrida: Windows Local + macOS en Nube Bajo Demanda (Aprobado):**  
+   * El instalador de Windows (`.exe` NSIS) se compila localmente de forma directa. GitHub Actions se reserva exclusivamente para generar el instalador de macOS (`.dmg`) bajo demanda manual (`workflow_dispatch`), minimizando la complejidad y cuidando la cuota de cómputo.
