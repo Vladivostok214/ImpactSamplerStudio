@@ -1,6 +1,6 @@
 # Plan de Trabajo - Fase 9.2: Preparación Multiplataforma, Motor de Dispositivos de Audio & Pipeline de Empaque Universal
 
-> **Estado:** Fase Activa / En Progreso  
+> **Estado:** Fase Completada al 100% ✅  
 > **Objetivo:** Transformar el subsistema de audio y la interfaz de ImpactSampler Studio en un entorno 100% operativo y agnóstico al sistema operativo. Esto incluye la selección real de interfaces de audio (Hot-Swap en caliente sin reinicio), enrutamiento de canales estéreo en interfaces multicanal, control de Buffer Size y Sample Rate basados en las capacidades físicas del hardware, telemetría dinámica en la consola y la integración de un pipeline de CI/CD automatizado con GitHub Actions que compile simultáneamente para **Windows (instalador NSIS `.exe`)** y **macOS (imagen de disco Universal `.dmg`)**.
 
 ---
@@ -117,10 +117,10 @@ flowchart LR
         S14 --> S15["1.5: ASIO, Transacción Atómica & Reactividad ✅"]
     end
     P1 --> P2["Paso 2: Icono .icns & tauri.conf.json ✅"]
-    P2 --> P3["Paso 3: Verificación Layout macOS 📋"]
-    P3 --> P4["Paso 4: Solución SoundFonts en CI/CD"]
-    P4 --> P5["Paso 5: Workflow GitHub Actions"]
-    P5 --> P6["Paso 6: Prueba Piloto de Compilación"]
+    P2 --> P3["Paso 3: Verificación Layout macOS ✅"]
+    P3 --> P4["Paso 4: Solución SoundFonts en CI/CD ✅"]
+    P4 --> P5["Paso 5: Workflow GitHub Actions ✅"]
+    P5 --> P6["Paso 6: Prueba Piloto de Compilación ✅"]
 ```
 
 ### Paso 1: Motor Real de Dispositivos de Audio, Canales, Latencia y Telemetría ✅ [COMPLETADO]
@@ -236,8 +236,18 @@ flowchart LR
   * **Tarea 5.5: Publicación de Artefactos ✅:**
     * Configurada acción `actions/upload-artifact@v4` con nombre `ImpactSampler-Studio-macOS-Universal-DMG` y 14 días de retención.
 
-### Paso 6: Prueba Piloto de Compilación en la Nube 📋 [SIGUIENTE PASO]
-* Disparar el workflow manualmente desde GitHub Actions y verificar la generación y descarga del `.dmg` Universal.
+### Paso 6: Prueba Piloto de Compilación en la Nube ✅ [COMPLETADO]
+* **Objetivo:** Ejecutar el pipeline de GitHub Actions bajo demanda, validar la compilación dual nativa (`aarch64` y `x86_64`), la fusión Universal Binary (`lipo`), el aprovisionamiento de SoundFonts con SHA256 y la generación del artefacto montable `.dmg`.
+* **Entregables Logrados & Métricas de Ejecución:**
+  * **1. Desacople y Aislamiento de Utilitarios de Desarrollo ✅:**
+    * Migrados `sniffer.rs`, `audio_test.rs` y `gen_samples.rs` a `src-tauri/examples/` y fijado `autobins = false` en `Cargo.toml`, permitiendo que el empaquetador de Tauri v2 compile y empaquete de manera pura y exclusiva el binario de producción `impact_sampler`.
+  * **2. Optimización a Node.js 22 LTS (Active LTS) ✅:**
+    * Actualizado el runner a Node.js 22 LTS en `.github/workflows/build-macos.yml`, garantizando velocidad óptima y soporte extendido en las compilaciones de Vite/React.
+  * **3. Ejecución Exitosa en GitHub Actions (Run ID `39004878743`) ✅:**
+    * **Estado:** Concluido exitosamente (`status: completed`, `conclusion: success`).
+    * **Descarga de SoundFonts:** Descarga desatendida y verificación de checksums SHA256 al 100% de los 4 instrumentos (~784 MB).
+    * **Compilación Nativa Dual:** Compilación completa en Rust para Apple Silicon (`aarch64-apple-darwin`) e Intel (`x86_64-apple-darwin`), empaquetado del bundle `.app` y creación del disco `.dmg` con ventana de arrastre ergonómica hacia `/Applications`.
+    * **Artefacto Oficial Publicado:** Generado y disponible en GitHub Actions como `ImpactSampler-Studio-macOS-Universal-DMG` (tamaño: **1.22 GB / 1,228,498,114 bytes**).
 
 ---
 
