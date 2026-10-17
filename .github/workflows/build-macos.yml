@@ -13,10 +13,10 @@ jobs:
       - name: Checkout del Repositorio
         uses: actions/checkout@v4
 
-      - name: Configurar Node.js (v20 LTS)
+      - name: Configurar Node.js (v22 LTS)
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
 
       - name: Configurar Rust Stable (Targets Duales Apple Silicon + Intel)
