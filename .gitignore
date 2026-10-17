@@ -51,3 +51,7 @@ src-tauri/asio-sdk/
 # Rust / Cargo configuraciones de entorno locales
 .cargo/
 src-tauri/.cargo/
+
+# Web App Desacoplada (Fase 14)
+/web-app/
+
