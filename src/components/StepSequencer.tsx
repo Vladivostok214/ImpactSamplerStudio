@@ -532,6 +532,437 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
       {/* 1. Bahía de Secuenciación Rítmica TR-Style (Visible únicamente en modo SEQ) */}
       {isSeqOpen && (
         <div className="p-3 sm:p-3.5 flex flex-col gap-1.5 animate-in fade-in duration-150">
+          {/* Cinta Superior de Control del Secuenciador (Kit, Banco, Grilla, Páginas, Cuantización y Edición) */}
+          <div className="flex items-center justify-between pb-2 mb-1 border-b border-white/[0.08] flex-nowrap gap-2 text-[10px] font-mono select-none">
+            {/* Izquierda: Kit + Banco A/B */}
+            <div className="flex items-center gap-2 shrink-0">
+              {/* Selector de Kit */}
+              <div ref={kitMenuRef} className="relative z-50">
+                <button
+                  type="button"
+                  onClick={() => setIsKitMenuOpen(!isKitMenuOpen)}
+                  className="h-7 px-2 bg-[#0e0f14] hover:bg-[#161820] border border-white/15 hover:border-emerald-500/60 rounded-md flex items-center gap-1.5 text-[9.5px] font-mono transition shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_2px_4px_rgba(0,0,0,0.6)] group select-none cursor-pointer"
+                  title="Kit de Batería"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#10b981]" />
+                  <span className="text-[9.5px] uppercase font-bold tracking-wider text-zinc-400">KIT:</span>
+                  <span className="font-bold text-zinc-100 group-hover:text-emerald-400 transition max-w-[90px] truncate">
+                    {padEngineMode === "drumKitSf2" ? "Yamaha RX7" : "Custom WAV"}
+                  </span>
+                  <ChevronDown
+                    size={11}
+                    className={`text-zinc-400 group-hover:text-white transition-transform duration-150 shrink-0 ${
+                      isKitMenuOpen ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
+
+                {/* Menú Desplegable Flotante de Kits (hacia abajo) */}
+                {isKitMenuOpen && (
+                  <div className="absolute top-full mt-1.5 left-0 z-50 w-52 bg-[#0d0e12] border border-white/20 rounded-xl shadow-[0_15px_40px_rgba(0,0,0,0.95),0_0_1px_1px_rgba(255,255,255,0.08)] py-1 text-xs font-mono text-zinc-200 animate-in fade-in zoom-in-95 duration-100">
+                    <div className="px-3 py-1 text-[9.5px] uppercase font-bold tracking-wider text-zinc-400 border-b border-white/10 mb-1">
+                      Kits de Batería
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onChangePadEngineMode?.("drumKitSf2");
+                        setIsKitMenuOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors cursor-pointer text-[10px] ${
+                        padEngineMode === "drumKitSf2"
+                          ? "bg-emerald-500/20 text-emerald-400 font-bold"
+                          : "hover:bg-white/5 hover:text-white"
+                      }`}
+                    >
+                      <span>Yamaha RX7 (SF2)</span>
+                      {padEngineMode === "drumKitSf2" && <Check size={12} className="text-emerald-400" />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onChangePadEngineMode?.("wavSampler");
+                        setIsKitMenuOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors cursor-pointer text-[10px] ${
+                        padEngineMode === "wavSampler"
+                          ? "bg-emerald-500/20 text-emerald-400 font-bold"
+                          : "hover:bg-white/5 hover:text-white"
+                      }`}
+                    >
+                      <span>Custom WAV (Pads)</span>
+                      {padEngineMode === "wavSampler" && <Check size={12} className="text-emerald-400" />}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Selector de Banco Compacto: A / B */}
+              {(() => {
+                const isBankSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "bank";
+                const bankMapped = getActionMappingLabel(midiLearnMapping, "bank");
+                return (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isMidiLearnActive) {
+                        onSelectLearnTarget?.({ type: "action", id: "bank" });
+                        return;
+                      }
+                      onToggleBank?.();
+                    }}
+                    title={
+                      isMidiLearnActive
+                        ? `Banco A/B: ${bankMapped ? `Asignado (${bankMapped})` : "Sin asignar"}`
+                        : `Cambiar Banco (Actual: ${currentBank.toUpperCase()})`
+                    }
+                    className={`h-7 px-2.5 rounded-md text-[9.5px] font-mono font-bold tracking-wider border transition-all active:scale-95 shadow-[inset_0_1px_0_rgba(255,255,255,0.1),0_2px_4px_rgba(0,0,0,0.5)] cursor-pointer flex items-center gap-1.5 ${
+                      isBankSelected
+                        ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                        : isMidiLearnActive
+                        ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                        : currentBank === "b"
+                        ? "bg-purple-900/40 text-purple-200 border-purple-500/60 shadow-[0_0_8px_rgba(168,85,247,0.4)]"
+                        : "bg-cyan-950/40 text-cyan-200 border-cyan-500/60 shadow-[0_0_8px_rgba(6,182,212,0.4)]"
+                    }`}
+                  >
+                    <span className="text-zinc-400 font-semibold text-[9px] tracking-wider">BANK</span>
+                    <span>{currentBank.toUpperCase()}</span>
+                  </button>
+                );
+              })()}
+            </div>
+
+            {/* Derecha: Resolución Grid + Páginas 1/32 + Q + Separador + Cápsula de Edición (UNDO / CLR TRK / TRASH) */}
+            <div className="flex items-center gap-2 shrink-0">
+              {/* Selector de Resolución con Menú Desplegable Flotante */}
+              {(() => {
+                const isGridSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "grid";
+                const gridMapped = getActionMappingLabel(midiLearnMapping, "grid");
+                return (
+                  <div ref={gridMenuRef} className="relative z-50">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isMidiLearnActive) {
+                          onSelectLearnTarget?.({ type: "action", id: "grid" });
+                          return;
+                        }
+                        setIsGridMenuOpen(!isGridMenuOpen);
+                      }}
+                      title={
+                        isMidiLearnActive
+                          ? `Resolución Grilla: ${gridMapped ? `Asignado (${gridMapped})` : "Sin asignar"}`
+                          : "Seleccionar Resolución de Grilla"
+                      }
+                      className={`h-7 px-2.5 rounded-md text-[9.5px] font-mono font-bold flex items-center gap-1.5 shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)] cursor-pointer transition select-none ${
+                        isGridSelected
+                          ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                          : isMidiLearnActive
+                          ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                          : "bg-[#040406] hover:bg-[#121318] border border-white/15 hover:border-emerald-500/60 text-emerald-400"
+                      }`}
+                    >
+                      <span className="text-zinc-400 text-[9px] font-semibold tracking-wider">GRID:</span>
+                      <span>{resolution === "eighth" ? "1/8" : resolution === "sixteenth" ? "1/16" : "1/32"}</span>
+                      <ChevronDown
+                        size={11}
+                        className={`text-zinc-400 transition-transform duration-150 ${
+                          isGridMenuOpen ? "rotate-180" : ""
+                        }`}
+                      />
+                    </button>
+
+                    {/* Menú Desplegable Flotante hacia abajo */}
+                    {isGridMenuOpen && (
+                      <div className="absolute top-full mt-1.5 right-0 z-50 w-48 bg-[#0d0e12] border border-white/20 rounded-xl shadow-[0_15px_40px_rgba(0,0,0,0.95),0_0_1px_1px_rgba(255,255,255,0.08)] py-1 text-xs font-mono text-zinc-200 animate-in fade-in zoom-in-95 duration-100">
+                        <div className="px-3 py-1 text-[9px] uppercase font-bold tracking-wider text-zinc-400 border-b border-white/10 mb-1">
+                          Resolución de Grilla
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onChangeResolution("eighth");
+                            setIsGridMenuOpen(false);
+                          }}
+                          className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors cursor-pointer text-[10px] ${
+                            resolution === "eighth"
+                              ? "bg-emerald-500/20 text-emerald-400 font-bold"
+                              : "hover:bg-white/5 hover:text-white"
+                          }`}
+                        >
+                          <span>1/8 (Corcheas - 8 pasos)</span>
+                          {resolution === "eighth" && <Check size={12} className="text-emerald-400" />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onChangeResolution("sixteenth");
+                            setIsGridMenuOpen(false);
+                          }}
+                          className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors cursor-pointer text-[10px] ${
+                            resolution === "sixteenth"
+                              ? "bg-emerald-500/20 text-emerald-400 font-bold"
+                              : "hover:bg-white/5 hover:text-white"
+                          }`}
+                        >
+                          <span>1/16 (Semicorcheas - 16 pasos)</span>
+                          {resolution === "sixteenth" && <Check size={12} className="text-emerald-400" />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onChangeResolution("thirtySecond");
+                            setIsGridMenuOpen(false);
+                          }}
+                          className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors cursor-pointer text-[10px] ${
+                            resolution === "thirtySecond"
+                              ? "bg-emerald-500/20 text-emerald-400 font-bold"
+                              : "hover:bg-white/5 hover:text-white"
+                          }`}
+                        >
+                          <span>1/32 (Fusas - 32 pasos / 2 págs)</span>
+                          {resolution === "thirtySecond" && <Check size={12} className="text-emerald-400" />}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Selector de Página Minimalista para Grilla 1/32 (1 / 2) */}
+              {(() => {
+                const isPageSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "page";
+                const pageMapped = getActionMappingLabel(midiLearnMapping, "page");
+                return (
+                  resolution === "thirtySecond" && (
+                    <div
+                      onClick={() => {
+                        if (isMidiLearnActive) {
+                          onSelectLearnTarget?.({ type: "action", id: "page" });
+                        }
+                      }}
+                      title={
+                        isMidiLearnActive
+                          ? `Página 1/2: ${pageMapped ? `Asignado (${pageMapped})` : "Sin asignar"}`
+                          : undefined
+                      }
+                      className={`flex items-center bg-[#040406] border rounded-md p-0.5 shadow-[inset_0_1px_3px_rgba(0,0,0,0.8)] gap-0.5 cursor-pointer ${
+                        isPageSelected
+                          ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse"
+                          : isMidiLearnActive
+                          ? "border-amber-500/60 hover:border-amber-400"
+                          : "border-white/15"
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => !isMidiLearnActive && setActivePage(0)}
+                        title={isMidiLearnActive ? undefined : "Página 1 (Pasos 1-16)"}
+                        className={`w-6 h-6 rounded font-mono text-[9px] font-bold transition-all cursor-pointer flex items-center justify-center relative ${
+                          activePage === 0
+                            ? "bg-emerald-500/30 text-emerald-300 border border-emerald-500/50 shadow-[0_0_8px_rgba(16,185,129,0.3)]"
+                            : "text-zinc-400 hover:text-white"
+                        }`}
+                      >
+                        <span>1</span>
+                        {isPlaying && currentStep < 16 && (
+                          <span className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-emerald-400 shadow-[0_0_4px_#10b981]" />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => !isMidiLearnActive && setActivePage(1)}
+                        title={isMidiLearnActive ? undefined : "Página 2 (Pasos 17-32)"}
+                        className={`w-6 h-6 rounded font-mono text-[9px] font-bold transition-all cursor-pointer flex items-center justify-center relative ${
+                          activePage === 1
+                            ? "bg-emerald-500/30 text-emerald-300 border border-emerald-500/50 shadow-[0_0_8px_rgba(16,185,129,0.3)]"
+                            : "text-zinc-400 hover:text-white"
+                        }`}
+                      >
+                        <span>2</span>
+                        {isPlaying && currentStep >= 16 && (
+                          <span className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-emerald-400 shadow-[0_0_4px_#10b981]" />
+                        )}
+                      </button>
+                    </div>
+                  )
+                );
+              })()}
+
+              {/* Botón Q y Popover Minimalista de Cuantización */}
+              <div ref={qMenuRef} className="relative z-50">
+                <button
+                  type="button"
+                  onClick={() => setIsQMenuOpen(!isQMenuOpen)}
+                  title={`Cuantización de Entrada: ${quantizeMode.toUpperCase()} (${Math.round(quantizeStrength * 100)}%)`}
+                  className={`h-7 w-7 rounded-md text-[10px] font-mono font-bold border transition-all flex items-center justify-center relative active:scale-95 cursor-pointer select-none ${
+                    quantizeMode !== "off"
+                      ? "bg-cyan-950/40 text-cyan-300 border-cyan-500/60 shadow-[0_0_8px_rgba(6,182,212,0.4)]"
+                      : "bg-white/[0.03] text-zinc-500 border-white/10 hover:text-white"
+                  }`}
+                >
+                  <span>Q</span>
+                  {quantizeMode !== "off" && (
+                    <span className="absolute top-1 right-1 w-1 h-1 rounded-full bg-cyan-400 shadow-[0_0_4px_#22d3ee]" />
+                  )}
+                </button>
+
+                {/* Popover Minimalista hacia abajo */}
+                {isQMenuOpen && (
+                  <div className="absolute top-full mt-1.5 right-0 z-50 w-52 bg-[#0c0d12] border border-white/20 rounded-xl shadow-[0_15px_40px_rgba(0,0,0,0.95),0_0_1px_1px_rgba(255,255,255,0.08)] p-2.5 text-xs font-mono text-zinc-200 animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-2.5">
+                    {/* Selector Horizontal de Modos */}
+                    <div className="flex items-center justify-between bg-black/60 border border-white/10 rounded-lg p-0.5">
+                      {(["off", "eighth", "sixteenth", "thirtySecond"] as const).map((m) => (
+                        <button
+                          key={`q-mode-${m}`}
+                          type="button"
+                          onClick={() => onSetQuantizeMode?.(m)}
+                          className={`flex-1 py-1 rounded text-[9px] font-bold uppercase transition-all cursor-pointer ${
+                            quantizeMode === m
+                              ? "bg-cyan-500/25 text-cyan-300 border border-cyan-500/40 shadow-[0_0_6px_rgba(6,182,212,0.3)]"
+                              : "text-zinc-400 hover:text-white"
+                          }`}
+                        >
+                          {m === "off" ? "OFF" : m === "eighth" ? "1/8" : m === "sixteenth" ? "1/16" : "1/32"}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Slider Minimalista de Fuerza */}
+                    {quantizeMode !== "off" && (
+                      <div className="flex flex-col gap-1 px-0.5">
+                        <div className="flex items-center justify-between text-[9px] text-zinc-400 font-semibold">
+                          <span>STRENGTH</span>
+                          <span className="text-cyan-300 font-bold tabular-nums">
+                            {Math.round(quantizeStrength * 100)}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={quantizeStrength}
+                          onChange={(e) => onSetQuantizeStrength?.(parseFloat(e.target.value))}
+                          className="w-full accent-cyan-400 h-1 bg-white/10 rounded appearance-none cursor-pointer"
+                        />
+                      </div>
+                    )}
+
+                    {/* Botón Re-cuantizar limpio */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onRequantize?.();
+                        setIsQMenuOpen(false);
+                      }}
+                      className="w-full py-1 bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-500/40 hover:border-cyan-400 rounded-md text-[9.5px] font-bold text-cyan-200 transition-all active:scale-95 cursor-pointer shadow-[0_0_8px_rgba(6,182,212,0.2)] text-center"
+                    >
+                      RE-QUANTIZE
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Separador vertical fino */}
+              <div className="h-4 w-[1px] bg-white/10 mx-0.5" />
+
+              {/* Cápsula Unificada de Edición del Secuenciador [ UNDO | CLR TRK | 🗑 ] */}
+              <div className="flex items-stretch h-7 rounded-md bg-[#18191e] border border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_2px_4px_rgba(0,0,0,0.5)] overflow-hidden">
+                {/* Deshacer (Undo) */}
+                {onUndo && (() => {
+                  const isSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "undo";
+                  const mapped = getActionMappingLabel(midiLearnMapping, "undo");
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isMidiLearnActive) {
+                          onSelectLearnTarget?.({ type: "action", id: "undo" });
+                          return;
+                        }
+                        onUndo();
+                      }}
+                      title={isMidiLearnActive ? `Deshacer (Undo): ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Deshacer (Undo)"}
+                      className={`px-2 h-full flex items-center justify-center gap-1.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-all cursor-pointer border-r border-white/10 ${
+                        isSelected
+                          ? "bg-amber-950/40 text-amber-200 shadow-[inset_0_0_12px_rgba(245,158,11,0.6)] animate-pulse"
+                          : isMidiLearnActive
+                          ? "bg-amber-950/20 text-amber-300 hover:text-amber-200 hover:bg-amber-950/40"
+                          : "text-zinc-300 hover:text-white hover:bg-white/[0.06] active:bg-white/[0.12]"
+                      }`}
+                    >
+                      <RotateCcw size={11} className="text-cyan-400 shrink-0" />
+                      <span>UNDO</span>
+                    </button>
+                  );
+                })()}
+
+                {/* Limpiar Pista Seleccionada (Clear Track) */}
+                {(() => {
+                  const isSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "clearTrack";
+                  const mapped = getActionMappingLabel(midiLearnMapping, "clearTrack");
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isMidiLearnActive) {
+                          onSelectLearnTarget?.({ type: "action", id: "clearTrack" });
+                          return;
+                        }
+                        if (onClearSelectedTrack) {
+                          onClearSelectedTrack();
+                        } else if (onClearTrack) {
+                          onClearTrack(selectedPad);
+                        }
+                      }}
+                      title={isMidiLearnActive ? `Borrar Pista: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Borrar Notas de la Pista Seleccionada"}
+                      className={`px-2 h-full flex items-center justify-center gap-1.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-all cursor-pointer border-r border-white/10 ${
+                        isSelected
+                          ? "bg-amber-950/40 text-amber-200 shadow-[inset_0_0_12px_rgba(245,158,11,0.6)] animate-pulse"
+                          : isMidiLearnActive
+                          ? "bg-amber-950/20 text-amber-300 hover:text-amber-200 hover:bg-amber-950/40"
+                          : "text-zinc-400 hover:text-amber-400 hover:bg-white/[0.06] active:bg-white/[0.12]"
+                      }`}
+                    >
+                      <Eraser size={11} className={isSelected ? "text-amber-200 shrink-0" : isMidiLearnActive ? "text-amber-300 shrink-0" : "text-amber-400/90 shrink-0"} />
+                      <span>CLR TRK</span>
+                    </button>
+                  );
+                })()}
+
+                {/* Limpiar Patrón Activo */}
+                {(() => {
+                  const isSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "clearPattern";
+                  const mapped = getActionMappingLabel(midiLearnMapping, "clearPattern");
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isMidiLearnActive) {
+                          onSelectLearnTarget?.({ type: "action", id: "clearPattern" });
+                          return;
+                        }
+                        onClear();
+                      }}
+                      title={isMidiLearnActive ? `Borrar Todo el Patrón: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Borrar Todo el Patrón"}
+                      className={`w-7 h-full flex items-center justify-center transition-all cursor-pointer ${
+                        isSelected
+                          ? "bg-amber-950/40 text-amber-200 shadow-[inset_0_0_12px_rgba(245,158,11,0.6)] animate-pulse"
+                          : isMidiLearnActive
+                          ? "bg-amber-950/20 text-amber-300 hover:text-amber-200 hover:bg-amber-950/40"
+                          : "text-zinc-400 hover:text-red-400 hover:bg-white/[0.06] active:bg-white/[0.12]"
+                      }`}
+                    >
+                      <Trash2 size={11} className="shrink-0" />
+                    </button>
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
+
           {/* 8 Filas de Pistas: Drum Pads de Silicona Táctil + 16 Botones TR-Style */}
           {[0, 1, 2, 3, 4, 5, 6, 7].map((padIdx) => {
             const padNum = padIdx + 1;
@@ -774,339 +1205,6 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
               </div>
             );
           })()}
-
-          <div className="h-4 w-[1px] bg-white/10 mx-0.5" />
-
-          {/* Selector de Kit reubicado en la barra */}
-          <div ref={kitMenuRef} className="relative z-50">
-            <button
-              type="button"
-              onClick={() => setIsKitMenuOpen(!isKitMenuOpen)}
-              className="h-7 px-2 bg-[#0e0f14] hover:bg-[#161820] border border-white/15 hover:border-emerald-500/60 rounded-md flex items-center gap-1.5 text-[9.5px] font-mono transition shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_2px_4px_rgba(0,0,0,0.6)] group select-none cursor-pointer"
-              title="Kit de Batería"
-            >
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#10b981]" />
-              <span className="text-[9.5px] uppercase font-bold tracking-wider text-zinc-400">KIT:</span>
-              <span className="font-bold text-zinc-100 group-hover:text-emerald-400 transition max-w-[90px] truncate">
-                {padEngineMode === "drumKitSf2" ? "Yamaha RX7" : "Custom WAV"}
-              </span>
-              <svg
-                className={`w-2.5 h-2.5 text-zinc-400 group-hover:text-white transition-transform duration-150 shrink-0 ${
-                  isKitMenuOpen ? "rotate-180" : ""
-                }`}
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
-
-            {/* Menú Desplegable Flotante de Kits (hacia arriba, sobre el teclado) */}
-            {isKitMenuOpen && (
-              <div className="absolute bottom-full mb-2 left-0 z-50 w-52 bg-[#0d0e12] border border-white/20 rounded-xl shadow-[0_15px_40px_rgba(0,0,0,0.95),0_0_1px_1px_rgba(255,255,255,0.08)] py-1 text-xs font-mono text-zinc-200 animate-in fade-in zoom-in-95 duration-100">
-                <div className="px-3 py-1 text-[9.5px] uppercase font-bold tracking-wider text-zinc-400 border-b border-white/10 mb-1">
-                  Kits de Batería
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onChangePadEngineMode?.("drumKitSf2");
-                    setIsKitMenuOpen(false);
-                  }}
-                  className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors cursor-pointer text-[10px] ${
-                    padEngineMode === "drumKitSf2"
-                      ? "bg-emerald-500/20 text-emerald-400 font-bold"
-                      : "hover:bg-white/5 hover:text-white"
-                  }`}
-                >
-                  <span>Yamaha RX7 (SF2)</span>
-                  {padEngineMode === "drumKitSf2" && <Check size={12} className="text-emerald-400" />}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onChangePadEngineMode?.("wavSampler");
-                    setIsKitMenuOpen(false);
-                  }}
-                  className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors cursor-pointer text-[10px] ${
-                    padEngineMode === "wavSampler"
-                      ? "bg-emerald-500/20 text-emerald-400 font-bold"
-                      : "hover:bg-white/5 hover:text-white"
-                  }`}
-                >
-                  <span>Custom WAV (Pads)</span>
-                  {padEngineMode === "wavSampler" && <Check size={12} className="text-emerald-400" />}
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Selector de Banco Compacto: A / B */}
-          {(() => {
-            const isBankSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "bank";
-            const bankMapped = getActionMappingLabel(midiLearnMapping, "bank");
-            return (
-              <button
-                type="button"
-                onClick={() => {
-                  if (isMidiLearnActive) {
-                    onSelectLearnTarget?.({ type: "action", id: "bank" });
-                    return;
-                  }
-                  onToggleBank?.();
-                }}
-                title={
-                  isMidiLearnActive
-                    ? `Banco A/B: ${bankMapped ? `Asignado (${bankMapped})` : "Sin asignar"}`
-                    : `Cambiar Banco (Actual: ${currentBank.toUpperCase()})`
-                }
-                className={`h-7 px-2.5 rounded-md text-[9.5px] font-mono font-bold tracking-wider border transition-all active:scale-95 shadow-[inset_0_1px_0_rgba(255,255,255,0.1),0_2px_4px_rgba(0,0,0,0.5)] cursor-pointer flex items-center gap-1.5 ${
-                  isBankSelected
-                    ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
-                    : isMidiLearnActive
-                    ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
-                    : currentBank === "b"
-                    ? "bg-purple-900/40 text-purple-200 border-purple-500/60 shadow-[0_0_8px_rgba(168,85,247,0.4)]"
-                    : "bg-cyan-950/40 text-cyan-200 border-cyan-500/60 shadow-[0_0_8px_rgba(6,182,212,0.4)]"
-                }`}
-              >
-                <span className="text-zinc-400 font-semibold text-[9px] tracking-wider">BANK</span>
-                <span>{currentBank.toUpperCase()}</span>
-              </button>
-            );
-          })()}
-
-          {/* Selector de Resolución con Menú Desplegable Flotante hacia arriba */}
-          {(() => {
-            const isGridSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "grid";
-            const gridMapped = getActionMappingLabel(midiLearnMapping, "grid");
-            return (
-              <div ref={gridMenuRef} className="relative z-50">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (isMidiLearnActive) {
-                      onSelectLearnTarget?.({ type: "action", id: "grid" });
-                      return;
-                    }
-                    setIsGridMenuOpen(!isGridMenuOpen);
-                  }}
-                  title={
-                    isMidiLearnActive
-                      ? `Resolución Grilla: ${gridMapped ? `Asignado (${gridMapped})` : "Sin asignar"}`
-                      : "Seleccionar Resolución de Grilla"
-                  }
-                  className={`h-7 px-2.5 rounded-md text-[9.5px] font-mono font-bold flex items-center gap-1.5 shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)] cursor-pointer transition select-none ${
-                    isGridSelected
-                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
-                      : isMidiLearnActive
-                      ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
-                      : "bg-[#040406] hover:bg-[#121318] border border-white/15 hover:border-emerald-500/60 text-emerald-400"
-                  }`}
-                >
-                  <span className="text-zinc-400 text-[9px] font-semibold tracking-wider">GRID:</span>
-                  <span>{resolution === "eighth" ? "1/8" : resolution === "sixteenth" ? "1/16" : "1/32"}</span>
-                  <ChevronDown
-                    size={11}
-                    className={`text-zinc-400 transition-transform duration-150 ${
-                      isGridMenuOpen ? "rotate-180" : ""
-                    }`}
-                  />
-                </button>
-
-                {/* Menú Desplegable Flotante hacia arriba */}
-                {isGridMenuOpen && (
-                  <div className="absolute bottom-full mb-2 left-0 z-50 w-48 bg-[#0d0e12] border border-white/20 rounded-xl shadow-[0_15px_40px_rgba(0,0,0,0.95),0_0_1px_1px_rgba(255,255,255,0.08)] py-1 text-xs font-mono text-zinc-200 animate-in fade-in zoom-in-95 duration-100">
-                    <div className="px-3 py-1 text-[9px] uppercase font-bold tracking-wider text-zinc-400 border-b border-white/10 mb-1">
-                      Resolución de Grilla
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onChangeResolution("eighth");
-                        setIsGridMenuOpen(false);
-                      }}
-                      className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors cursor-pointer text-[10px] ${
-                        resolution === "eighth"
-                          ? "bg-emerald-500/20 text-emerald-400 font-bold"
-                          : "hover:bg-white/5 hover:text-white"
-                      }`}
-                    >
-                      <span>1/8 (Corcheas - 8 pasos)</span>
-                      {resolution === "eighth" && <Check size={12} className="text-emerald-400" />}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onChangeResolution("sixteenth");
-                        setIsGridMenuOpen(false);
-                      }}
-                      className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors cursor-pointer text-[10px] ${
-                        resolution === "sixteenth"
-                          ? "bg-emerald-500/20 text-emerald-400 font-bold"
-                          : "hover:bg-white/5 hover:text-white"
-                      }`}
-                    >
-                      <span>1/16 (Semicorcheas - 16 pasos)</span>
-                      {resolution === "sixteenth" && <Check size={12} className="text-emerald-400" />}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onChangeResolution("thirtySecond");
-                        setIsGridMenuOpen(false);
-                      }}
-                      className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors cursor-pointer text-[10px] ${
-                        resolution === "thirtySecond"
-                          ? "bg-emerald-500/20 text-emerald-400 font-bold"
-                          : "hover:bg-white/5 hover:text-white"
-                      }`}
-                    >
-                      <span>1/32 (Fusas - 32 pasos / 2 págs)</span>
-                      {resolution === "thirtySecond" && <Check size={12} className="text-emerald-400" />}
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })()}
-
-          {/* Selector de Página Minimalista para Grilla 1/32 (1 / 2) */}
-          {(() => {
-            const isPageSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "page";
-            const pageMapped = getActionMappingLabel(midiLearnMapping, "page");
-            return (
-              resolution === "thirtySecond" && (
-                <div
-                  onClick={() => {
-                    if (isMidiLearnActive) {
-                      onSelectLearnTarget?.({ type: "action", id: "page" });
-                    }
-                  }}
-                  title={
-                    isMidiLearnActive
-                      ? `Página 1/2: ${pageMapped ? `Asignado (${pageMapped})` : "Sin asignar"}`
-                      : undefined
-                  }
-                  className={`flex items-center bg-[#040406] border rounded-md p-0.5 shadow-[inset_0_1px_3px_rgba(0,0,0,0.8)] gap-0.5 cursor-pointer ${
-                    isPageSelected
-                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse"
-                      : isMidiLearnActive
-                      ? "border-amber-500/60 hover:border-amber-400"
-                      : "border-white/15"
-                  }`}
-                >
-                  <button
-                    type="button"
-                    onClick={() => !isMidiLearnActive && setActivePage(0)}
-                    title={isMidiLearnActive ? undefined : "Página 1 (Pasos 1-16)"}
-                    className={`w-6 h-6 rounded font-mono text-[9px] font-bold transition-all cursor-pointer flex items-center justify-center relative ${
-                      activePage === 0
-                        ? "bg-emerald-500/30 text-emerald-300 border border-emerald-500/50 shadow-[0_0_8px_rgba(16,185,129,0.3)]"
-                        : "text-zinc-400 hover:text-white"
-                    }`}
-                  >
-                    <span>1</span>
-                    {isPlaying && currentStep < 16 && (
-                      <span className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-emerald-400 shadow-[0_0_4px_#10b981]" />
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => !isMidiLearnActive && setActivePage(1)}
-                    title={isMidiLearnActive ? undefined : "Página 2 (Pasos 17-32)"}
-                    className={`w-6 h-6 rounded font-mono text-[9px] font-bold transition-all cursor-pointer flex items-center justify-center relative ${
-                      activePage === 1
-                        ? "bg-emerald-500/30 text-emerald-300 border border-emerald-500/50 shadow-[0_0_8px_rgba(16,185,129,0.3)]"
-                        : "text-zinc-400 hover:text-white"
-                    }`}
-                  >
-                    <span>2</span>
-                    {isPlaying && currentStep >= 16 && (
-                      <span className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-emerald-400 shadow-[0_0_4px_#10b981]" />
-                    )}
-                  </button>
-                </div>
-              )
-            );
-          })()}
-
-
-          {/* Botón Q y Popover Minimalista de Cuantización */}
-          <div ref={qMenuRef} className="relative z-50">
-            <button
-              type="button"
-              onClick={() => setIsQMenuOpen(!isQMenuOpen)}
-              title={`Cuantización de Entrada: ${quantizeMode.toUpperCase()} (${Math.round(quantizeStrength * 100)}%)`}
-              className={`h-7 w-7 rounded-md text-[10px] font-mono font-bold border transition-all flex items-center justify-center relative active:scale-95 cursor-pointer select-none ${
-                quantizeMode !== "off"
-                  ? "bg-cyan-950/40 text-cyan-300 border-cyan-500/60 shadow-[0_0_8px_rgba(6,182,212,0.4)]"
-                  : "bg-white/[0.03] text-zinc-500 border-white/10 hover:text-white"
-              }`}
-            >
-              <span>Q</span>
-              {quantizeMode !== "off" && (
-                <span className="absolute top-1 right-1 w-1 h-1 rounded-full bg-cyan-400 shadow-[0_0_4px_#22d3ee]" />
-              )}
-            </button>
-
-            {/* Popover Minimalista hacia arriba */}
-            {isQMenuOpen && (
-              <div className="absolute bottom-full mb-2 left-0 z-50 w-52 bg-[#0c0d12] border border-white/20 rounded-xl shadow-[0_15px_40px_rgba(0,0,0,0.95),0_0_1px_1px_rgba(255,255,255,0.08)] p-2.5 text-xs font-mono text-zinc-200 animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-2.5">
-                {/* Selector Horizontal de Modos */}
-                <div className="flex items-center justify-between bg-black/60 border border-white/10 rounded-lg p-0.5">
-                  {(["off", "eighth", "sixteenth", "thirtySecond"] as const).map((m) => (
-                    <button
-                      key={`q-mode-${m}`}
-                      type="button"
-                      onClick={() => onSetQuantizeMode?.(m)}
-                      className={`flex-1 py-1 rounded text-[9px] font-bold uppercase transition-all cursor-pointer ${
-                        quantizeMode === m
-                          ? "bg-cyan-500/25 text-cyan-300 border border-cyan-500/40 shadow-[0_0_6px_rgba(6,182,212,0.3)]"
-                          : "text-zinc-400 hover:text-white"
-                      }`}
-                    >
-                      {m === "off" ? "OFF" : m === "eighth" ? "1/8" : m === "sixteenth" ? "1/16" : "1/32"}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Slider Minimalista de Fuerza */}
-                {quantizeMode !== "off" && (
-                  <div className="flex flex-col gap-1 px-0.5">
-                    <div className="flex items-center justify-between text-[9px] text-zinc-400 font-semibold">
-                      <span>STRENGTH</span>
-                      <span className="text-cyan-300 font-bold tabular-nums">
-                        {Math.round(quantizeStrength * 100)}%
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      value={quantizeStrength}
-                      onChange={(e) => onSetQuantizeStrength?.(parseFloat(e.target.value))}
-                      className="w-full accent-cyan-400 h-1 bg-white/10 rounded appearance-none cursor-pointer"
-                    />
-                  </div>
-                )}
-
-                {/* Botón Re-cuantizar limpio */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    onRequantize?.();
-                    setIsQMenuOpen(false);
-                  }}
-                  className="w-full py-1 bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-500/40 hover:border-cyan-400 rounded-md text-[9.5px] font-bold text-cyan-200 transition-all active:scale-95 cursor-pointer shadow-[0_0_8px_rgba(6,182,212,0.2)] text-center"
-                >
-                  RE-QUANTIZE
-                </button>
-              </div>
-            )}
-          </div>
         </div>
 
         {/* Lado Derecho: Display VFD de BPM y Transporte Maestro */}
@@ -1427,101 +1525,6 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                     }`}
                   />
                   REC
-                </button>
-              );
-            })()}
-          </div>
-
-          <div className="h-4 w-[1px] bg-white/10 mx-0.5 hidden sm:block" />
-
-          {/* Cápsula Unificada de Edición / Historial [ UNDO | CLR TRK | 🗑 ] */}
-          <div className="flex items-stretch h-8 rounded-lg bg-[#18191e] border border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_2px_4px_rgba(0,0,0,0.5)] overflow-hidden">
-            {/* Deshacer (Undo) */}
-            {onUndo && (() => {
-              const isSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "undo";
-              const mapped = getActionMappingLabel(midiLearnMapping, "undo");
-              return (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (isMidiLearnActive) {
-                      onSelectLearnTarget?.({ type: "action", id: "undo" });
-                      return;
-                    }
-                    onUndo();
-                  }}
-                  title={isMidiLearnActive ? `Deshacer (Undo): ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Deshacer (Undo)"}
-                  className={`px-2.5 sm:px-3 h-full flex items-center justify-center gap-1.5 font-mono text-[9.5px] font-bold uppercase tracking-wider transition-all cursor-pointer border-r border-white/10 ${
-                    isSelected
-                      ? "bg-amber-950/40 text-amber-200 shadow-[inset_0_0_12px_rgba(245,158,11,0.6)] animate-pulse"
-                      : isMidiLearnActive
-                      ? "bg-amber-950/20 text-amber-300 hover:text-amber-200 hover:bg-amber-950/40"
-                      : "text-zinc-300 hover:text-white hover:bg-white/[0.06] active:bg-white/[0.12]"
-                  }`}
-                >
-                  <RotateCcw size={12} className="text-cyan-400 shrink-0" />
-                  <span>UNDO</span>
-                </button>
-              );
-            })()}
-
-            {/* Limpiar Pista Seleccionada (Clear Track) */}
-            {(() => {
-              const isSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "clearTrack";
-              const mapped = getActionMappingLabel(midiLearnMapping, "clearTrack");
-              return (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (isMidiLearnActive) {
-                      onSelectLearnTarget?.({ type: "action", id: "clearTrack" });
-                      return;
-                    }
-                    if (onClearSelectedTrack) {
-                      onClearSelectedTrack();
-                    } else if (onClearTrack) {
-                      onClearTrack(selectedPad);
-                    }
-                  }}
-                  title={isMidiLearnActive ? `Borrar Pista: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Borrar Notas de la Pista Seleccionada"}
-                  className={`px-2.5 sm:px-3 h-full flex items-center justify-center gap-1.5 font-mono text-[9.5px] font-bold uppercase tracking-wider transition-all cursor-pointer border-r border-white/10 ${
-                    isSelected
-                      ? "bg-amber-950/40 text-amber-200 shadow-[inset_0_0_12px_rgba(245,158,11,0.6)] animate-pulse"
-                      : isMidiLearnActive
-                      ? "bg-amber-950/20 text-amber-300 hover:text-amber-200 hover:bg-amber-950/40"
-                      : "text-zinc-400 hover:text-amber-400 hover:bg-white/[0.06] active:bg-white/[0.12]"
-                  }`}
-                >
-                  <Eraser size={12} className={isSelected ? "text-amber-200 shrink-0" : isMidiLearnActive ? "text-amber-300 shrink-0" : "text-amber-400/90 shrink-0"} />
-                  <span>CLR TRK</span>
-                </button>
-              );
-            })()}
-
-            {/* Limpiar Patrón Activo */}
-            {(() => {
-              const isSelected = isMidiLearnActive && selectedLearnTarget?.type === "action" && selectedLearnTarget.id === "clearPattern";
-              const mapped = getActionMappingLabel(midiLearnMapping, "clearPattern");
-              return (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (isMidiLearnActive) {
-                      onSelectLearnTarget?.({ type: "action", id: "clearPattern" });
-                      return;
-                    }
-                    onClear();
-                  }}
-                  title={isMidiLearnActive ? `Borrar Todo el Patrón: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Borrar Todo el Patrón"}
-                  className={`w-9 sm:w-10 h-full flex items-center justify-center transition-all cursor-pointer ${
-                    isSelected
-                      ? "bg-amber-950/40 text-amber-200 shadow-[inset_0_0_12px_rgba(245,158,11,0.6)] animate-pulse"
-                      : isMidiLearnActive
-                      ? "bg-amber-950/20 text-amber-300 hover:text-amber-200 hover:bg-amber-950/40"
-                      : "text-zinc-400 hover:text-red-400 hover:bg-white/[0.06] active:bg-white/[0.12]"
-                  }`}
-                >
-                  <Trash2 size={13} className="shrink-0" />
                 </button>
               );
             })()}

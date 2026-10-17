@@ -117,6 +117,7 @@ export default function App() {
   useEffect(() => {
     // Revelar la ventana inmediatamente una vez montado el splash negro, evitando cualquier destello gris de WebView2
     invoke("show_main_window").catch(() => {});
+    getCurrentWebviewWindow().show().catch(() => {});
 
     // 3 segundos exactos para apreciar el logotipo de IMPACT SAMPLER
     const timer = setTimeout(() => {
@@ -866,7 +867,7 @@ export default function App() {
       />
 
       {/* Contenido Principal: Hardware Monolítico Flotante y Centrado Ergonómicamente sobre Negro Profundo */}
-      <main className="flex-1 p-2 sm:p-4 flex flex-col justify-center items-center overflow-y-auto overflow-x-hidden bg-[#070709] relative">
+      <main className="flex-1 p-2 sm:py-2.5 sm:px-3 flex flex-col justify-center items-center overflow-y-auto overflow-x-hidden bg-[#070709] relative">
         {/* Capas de Fondo de Estudio Noir (Iluminación Cenital + Micro-Malla + Aura Reactiva) */}
         <div className="absolute inset-0 pointer-events-none z-0 overflow-hidden">
           {/* 1. Iluminación Cenital Definida (Studio Overhead Spotlight) */}

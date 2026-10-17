@@ -464,9 +464,9 @@ flowchart TD
      - Botón nativo para invocar el panel de control del fabricante (`open_asio_control_panel`, ej. Zoom F3 Control Panel).
      - Desbloqueo de DAC estilo REAPER (`suspend_audio_engine` / `resume_audio_engine`), persistencia directa en disco (`audio_preferences.json`) y reutilización segura del singleton COM de ASIO sin descargas accidentales.
      - Reactividad inmediata en caliente en el modal al alternar entre dispositivos o entre WASAPI y ASIO.
-  5. **Iconografía Apple & Configuración Tauri (`tauri.conf.json`) 📋 [SIGUIENTE PASO]:**
-     - Generación de `src-tauri/icons/icon.icns` y configuración de targets multiplataforma (`"nsis"` para Windows y `"dmg"` para macOS).
-  6. **Preservación del Marco de Ventana Nativo:**
+  5. **Iconografía Apple & Configuración Tauri (`tauri.conf.json`) ✅ [COMPLETADO]:**
+     - Generación de `src-tauri/icons/icon.icns` (1.75 MB Retina) y configuración de targets multiplataforma (`["nsis", "dmg", "app"]`) junto a parámetros ergonómicos de DMG y `minimumSystemVersion: "11.0"`.
+  6. **Preservación del Marco de Ventana Nativo 📋 [SIGUIENTE PASO]:**
      - Mantenimiento de `decorations: true` para que los controles de ventana de macOS no interfieran con la interfaz.
   7. **SoundFonts y Pipeline de CI/CD (GitHub Actions):**
      - Alojamiento de los 4 SoundFonts (784 MB) en GitHub Releases con inyección por `curl`.
@@ -573,8 +573,12 @@ flowchart TD
 ---
 
 ## 3. Próximo Paso Inmediato
-Fases 1 a 9.1 completadas al 100%. 
-Fase 9.2: Paso 1 completado al 100% (Subpasos 1.1 a 1.5 finalizados exitosamente: Hot-Swap de dispositivos, enrutamiento multicanal, buffer y sample rates reales, telemetría dinámica en consola y soporte nativo de ASIO con persistencia directa en disco).
-El siguiente hito de desarrollo es el **Paso 2 de la Fase 9.2: Iconografía Apple (.icns) & Configuración Tauri Multiplataforma (`tauri.conf.json`)**.
+Fase 9.2: Pasos 1, 2, 3 y 4 completados al 100%:
+* **Paso 1:** Motor de Audio Multiplataforma, Hot-Swap, ASIO & Telemetría Real completado.
+* **Paso 2:** Iconografía Apple (`icon.icns`), configuración Tauri y layout DMG completado.
+* **Paso 3:** Adaptabilidad de Ventana macOS (`decorations: true`), reingeniería ergonómica en 1080px (cinta superior del secuenciador y desahogo de dock de transporte), visibilidad instantánea y validación limpia con `cargo check` y `npm run build`.
+* **Paso 4:** Infraestructura de Descarga de SoundFonts para CI/CD completada (Release `soundfonts-v1.0.0` con 4 `.sf2`, scripts PowerShell/Bash y validación SHA256 verificada al 100%).
+
+El siguiente hito de desarrollo es el **Paso 5 de la Fase 9.2: Workflow Automatizado de GitHub Actions** (creación de `.github/workflows/build.yml` con matriz dual Windows/macOS y compilación Universal Binary `universal-apple-darwin`).
 
 

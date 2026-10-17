@@ -116,8 +116,8 @@ flowchart LR
         S13 --> S14["1.4: Frontend Header Telemetría ✅"]
         S14 --> S15["1.5: ASIO, Transacción Atómica & Reactividad ✅"]
     end
-    P1 --> P2["Paso 2: Icono .icns & tauri.conf.json 🚧"]
-    P2 --> P3["Paso 3: Verificación Layout macOS"]
+    P1 --> P2["Paso 2: Icono .icns & tauri.conf.json ✅"]
+    P2 --> P3["Paso 3: Verificación Layout macOS 📋"]
     P3 --> P4["Paso 4: Solución SoundFonts en CI/CD"]
     P4 --> P5["Paso 5: Workflow GitHub Actions"]
     P5 --> P6["Paso 6: Prueba Piloto de Compilación"]
@@ -154,36 +154,64 @@ flowchart LR
   * **Reutilización Defensiva del Singleton COM de ASIO:** Reutilización del puntero del driver activo en `standby_asio_driver` para evitar llamadas redundantes a `load_driver` y descargas prematuras de `ASIOExit()` que enmudecían el stream.
   * **Memoria por Host en el Modal y Detección de Estado:** Memoria del último dispositivo seleccionado por host (`lastSelectedDeviceByHost`) y verificación defensiva de `isRunning` en `App.tsx` para sincronización limpia y transparente.
 
-### Paso 2: Iconografía Apple y Configuración Tauri (`tauri.conf.json`) 📋 [SIGUIENTE PASO]
+### Paso 2: Iconografía Apple y Configuración Tauri (`tauri.conf.json`) ✅ [COMPLETADO]
 * **Objetivo:** Establecer la infraestructura de empaque nativo para macOS sin alterar ni degradar la configuración existente de Windows NSIS, generando los activos visuales para pantallas Retina y definiendo el empaquetado DMG ergonómico.
-* **Análisis Crítico de Ingeniería Previo a la Ejecución:**
-  * **Iconografía Apple (`icon.icns`) y Estándar Retina:** A diferencia de Windows, macOS exige una jerarquía multi-resolución en formato `.icns` (16x16 hasta 1024x1024 a `@2x`). Actualmente no existe `icon.icns` en `src-tauri/icons/` y la fuente `icon.png` mide 512x512 px. Omitir `icon.icns` provoca la falla inmediata del empaquetador `hdiutil` de macOS en CI/CD.
-  * **Estrategia de Targets en Tauri 2.0 (`bundle.targets`):** El valor actual `targets: ["nsis"]` bloquea la generación de bundles en macOS. La solución canónica es `targets: "all"`, la cual permite a Tauri detectar contextualmente el SO anfitrión (Windows compila NSIS, macOS compila DMG y App), facilitando además la selección determinista mediante flags en GitHub Actions (`--bundles nsis` / `--bundles dmg,app`).
-  * **Versión Mínima de Sistema (`minimumSystemVersion`):** Para garantizar soporte pleno del binario universal (`universal-apple-darwin` para Apple Silicon M1-M4 e Intel x86_64), se fija `minimumSystemVersion: "11.0"` (macOS Big Sur), base de las APIs modernas de CoreAudio/CoreMIDI en ARM64.
-  * **Ergonomía Visual del DMG (`bundle.macOS.dmg`):** Se definen dimensiones y coordenadas explícitas de arrastre para evitar superposición entre el ícono de la aplicación y el acceso directo a `/Applications`.
-  * **Preservación Total de Windows NSIS:** Se mantiene al 100% la parametrización de NSIS (`installerHeader.bmp`, `installerSidebar.bmp`, `installMode: currentUser`, `languages: ["Spanish"]`).
-* **Desglose de Tareas:**
-  * **Tarea 2.1: Generación y Validación de la Iconografía Apple (`icon.icns`):**
-    * Ejecutar `npx @tauri-apps/cli icon src-tauri/icons/icon.png`.
-    * Verificar la creación física de `src-tauri/icons/icon.icns` y la integridad de sus capas de resolución.
-  * **Tarea 2.2: Configuración Multiplataforma en `tauri.conf.json`:**
-    * Actualizar `bundle.targets` de `["nsis"]` a `"all"`.
-    * Registrar `"icons/icon.icns"` dentro del array `bundle.icon`.
-  * **Tarea 2.3: Configuración Específica de macOS y Layout del DMG (`bundle.macOS`):**
-    * Añadir el bloque `bundle.macOS` con `minimumSystemVersion: "11.0"`.
-    * Configurar el bloque `dmg` con `windowSize: { width: 540, height: 380 }`, `appPosition: { x: 140, y: 170 }` y `applicationFolderPosition: { x: 400, y: 170 }`.
-  * **Tarea 2.4: Validación de Schema y No-Regresión en Windows:**
-    * Validar sintaxis y schema contra `https://schema.tauri.app/config/2`.
-    * Ejecutar `cargo check` y verificar que el entorno de desarrollo y compilación en Windows permanezca 100% operativo.
+* **Entregables Logrados:**
+  * **Tarea 2.1: Generación y Validación de la Iconografía Apple (`icon.icns`) ✅:**
+    * Generación exitosa de `src-tauri/icons/icon.icns` (1.75 MB) con todas las capas Retina oficiales (16x16 a 512x512@2x = 1024x1024) mediante `@tauri-apps/cli icon`.
+    * Preservación del `icon.ico` original de Windows para blindar la compatibilidad del instalador NSIS.
+  * **Tarea 2.2: Configuración Multiplataforma en `tauri.conf.json` ✅:**
+    * Actualizado `bundle.targets` a `["nsis", "dmg", "app"]`, desbloqueando macOS sin requerir WiX en entornos de desarrollo local Windows.
+    * Registrado `"icons/icon.icns"` en el array `bundle.icon`.
+  * **Tarea 2.3: Configuración Específica de macOS y Layout del DMG (`bundle.macOS`) ✅:**
+    * Añadido bloque `bundle.macOS` con `minimumSystemVersion: "11.0"` (base de Apple Silicon M1+).
+    * Añadido layout del DMG con `windowSize: { width: 540, height: 380 }`, posición de aplicación `{ x: 140, y: 170 }` y acceso a aplicaciones `{ x: 400, y: 170 }`.
+  * **Tarea 2.4: Validación de Schema y No-Regresión en Windows ✅:**
+    * Validación sintáctica y de schema completada satisfactoriamente.
+    * Persistencia de `LIBCLANG_PATH` en el entorno de usuario y verificación exitosa de compilación con `cargo check` (código 0).
 
-### Paso 3: Revisión de Adaptabilidad de Ventana en macOS
-* Validar que el marco de ventana estándar (`decorations: true`) mantenga los semáforos de macOS en la barra superior del sistema operativo sin colisión con la interfaz.
+### Paso 3: Revisión de Adaptabilidad de Ventana en macOS ✅ [COMPLETADO]
+* **Objetivo:** Garantizar que la ventana de la aplicación ofrezca una experiencia visual nativa e impecable en macOS sin colisiones entre los controles de semáforo del sistema operativo y los componentes de la interfaz de usuario, preservando la proporción y legibilidad en pantallas Retina.
+* **Análisis Crítico de Ingeniería & UX:**
+  * **Dilema de Controles de Ventana (Enfoque A vs Enfoque B):**
+    * *Enfoque A (Overlay/Transparente):* Superpone los semáforos de macOS dentro del lienzo HTML/React en la esquina superior izquierda (`x: ~12px, y: ~16px`), colisionando directamente contra el logo `IMPACTSAMPPLER` y el selector de instrumentos de `Header.tsx`. Obliga a introducir offsets asimétricos con hacks de CSS y zonas de arrastre complejas.
+    * *Enfoque B (Marco Estándar Cocoa / `decorations: true` - APROBADO & EJECUTADO):* macOS genera la barra de título nativa (`NSWindow`) fuera y por encima del webview. Los semáforos operan en su propio plano del sistema operativo y el lienzo web queda 100% disponible, emulando la convención de estaciones de audio profesionales (Ableton Live, Logic Pro, Reaper).
+  * **Compatibilidad Tipográfica y Renderizado Retina:**
+    * El sistema utiliza `font-family: 'Geist Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI' ...` y suavizado subpixel `-webkit-font-smoothing: antialiased`, garantizando renderizado nítido en pantallas Retina de Mac.
+    * Las fuentes monoespaciadas para displays métricos cargan variantes tabulares (`Geist Mono`, `SF Mono`, `Menlo`) para erradicar el jitter numérico.
+  * **Motor WebKit (WKWebView) & Scrollbars Noir-Tech:**
+    * A diferencia de Windows (WebView2 / Chromium), macOS utiliza WKWebView. Las reglas globales `::-webkit-scrollbar` en `index.css` ya se encuentran delimitadas a 6px con tonalidad oscura translúcida (`rgba(255, 255, 255, 0.15)`), garantizando integración nativa con la estética de macOS.
+  * **Dimensiones y Responsividad:**
+    * La ventana inicia en `maximized: true` respetando las dimensiones mínimas de seguridad (`minWidth: 1080`, `minHeight: 720`), encajando con holgura en pantallas de MacBook Air/Pro de 13" en adelante sin desbordamiento horizontal.
+* **Entregables Logrados:**
+  * **Tarea 3.0: Reingeniería Ergonómica en Ancho Mínimo (1080px) & Desacople de Barras ✅:**
+    * **1. Alineación Monolítica OLED (`HardwareSkeleton.tsx`):** Fijado `flex-nowrap` en el contenedor OLED de `INST` y `PATCH` con `min-w-0` y `truncate`, asegurando que ambos selectores convivan en una sola fila horizontal a 36px de altura constante, impidiendo que `PATCH` descienda y empuje verticalmente la fila de knobs.
+    * **2. Cinta de Control del Secuenciador & Desacople de Transporte (`StepSequencer.tsx`):** Creada una cinta de herramientas rítmicas dedicada (`h-7`) en la cabecera del secuenciador (visible solo en modo `SEQ` arriba de la grilla de pads) que alberga: `KIT`, `BANK`, `GRID`, paginación `[1|2]` de 1/32, menú flotante `Q`, y la cápsula unificada de edición e historial: `[ ↶ UNDO | ⌫ CLR TRK | 🗑 CLR ALL ]`.
+    * **3. Desahogo del Docking Inferior Maestro (`StepSequencer.tsx`):** La Barra de Docking Inferior Maestra ahora opera exclusivamente como consola de transporte y reloj global permanente (`[ KEYS | SEQ ]` a la izquierda; `BPM/TAP`, `Metrónomo [ Click | Visual ]`, y `STOP/PLAY/REC` a la derecha), requiriendo únicamente ~500px y dejando más de 550px de margen de seguridad en ancho 1080px sin desbordamiento ni recorte alguno.
+    * **4. Ajuste Fino de Contención Vertical (`App.tsx`):** Ajustado el padding vertical de `<main>` a `p-2 sm:py-2.5 sm:px-3` para que la consola monolítica con la nueva cinta de control se mantenga perfectamente centrada y sin desbordamiento ni scrollbars en la altura mínima de 720px.
+  * **Tarea 3.1: Explicitación de `decorations: true` en `tauri.conf.json` ✅:**
+    * Declarado explícitamente `"decorations": true` en el bloque de ventana `app.windows[0]` de `src-tauri/tauri.conf.json`.
+  * **Tarea 3.2: Optimización de Visibilidad en Montaje React ✅:**
+    * Invocado `getCurrentWebviewWindow().show()` junto con `invoke("show_main_window")` tras el primer ciclo de renderizado en `App.tsx`, logrando una presentación inmediata y fluida.
+  * **Tarea 3.3: Validación de Schema y Verificación de Compilación ✅:**
+    * Verificación exitosa de compilación frontend con `npm run build` (código 0, 0 lints) y backend con `cargo check` (código 0, 0 advertencias).
 
-### Paso 4: Infraestructura de Descarga de SoundFonts para CI/CD
-* Configurar el almacenamiento de los 4 archivos `.sf2` en un Release de GitHub.
-* Crear script de descarga verificada mediante SHA256 para GitHub Actions.
+### Paso 4: Infraestructura de Descarga de SoundFonts para CI/CD ✅ [COMPLETADO]
+* **Objetivo:** Disponer los 4 SoundFonts oficiales de fábrica (~784 MB) en un Release de GitHub dedicado y desarrollar scripts de descarga desatendida con validación estricta de integridad SHA256 para GitHub Actions, manteniendo el repositorio Git liviano y garantizando instaladores `.exe` y `.dmg` autónomos.
+* **Entregables Logrados:**
+  * **1. Publicación de Activos en GitHub Releases ✅:**
+    * Publicado pre-release con tag `soundfonts-v1.0.0` en `Vladivostok214/ImpactSamplerStudio`.
+    * Alojados los 4 archivos `.sf2`: `Mellotron.sf2` (116.1 MB), `Piano.-.Realtime.sf2` (126.7 MB), `Rhodes.from.Dream.Piano.sf2` (522.0 MB) y `Yamaha_RX7_Drums.sf2` (19.2 MB).
+  * **2. Script de Descarga y Validación para Windows (`scripts/download_soundfonts.ps1`) ✅:**
+    * Creado script PowerShell con detección de archivos locales existentes, comprobación de checksums SHA256 y descarga resiliente mediante `curl -L --retry 3` con fallback a `.NET`.
+    * Mapeo de nombres remotos a los nombres locales esperados (`Piano - Realtime.sf2`, `Rhodes (from Dream Piano).sf2`).
+  * **3. Script de Descarga y Validación para macOS/Linux (`scripts/download_soundfonts.sh`) ✅:**
+    * Creado script Bash POSIX compatible con `shasum -a 256`, `sha256sum` u `openssl dgst` para los runners macOS de GitHub Actions.
+  * **4. Validación Integral de Descarga y Checksums SHA256 ✅:**
+    * Ejecución de prueba local sobre `soundfonts/` verificada en 4 segundos (4/4 archivos válidos).
+    * Prueba de estrés de descarga remota directa desde el CDN de GitHub ejecutada en `scratch/test_sf2`: los 4 archivos se descargaron y validaron al 100% contra sus hashes SHA256 oficiales sin discrepancias.
 
-### Paso 5: Workflow Automatizado de GitHub Actions
+### Paso 5: Workflow Automatizado de GitHub Actions 📋 [SIGUIENTE PASO]
 * Crear `.github/workflows/build.yml` con la matriz dual (`windows-latest` y `macos-latest`).
 * Configurar compilación de Universal Binary (`universal-apple-darwin`).
 

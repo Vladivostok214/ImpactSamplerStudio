@@ -510,9 +510,9 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
         {/* Sección Knobs Matrix & FX Rack (K1 a K8) con Pantalla OLED de Instrumento/Preset */}
         <div className="flex-1 min-w-0 pr-0 lg:pr-4 pb-3 lg:pb-0 border-b lg:border-b-0 lg:border-r border-white/[0.08] flex flex-col justify-center gap-2">
           {/* Pantalla OLED de Selección de Instrumento Melódico y Patch / Preset */}
-          <div className="p-1 bg-[#040406] border border-white/10 rounded-lg shadow-[inset_0_2px_4px_rgba(0,0,0,0.9),0_1px_0_rgba(255,255,255,0.05)] flex items-center justify-between gap-2 flex-wrap">
+          <div className="p-1 bg-[#040406] border border-white/10 rounded-lg shadow-[inset_0_2px_4px_rgba(0,0,0,0.9),0_1px_0_rgba(255,255,255,0.05)] flex items-center justify-between gap-1.5 flex-nowrap">
             {/* Selector de Instrumento Melódico (Coherente 1:1 con PATCH) */}
-            <div className="flex-1 min-w-[170px] h-7 px-2 bg-[#0a0c10] border border-white/10 hover:border-white/25 rounded-md flex items-center gap-1.5 transition-all shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]">
+            <div className="flex-1 min-w-0 h-7 px-2 bg-[#0a0c10] border border-white/10 hover:border-white/25 rounded-md flex items-center gap-1.5 transition-all shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)] overflow-hidden">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#10b981] shrink-0" />
               <span className="text-[9.5px] font-mono uppercase font-bold tracking-wider text-zinc-400 shrink-0">
                 INST:
@@ -549,8 +549,8 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
 
             {/* Selector de Preset (visible cuando el soundfont tiene más de 1 preset, ej. Mellotron) */}
             {currentSoundfont && currentSoundfont.presets.length > 1 && (
-              <div className="h-7 px-2 bg-[#0a0c10] border border-white/10 hover:border-white/25 rounded-md flex items-center gap-1.5 transition-all shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shadow-[0_0_6px_#f59e0b]" />
+              <div className="flex-1 min-w-0 max-w-[210px] h-7 px-2 bg-[#0a0c10] border border-white/10 hover:border-white/25 rounded-md flex items-center gap-1.5 transition-all shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)] overflow-hidden shrink-0">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shadow-[0_0_6px_#f59e0b] shrink-0" />
                 <span className="text-[9.5px] font-mono uppercase font-bold tracking-wider text-zinc-400 shrink-0">
                   PATCH:
                 </span>
@@ -564,7 +564,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                     const bank = preset?.bank ?? 0;
                     onSelectPreset?.(patch, idx, bank);
                   }}
-                  className="bg-transparent text-amber-300 font-mono text-[10.5px] font-bold focus:outline-none cursor-pointer pr-1"
+                  className="bg-transparent text-amber-300 font-mono text-[10.5px] font-bold focus:outline-none cursor-pointer w-full truncate pr-1"
                 >
                   {currentSoundfont.presets.map((p, idx) => (
                     <option key={idx} value={idx} className="bg-zinc-950 text-zinc-200 font-mono text-xs">
