@@ -226,12 +226,11 @@ impl MidiManager {
                                 });
 
                                 // Interceptar acciones de UI dinámicas.
-                                // SOTA Controller Handling: Los botones del controlador pueden estar configurados
-                                // internamente como toggle (enviando 127 en una pulsación y 0 en la siguiente),
-                                // o como momentary (127 al presionar y 0 al soltar). Para garantizar que cada
-                                // pulsación física del usuario active la acción 1:1 de inmediato sin requerir doble
-                                // clic, se dispara la acción en cada evento CC recibido para este controlador.
-                                if (*controller as usize) < 128 {
+                                // SOTA Controller Handling: Los botones físicos y pulsadores de transporte
+                                // envían mensajes momentáneos (valor > 0 / 127 al presionar y 0 al soltar).
+                                // Solo disparamos la acción en el flanco de pulsación (*value > 0), ignorando la
+                                // liberación del botón (*value == 0) para evitar doble disparo o toggle inmediato al soltar.
+                                if *value > 0 && (*controller as usize) < 128 {
                                     if let Ok(guard) = cc_map_clone.try_lock() {
                                         if let Some(action) = guard[*controller as usize] {
                                             match action {
