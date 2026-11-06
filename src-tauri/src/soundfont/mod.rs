@@ -83,7 +83,7 @@ pub fn get_soundfonts_dir() -> PathBuf {
         }
     }
 
-    // 2. Comprobación junto al binario ejecutable (Windows Installer / Portable)
+    // 2. Comprobación junto al binario ejecutable (Windows Installer / Portable / Linux bundle)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             let res_sub = parent.join("resources").join("soundfonts");
@@ -94,6 +94,23 @@ pub fn get_soundfonts_dir() -> PathBuf {
             if portable_sub.exists() {
                 return portable_sub;
             }
+            // En Linux empaquetado (.AppImage o .deb): exe está en /usr/bin o /tmp/.mount_XXXX/usr/bin
+            // Los recursos se instalan en <prefix>/lib/ImpactSampler Studio/soundfonts
+            if let Some(usr_dir) = parent.parent() {
+                let linux_bundle = usr_dir.join("lib").join("ImpactSampler Studio").join("soundfonts");
+                if linux_bundle.exists() {
+                    return linux_bundle;
+                }
+            }
+        }
+    }
+
+    // Fallback estándar del sistema en Linux (/usr/lib/ImpactSampler Studio/soundfonts)
+    #[cfg(target_os = "linux")]
+    {
+        let linux_sys = PathBuf::from("/usr/lib/ImpactSampler Studio/soundfonts");
+        if linux_sys.exists() {
+            return linux_sys;
         }
     }
 
@@ -119,7 +136,7 @@ pub fn get_samples_dir() -> PathBuf {
         }
     }
 
-    // 2. Comprobación junto al binario ejecutable (Windows Installer / Portable)
+    // 2. Comprobación junto al binario ejecutable (Windows Installer / Portable / Linux bundle)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             let res_sub = parent.join("resources").join("samples");
@@ -130,6 +147,23 @@ pub fn get_samples_dir() -> PathBuf {
             if portable_sub.exists() {
                 return portable_sub;
             }
+            // En Linux empaquetado (.AppImage o .deb): exe está en /usr/bin o /tmp/.mount_XXXX/usr/bin
+            // Los recursos se instalan en <prefix>/lib/ImpactSampler Studio/samples
+            if let Some(usr_dir) = parent.parent() {
+                let linux_bundle = usr_dir.join("lib").join("ImpactSampler Studio").join("samples");
+                if linux_bundle.exists() {
+                    return linux_bundle;
+                }
+            }
+        }
+    }
+
+    // Fallback estándar del sistema en Linux (/usr/lib/ImpactSampler Studio/samples)
+    #[cfg(target_os = "linux")]
+    {
+        let linux_sys = PathBuf::from("/usr/lib/ImpactSampler Studio/samples");
+        if linux_sys.exists() {
+            return linux_sys;
         }
     }
 

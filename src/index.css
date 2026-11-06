@@ -3,6 +3,10 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    color-scheme: dark;
+  }
+
   body {
     background-color: #000000;
     color: #f8fafc;
@@ -38,10 +42,43 @@
   background: rgba(255, 255, 255, 0.28);
 }
 
+/* Ocultar scrollbar en contenedores horizontales tipo carrusel (WebKitGTK / Chromium / Firefox) */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 /* Proporción fija de consola de estudio analógica (evita estiramiento en pantallas 1080p/2K/4K) */
 .studio-console {
   width: 100%;
   max-width: 1240px;
   margin-left: auto;
   margin-right: auto;
+}
+
+/* Pulso ligero en GPU para controles seleccionados en MIDI Learn (sin recalcular box-shadow ni layout en WebKitGTK) */
+@keyframes midi-learn-glow {
+  0%, 100% {
+    border-color: rgba(251, 191, 36, 1);
+    background-color: rgba(120, 53, 15, 0.45);
+  }
+  50% {
+    border-color: rgba(245, 158, 11, 0.45);
+    background-color: rgba(120, 53, 15, 0.2);
+  }
+}
+
+.midi-learn-selected {
+  animation: midi-learn-glow 1.4s ease-in-out infinite;
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.55), inset 0 0 0 1px rgba(251, 191, 36, 0.65);
+}
+
+.midi-learn-ready {
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.35);
 }

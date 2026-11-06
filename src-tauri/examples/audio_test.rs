@@ -1,4 +1,6 @@
+#[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "windows")]
 use std::sync::Arc;
 
 #[cfg(target_os = "windows")]

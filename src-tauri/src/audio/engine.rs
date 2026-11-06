@@ -22,13 +22,25 @@ pub struct SavedAudioPreferences {
 }
 
 pub fn get_audio_preferences_path() -> Option<std::path::PathBuf> {
-    if let Ok(app_data) = std::env::var("APPDATA") {
-        let dir = std::path::PathBuf::from(app_data).join("ImpactSamplerStudio");
-        let _ = std::fs::create_dir_all(&dir);
-        Some(dir.join("audio_preferences.json"))
-    } else {
-        None
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(app_data) = std::env::var("APPDATA") {
+            let dir = std::path::PathBuf::from(app_data).join("ImpactSamplerStudio");
+            let _ = std::fs::create_dir_all(&dir);
+            return Some(dir.join("audio_preferences.json"));
+        }
     }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let dir = std::path::PathBuf::from(home)
+                .join(".config")
+                .join("ImpactSamplerStudio");
+            let _ = std::fs::create_dir_all(&dir);
+            return Some(dir.join("audio_preferences.json"));
+        }
+    }
+    None
 }
 
 pub fn load_saved_audio_preferences() -> Option<SavedAudioPreferences> {
@@ -46,6 +58,113 @@ pub fn save_audio_preferences(prefs: &SavedAudioPreferences) {
             let _ = std::fs::write(path, json);
         }
     }
+}
+
+/// En Linux (ALSA), suprime la salida verbosa y advertencias internas de libasound en stderr
+/// redirigiendo el error handler de C a NULL (mismo enfoque que REAPER, Ardour y VLC).
+#[cfg(target_os = "linux")]
+pub fn silence_alsa_logging() {
+    unsafe extern "C" fn noop_alsa_error_handler(
+        _file: *const std::os::raw::c_char,
+        _line: std::os::raw::c_int,
+        _function: *const std::os::raw::c_char,
+        _err: std::os::raw::c_int,
+        _fmt: *const std::os::raw::c_char,
+        _: ...
+    ) {}
+
+    unsafe extern "C" {
+        fn snd_lib_error_set_handler(
+            handler: Option<
+                unsafe extern "C" fn(
+                    *const std::os::raw::c_char,
+                    std::os::raw::c_int,
+                    *const std::os::raw::c_char,
+                    std::os::raw::c_int,
+                    *const std::os::raw::c_char,
+                    ...
+                ),
+            >,
+        ) -> std::os::raw::c_int;
+    }
+
+    unsafe {
+        let _ = snd_lib_error_set_handler(Some(noop_alsa_error_handler));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn get_alsa_card_descriptions() -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    if let Ok(content) = std::fs::read_to_string("/proc/asound/cards") {
+        let mut current_id = None;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if let Some(bracket_start) = trimmed.find('[') {
+                if let Some(bracket_end) = trimmed.find(']') {
+                    let id = trimmed[bracket_start + 1..bracket_end].trim().to_string();
+                    current_id = Some(id);
+                }
+            } else if let Some(id) = current_id.take() {
+                let desc = if let Some(at_idx) = trimmed.find(" at ") {
+                    trimmed[..at_idx].trim().to_string()
+                } else {
+                    trimmed.to_string()
+                };
+                if !desc.is_empty() {
+                    map.insert(id, desc);
+                }
+            }
+        }
+    }
+    map
+}
+
+#[cfg(target_os = "linux")]
+fn format_linux_display_name(name: &str, card_descriptions: &std::collections::HashMap<String, String>) -> String {
+    let lower = name.trim().to_lowercase();
+    if lower == "default" {
+        return "Predeterminado del Sistema (PipeWire / Linux)".to_string();
+    }
+    if lower == "jack" {
+        return "Servidor de Audio JACK".to_string();
+    }
+    if lower == "pulse" {
+        return "Servidor PulseAudio".to_string();
+    }
+
+    if let Some(card_idx) = name.find("CARD=") {
+        let after_card = &name[card_idx + 5..];
+        let card_id = after_card.split(',').next().unwrap_or(after_card).trim();
+        let dev_id = if let Some(dev_idx) = name.find("DEV=") {
+            let after_dev = &name[dev_idx + 4..];
+            after_dev.split(',').next().unwrap_or(after_dev).trim()
+        } else {
+            "0"
+        };
+
+        let raw_desc = card_descriptions.get(card_id).cloned();
+        let friendly = match card_id {
+            "F3" => "ZOOM F3 (Hardware Directo)".to_string(),
+            "Generic" if dev_id == "3" || dev_id == "7" || dev_id == "8" => {
+                "Audio HDMI / DisplayPort (Hardware Directo)".to_string()
+            }
+            "Generic_1" | "Generic" => {
+                "Altavoces / Auriculares Integrados (Hardware Directo)".to_string()
+            }
+            "Audio" => "USB Audio Interface (Hardware Directo)".to_string(),
+            _ => {
+                if let Some(desc) = raw_desc {
+                    format!("{} (Hardware Directo)", desc)
+                } else {
+                    format!("Dispositivo {} (Hardware Directo)", card_id)
+                }
+            }
+        };
+        return friendly;
+    }
+
+    name.to_string()
 }
 
 #[allow(dead_code)]
@@ -1694,6 +1813,9 @@ impl AudioEngine {
             "ALSA".to_string()
         };
 
+        #[cfg(target_os = "linux")]
+        silence_alsa_logging();
+
         Self {
             stream: Arc::new(Mutex::new(StreamHolder(None))),
             current_host: Arc::new(Mutex::new(default_host)),
@@ -1814,6 +1936,35 @@ impl AudioEngine {
         *self.shared_pad_engine_mode.lock().unwrap()
     }
 
+    /// Recarga los samples de batería de fábrica (01_Kick.wav ... 08_Perc.wav)
+    /// y el SoundFont de batería por defecto (Yamaha_RX7_Drums.sf2) en el motor de audio y en el hilo de render.
+    /// Útil en el ciclo de vida setup() cuando la ruta de recursos de Tauri se resuelve en producción.
+    pub fn reload_factory_assets(&self, producer: &mut Producer<AudioEngineCommand>) {
+        let sr = *self.sample_rate.lock().unwrap();
+        let factory_samples = load_factory_pad_samples(sr);
+        if let Ok(mut slots) = self.shared_pad_samples.lock() {
+            for (i, opt_s) in factory_samples.iter().enumerate() {
+                if let Some(s) = opt_s {
+                    slots[i] = Some(s.clone());
+                    let _ = producer.push(AudioEngineCommand::LoadPadSample {
+                        pad_index: i,
+                        sample: s.clone(),
+                    });
+                }
+            }
+        }
+
+        if let Some(drum_sf) = load_default_drum_soundfont() {
+            if let Ok(mut sf_guard) = self.shared_drum_soundfont.lock() {
+                *sf_guard = Some(drum_sf.clone());
+            }
+            let _ = producer.push(AudioEngineCommand::LoadDrumKitSoundFont {
+                sound_font: drum_sf,
+                patch_number: 0,
+            });
+        }
+    }
+
     pub fn get_knob_mappings(&self) -> Vec<KnobMappingInfo> {
         if let Ok(guard) = self.shared_fx_rack.lock() {
             guard.get_mappings_info()
@@ -1856,6 +2007,7 @@ impl AudioEngine {
                 .enumerate()
                 .map(|(idx, name)| AudioDeviceInfo {
                     id: format!("asio_{}", idx),
+                    display_name: Some(format!("{} (ASIO)", name)),
                     name,
                     is_default: false,
                     sample_rates: vec![44100, 48000, 88200, 96000, 176400, 192000],
@@ -1868,9 +2020,28 @@ impl AudioEngine {
         let default_device = host.default_output_device().and_then(|d| d.name().ok());
         let mut devices = Vec::new();
 
+        #[cfg(target_os = "linux")]
+        let card_descriptions = get_alsa_card_descriptions();
+
         if let Ok(dev_iter) = host.output_devices() {
             for (idx, dev) in dev_iter.enumerate() {
                 if let Ok(name) = dev.name() {
+                    #[cfg(target_os = "linux")]
+                    {
+                        let lower = name.trim().to_lowercase();
+                        // En Linux con ALSA, conservar únicamente:
+                        // 1. "default" (servidor PipeWire / PulseAudio global recomendado)
+                        // 2. "jack" (si hay servidor de audio profesional JACK)
+                        // 3. "plughw:card=..." (acceso de hardware directo por cada interfaz física)
+                        let is_clean_target = lower == "default"
+                            || lower == "jack"
+                            || lower.starts_with("plughw:card=");
+
+                        if !is_clean_target {
+                            continue;
+                        }
+                    }
+
                     let is_default = default_device.as_ref().map_or(false, |d| d == &name);
                     let channels = dev.default_output_config().map(|c| c.channels()).unwrap_or(2);
 
@@ -1893,14 +2064,29 @@ impl AudioEngine {
                         if let Ok(def_cfg) = dev.default_output_config() {
                             supported_rates.push(def_cfg.sample_rate().0);
                         } else {
-                            supported_rates = vec![44100, 48000];
+                            #[cfg(target_os = "linux")]
+                            {
+                                // Si en Linux no soporta ni configs ni default_output_config,
+                                // no es un dispositivo de reproducción funcional
+                                continue;
+                            }
+                            #[cfg(not(target_os = "linux"))]
+                            {
+                                supported_rates = vec![44100, 48000];
+                            }
                         }
                     }
                     supported_rates.sort_unstable();
 
+                    #[cfg(target_os = "linux")]
+                    let display_name = Some(format_linux_display_name(&name, &card_descriptions));
+                    #[cfg(not(target_os = "linux"))]
+                    let display_name = None;
+
                     devices.push(AudioDeviceInfo {
                         id: format!("dev_{}", idx),
                         name,
+                        display_name,
                         is_default,
                         sample_rates: supported_rates,
                         channels,
@@ -1908,6 +2094,18 @@ impl AudioEngine {
                 }
             }
         }
+
+        // Ordenar: primero el dispositivo predeterminado, luego las tarjetas de hardware
+        devices.sort_by(|a, b| {
+            if a.is_default && !b.is_default {
+                std::cmp::Ordering::Less
+            } else if !a.is_default && b.is_default {
+                std::cmp::Ordering::Greater
+            } else {
+                a.name.cmp(&b.name)
+            }
+        });
+
         devices
     }
 
@@ -2356,7 +2554,7 @@ impl AudioEngine {
         if let Some((dev, matched_name)) = target_dev {
             let config_res = dev.default_output_config();
             let channels = config_res.as_ref().map(|c| c.channels() as usize).unwrap_or(2);
-            let current_sr = config_res.as_ref().map(|c| c.sample_rate().0).unwrap_or(48000);
+            let default_sr = config_res.as_ref().map(|c| c.sample_rate().0).unwrap_or(48000);
 
             let candidates = [44100, 48000, 88200, 96000, 176400, 192000];
             let mut supported_rates = Vec::new();
@@ -2374,9 +2572,18 @@ impl AudioEngine {
                 }
             }
             if supported_rates.is_empty() {
-                supported_rates.push(current_sr);
+                supported_rates.push(default_sr);
             }
             supported_rates.sort_unstable();
+
+            // Si el dispositivo soporta el sample rate que el motor tiene configurado actualmente,
+            // reportamos ese valor para evitar que la UI resetee la elección del usuario al valor de fábrica
+            let active_sr = *self.sample_rate.lock().unwrap();
+            let current_sr = if supported_rates.contains(&active_sr) {
+                active_sr
+            } else {
+                default_sr
+            };
 
             Ok(crate::state::AudioDeviceDetails {
                 name: matched_name,
@@ -2757,5 +2964,70 @@ impl AudioEngine {
                 }
             })
             .expect("Error al iniciar hilo audio-watchdog");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_list_output_devices_clean_and_silent() {
+        #[cfg(target_os = "linux")]
+        silence_alsa_logging();
+
+        let devices = AudioEngine::list_output_devices(None);
+        println!(
+            "Dispositivos listados:\n{:#?}",
+            devices
+                .iter()
+                .map(|d| format!("Name: '{}' -> Display: '{:?}'", d.name, d.display_name))
+                .collect::<Vec<_>>()
+        );
+        assert!(!devices.is_empty(), "Debe detectar al menos un dispositivo de audio de salida");
+        for dev in &devices {
+            let lower = dev.name.to_lowercase();
+            assert!(!lower.starts_with("dsnoop"), "No debe incluir dsnoop");
+            assert!(!lower.starts_with("oss"), "No debe incluir oss");
+            assert!(!lower.starts_with("dmix"), "No debe incluir dmix");
+            assert!(!lower.starts_with("surround"), "No debe incluir surround");
+            assert!(!lower.starts_with("iec958"), "No debe incluir iec958");
+        }
+    }
+
+    #[test]
+    fn test_reload_factory_assets_populates_all_pads() {
+        let (mut prod, mut cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+
+        engine.reload_factory_assets(&mut prod);
+
+        let slots = engine.get_pad_slots_info();
+        assert_eq!(slots.len(), 8, "Debe haber exactamente 8 slots de pads");
+        for (i, slot) in slots.iter().enumerate() {
+            assert!(
+                slot.has_sample,
+                "El pad {} debe tener sample cargado",
+                i + 1
+            );
+            assert!(
+                slot.sample_name.is_some(),
+                "El pad {} debe tener nombre de sample",
+                i + 1
+            );
+        }
+
+        // Verificar que los comandos LoadPadSample fueron emitidos al hilo de audio
+        let mut sample_cmds_count = 0;
+        let mut drum_sf_cmd_received = false;
+        while let Ok(cmd) = cons.pop() {
+            match cmd {
+                AudioEngineCommand::LoadPadSample { .. } => sample_cmds_count += 1,
+                AudioEngineCommand::LoadDrumKitSoundFont { .. } => drum_sf_cmd_received = true,
+                _ => {}
+            }
+        }
+        assert_eq!(sample_cmds_count, 8, "Deben haberse emitido 8 comandos LoadPadSample");
+        assert!(drum_sf_cmd_received, "Debe haberse emitido LoadDrumKitSoundFont para Yamaha RX7");
     }
 }

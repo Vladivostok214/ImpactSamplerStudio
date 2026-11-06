@@ -170,8 +170,8 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
   onSetLatencyCompensation,
   activePortName = "",
 }) => {
-  const [availableHosts, setAvailableHosts] = useState<string[]>(["WASAPI", "ASIO"]);
-  const [selectedHost, setSelectedHost] = useState<string>("WASAPI");
+  const [availableHosts, setAvailableHosts] = useState<string[]>([]);
+  const [selectedHost, setSelectedHost] = useState<string>("");
   const [audioDevices, setAudioDevices] = useState<AudioDeviceInfo[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<string>("");
   const [selectedChannelPair, setSelectedChannelPair] = useState<number>(0);
@@ -205,8 +205,19 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
           setActiveDeviceSampleRates(details.sampleRates);
         }
         if (details.isAvailable) {
-          if (details.currentBufferSize) setBufferSize(details.currentBufferSize);
-          if (details.currentSampleRate) setSampleRate(details.currentSampleRate);
+          if (details.currentBufferSize) {
+            setBufferSize((prev) => (prev > 0 ? prev : details.currentBufferSize));
+          }
+          if (details.sampleRates && details.sampleRates.length > 0) {
+            setSampleRate((prevSr) => {
+              // Si la frecuencia actualmente seleccionada es soportada por el dispositivo, preservarla
+              if (details.sampleRates.includes(prevSr)) {
+                return prevSr;
+              }
+              // Si no la soporta, utilizar la frecuencia recomendada por el dispositivo
+              return details.currentSampleRate || details.sampleRates[0];
+            });
+          }
         }
       }
     } catch (e) {
@@ -235,11 +246,19 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
         invoke<AudioStatusInfo>("get_audio_status"),
       ])
         .then(async ([hosts, status]) => {
-          if (hosts && hosts.length > 0) {
-            setAvailableHosts(hosts);
+          const supportedHosts = hosts && hosts.length > 0 ? hosts : ["ALSA"];
+          setAvailableHosts(supportedHosts);
+
+          const rawHost = status?.host || status?.driver || supportedHosts[0];
+          let activeHost = rawHost;
+          const matched = supportedHosts.find((h) => h.toUpperCase() === rawHost.toUpperCase());
+          if (matched) {
+            activeHost = matched;
+          } else if (rawHost.toUpperCase().includes("ASIO") && supportedHosts.includes("ASIO")) {
+            activeHost = "ASIO";
+          } else {
+            activeHost = supportedHosts[0];
           }
-          const rawHost = status?.host || status?.driver || "WASAPI";
-          const activeHost = rawHost.toUpperCase().includes("ASIO") ? "ASIO" : "WASAPI";
           setSelectedHost(activeHost);
 
           if (status?.bufferSize || status?.buffer_size) {
@@ -292,7 +311,11 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
       if (!st) return;
       const h = st.host || st.driver;
       if (h) {
-        setSelectedHost(h.toUpperCase().includes("ASIO") ? "ASIO" : "WASAPI");
+        if (h.toUpperCase().includes("ASIO")) {
+          setSelectedHost("ASIO");
+        } else {
+          setSelectedHost(h);
+        }
       }
       const b = st.bufferSize || st.buffer_size;
       if (b) setBufferSize(b);
@@ -533,7 +556,7 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
 
   const deviceOptions = audioDevices.map((d) => ({
     value: d.id,
-    label: d.name,
+    label: d.displayName || d.name,
     isDefault: d.isDefault ?? (d as any).is_default,
   }));
 
@@ -692,14 +715,31 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
               </span>
             </div>
 
-            {/* Selector de Sistema de Audio (WASAPI vs ASIO) */}
+            {/* Selector de Sistema de Audio (Multiplataforma: ALSA / CoreAudio / WASAPI / ASIO) */}
             <div>
-              <label className="text-zinc-400 block mb-2 font-semibold tracking-wider uppercase text-[10px] font-sans">
-                Sistema de Audio (Audio System)
-              </label>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-zinc-400 font-semibold tracking-wider uppercase text-[10px] font-sans">
+                  Sistema de Audio (Audio System)
+                </label>
+                {availableHosts.length === 1 && (
+                  <span className="text-[9.5px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                    Host Nativo Activo
+                  </span>
+                )}
+              </div>
               <div className="flex bg-black/60 p-1 rounded-xl border border-white/10 gap-1">
                 {availableHosts.map((h) => {
                   const isSel = selectedHost.toUpperCase() === h.toUpperCase();
+                  const hostLabel =
+                    h.toUpperCase() === "WASAPI"
+                      ? "WASAPI (Windows)"
+                      : h.toUpperCase() === "ASIO"
+                      ? "ASIO (Baja Latencia)"
+                      : h.toUpperCase() === "ALSA"
+                      ? "ALSA (PipeWire / Linux)"
+                      : h.toUpperCase() === "COREAUDIO"
+                      ? "CoreAudio (macOS)"
+                      : h;
                   return (
                     <button
                       key={h}
@@ -711,7 +751,7 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
                           : "text-zinc-400 hover:text-white hover:bg-white/[0.04]"
                       }`}
                     >
-                      {h}
+                      {hostLabel}
                     </button>
                   );
                 })}

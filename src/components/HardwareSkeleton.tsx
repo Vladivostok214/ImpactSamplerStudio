@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from "react";
-import { Check } from "lucide-react";
+import React, { useState, useEffect, useRef } from "react";
+import { Check, ChevronDown } from "lucide-react";
 import { PadSlotInfo, KnobMappingInfo, KnobTarget, FxRouting } from "../types/sampler";
 import { MidiLearnTarget, MidiLearnMapping } from "../types/midiLearn";
 
@@ -137,19 +137,26 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
     y: number;
   } | null>(null);
 
+  const [openOledMenu, setOpenOledMenu] = useState<"inst" | "patch" | null>(null);
+  const oledBarRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
-    const handleClickOutside = () => {
+    const handleClickOutside = (e: MouseEvent) => {
       setKnobContextMenu(null);
+      if (oledBarRef.current && !oledBarRef.current.contains(e.target as Node)) {
+        setOpenOledMenu(null);
+      }
     };
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setKnobContextMenu(null);
+        setOpenOledMenu(null);
       }
     };
-    window.addEventListener("click", handleClickOutside);
+    window.addEventListener("mousedown", handleClickOutside);
     window.addEventListener("keydown", handleKeyDown);
     return () => {
-      window.removeEventListener("click", handleClickOutside);
+      window.removeEventListener("mousedown", handleClickOutside);
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, []);
@@ -443,14 +450,14 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                     onPointerDown={(e) => {
                       if (!isMidiLearnActive) handleFaderPointerDown(idx, e);
                     }}
-                    className={`w-full h-28 bg-[#08080a] rounded-lg relative flex items-center justify-center p-0.5 cursor-ns-resize transition shadow-[inset_0_2px_6px_rgba(0,0,0,0.9)] overflow-hidden group/fader ${
+                    className={`w-full h-28 bg-[#08080a] rounded-lg relative flex items-center justify-center p-0.5 cursor-ns-resize transition-colors shadow-[inset_0_2px_6px_rgba(0,0,0,0.9)] overflow-hidden group/fader border ${
                       isTargetSelected
-                        ? "border-2 border-amber-400 shadow-[0_0_18px_rgba(245,158,11,0.9)] ring-2 ring-amber-400/50 animate-pulse"
+                        ? "border-amber-400 midi-learn-selected"
                         : isMidiLearnActive
-                        ? "border-2 border-amber-500/60 shadow-[0_0_12px_rgba(245,158,11,0.35)] hover:border-amber-400 hover:shadow-[0_0_16px_rgba(245,158,11,0.6)]"
+                        ? "border-amber-500/70 midi-learn-ready hover:border-amber-400"
                         : isMaster
-                        ? "border-2 border-cyan-400/90 shadow-[0_0_12px_rgba(34,211,238,0.35),inset_0_2px_6px_rgba(0,0,0,0.9)] hover:border-cyan-300"
-                        : "border border-white/[0.08] hover:border-white/20"
+                        ? "border-cyan-400/90 shadow-[0_0_10px_rgba(34,211,238,0.28),inset_0_2px_6px_rgba(0,0,0,0.9),inset_0_0_0_1px_rgba(34,211,238,0.45)] hover:border-cyan-300"
+                        : "border-white/[0.08] hover:border-white/20"
                     }`}
                     title={
                       isMidiLearnActive
@@ -510,68 +517,139 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
         {/* Sección Knobs Matrix & FX Rack (K1 a K8) con Pantalla OLED de Instrumento/Preset */}
         <div className="flex-1 min-w-0 pr-0 lg:pr-4 pb-3 lg:pb-0 border-b lg:border-b-0 lg:border-r border-white/[0.08] flex flex-col justify-center gap-2">
           {/* Pantalla OLED de Selección de Instrumento Melódico y Patch / Preset */}
-          <div className="p-1 bg-[#040406] border border-white/10 rounded-lg shadow-[inset_0_2px_4px_rgba(0,0,0,0.9),0_1px_0_rgba(255,255,255,0.05)] flex items-center justify-between gap-1.5 flex-nowrap">
+          <div
+            ref={oledBarRef}
+            className="p-1 bg-[#040406] border border-white/10 rounded-lg shadow-[inset_0_2px_4px_rgba(0,0,0,0.9),0_1px_0_rgba(255,255,255,0.05)] flex items-center justify-between gap-1.5 flex-nowrap relative z-40"
+          >
             {/* Selector de Instrumento Melódico (Coherente 1:1 con PATCH) */}
-            <div className="flex-1 min-w-0 h-7 px-2 bg-[#0a0c10] border border-white/10 hover:border-white/25 rounded-md flex items-center gap-1.5 transition-all shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)] overflow-hidden">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#10b981] shrink-0" />
-              <span className="text-[9.5px] font-mono uppercase font-bold tracking-wider text-zinc-400 shrink-0">
-                INST:
-              </span>
-              <select
-                value={currentSoundfont?.filename || ""}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  e.target.blur();
-                  if (val && onSelectSoundfont) {
-                    onSelectSoundfont(val);
-                  }
+            <div className="relative flex-1 min-w-0">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  setOpenOledMenu((prev) => (prev === "inst" ? null : "inst"));
                 }}
-                className="bg-transparent text-emerald-300 font-mono text-[10.5px] font-bold focus:outline-none cursor-pointer w-full truncate pr-1"
+                className={`w-full h-7 px-2 bg-[#0a0c10] border rounded-md flex items-center justify-between gap-1.5 transition-colors shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)] cursor-pointer focus:outline-none ${
+                  openOledMenu === "inst"
+                    ? "border-emerald-400/60 bg-[#0d1117]"
+                    : "border-white/10 hover:border-white/25"
+                }`}
                 title="Cambiar Instrumento"
               >
-                {availableSoundfonts.length > 0 ? (
-                  availableSoundfonts.map((sf) => (
-                    <option
-                      key={sf.filename}
-                      value={sf.filename}
-                      className="bg-zinc-950 text-zinc-200 font-mono text-xs"
-                    >
-                      {sf.displayName.toUpperCase()}
-                    </option>
-                  ))
-                ) : (
-                  <option value={currentSoundfont?.filename || ""} className="bg-zinc-950 text-zinc-200 font-mono text-xs">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#10b981] shrink-0" />
+                  <span className="text-[9.5px] font-mono uppercase font-bold tracking-wider text-zinc-400 shrink-0">
+                    INST:
+                  </span>
+                  <span className="text-emerald-300 font-mono text-[10.5px] font-bold truncate">
                     {currentSoundfont ? currentSoundfont.displayName.toUpperCase() : "CARGANDO..."}
-                  </option>
-                )}
-              </select>
+                  </span>
+                </div>
+                <ChevronDown
+                  size={12}
+                  className={`text-zinc-400 shrink-0 transition-transform duration-150 ${
+                    openOledMenu === "inst" ? "rotate-180 text-emerald-400" : ""
+                  }`}
+                />
+              </button>
+
+              {openOledMenu === "inst" && (
+                <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-[#0a0c10] border border-white/15 rounded-lg shadow-[0_18px_45px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.08)] py-1 max-h-60 overflow-y-auto divide-y divide-white/[0.04]">
+                  {availableSoundfonts.length > 0 ? (
+                    availableSoundfonts.map((sf) => {
+                      const isSelected = currentSoundfont?.filename === sf.filename;
+                      return (
+                        <button
+                          key={sf.filename}
+                          type="button"
+                          onClick={(e) => {
+                            e.currentTarget.blur();
+                            setOpenOledMenu(null);
+                            if (sf.filename && onSelectSoundfont) {
+                              onSelectSoundfont(sf.filename);
+                            }
+                          }}
+                          className={`w-full px-2.5 py-1.5 flex items-center justify-between text-left font-mono text-[10.5px] transition-colors cursor-pointer ${
+                            isSelected
+                              ? "bg-emerald-500/15 text-emerald-300 font-bold"
+                              : "text-zinc-300 hover:bg-white/[0.07] hover:text-white"
+                          }`}
+                        >
+                          <span className="truncate">{sf.displayName.toUpperCase()}</span>
+                          {isSelected && <Check size={12} className="text-emerald-400 shrink-0 ml-2" />}
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <div className="px-2.5 py-1.5 text-zinc-500 font-mono text-[10.5px]">
+                      {currentSoundfont ? currentSoundfont.displayName.toUpperCase() : "CARGANDO..."}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Selector de Preset (visible cuando el soundfont tiene más de 1 preset, ej. Mellotron) */}
             {currentSoundfont && currentSoundfont.presets.length > 1 && (
-              <div className="flex-1 min-w-0 max-w-[210px] h-7 px-2 bg-[#0a0c10] border border-white/10 hover:border-white/25 rounded-md flex items-center gap-1.5 transition-all shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)] overflow-hidden shrink-0">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shadow-[0_0_6px_#f59e0b] shrink-0" />
-                <span className="text-[9.5px] font-mono uppercase font-bold tracking-wider text-zinc-400 shrink-0">
-                  PATCH:
-                </span>
-                <select
-                  value={activePresetIndex}
-                  onChange={(e) => {
-                    const idx = parseInt(e.target.value, 10);
-                    e.target.blur();
-                    const preset = currentSoundfont.presets[idx];
-                    const patch = preset?.patch ?? 0;
-                    const bank = preset?.bank ?? 0;
-                    onSelectPreset?.(patch, idx, bank);
+              <div className="relative flex-1 min-w-0 max-w-[210px] shrink-0">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    setOpenOledMenu((prev) => (prev === "patch" ? null : "patch"));
                   }}
-                  className="bg-transparent text-amber-300 font-mono text-[10.5px] font-bold focus:outline-none cursor-pointer w-full truncate pr-1"
+                  className={`w-full h-7 px-2 bg-[#0a0c10] border rounded-md flex items-center justify-between gap-1.5 transition-colors shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)] cursor-pointer focus:outline-none ${
+                    openOledMenu === "patch"
+                      ? "border-amber-400/60 bg-[#0d1117]"
+                      : "border-white/10 hover:border-white/25"
+                  }`}
+                  title="Cambiar Patch / Preset"
                 >
-                  {currentSoundfont.presets.map((p, idx) => (
-                    <option key={idx} value={idx} className="bg-zinc-950 text-zinc-200 font-mono text-xs">
-                      {p.name.toUpperCase()}
-                    </option>
-                  ))}
-                </select>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shadow-[0_0_6px_#f59e0b] shrink-0" />
+                    <span className="text-[9.5px] font-mono uppercase font-bold tracking-wider text-zinc-400 shrink-0">
+                      PATCH:
+                    </span>
+                    <span className="text-amber-300 font-mono text-[10.5px] font-bold truncate">
+                      {(currentSoundfont.presets[activePresetIndex]?.name || currentSoundfont.presets[0]?.name || "").toUpperCase()}
+                    </span>
+                  </div>
+                  <ChevronDown
+                    size={12}
+                    className={`text-zinc-400 shrink-0 transition-transform duration-150 ${
+                      openOledMenu === "patch" ? "rotate-180 text-amber-400" : ""
+                    }`}
+                  />
+                </button>
+
+                {openOledMenu === "patch" && (
+                  <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-[#0a0c10] border border-white/15 rounded-lg shadow-[0_18px_45px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.08)] py-1 max-h-60 overflow-y-auto divide-y divide-white/[0.04]">
+                    {currentSoundfont.presets.map((p, idx) => {
+                      const isSelected = idx === activePresetIndex;
+                      return (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={(e) => {
+                            e.currentTarget.blur();
+                            setOpenOledMenu(null);
+                            const patch = p?.patch ?? 0;
+                            const bank = p?.bank ?? 0;
+                            onSelectPreset?.(patch, idx, bank);
+                          }}
+                          className={`w-full px-2.5 py-1.5 flex items-center justify-between text-left font-mono text-[10.5px] transition-colors cursor-pointer ${
+                            isSelected
+                              ? "bg-amber-500/15 text-amber-300 font-bold"
+                              : "text-zinc-300 hover:bg-white/[0.07] hover:text-white"
+                          }`}
+                        >
+                          <span className="truncate">{p.name.toUpperCase()}</span>
+                          {isSelected && <Check size={12} className="text-amber-400 shrink-0 ml-2" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -620,12 +698,12 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                   key={idx}
                   onClick={handleKnobContainerClick}
                   onDoubleClick={handleKnobReset}
-                  className={`relative flex flex-col items-center cursor-pointer group py-1 px-1 rounded-lg transition-all ${
+                  className={`relative flex flex-col items-center cursor-pointer group py-1 px-1 rounded-lg transition-colors border ${
                     isKnobTargetSelected
-                      ? "border-2 border-amber-400 bg-amber-500/20 shadow-[0_0_18px_rgba(245,158,11,0.85)] ring-2 ring-amber-400/50 animate-pulse"
+                      ? "border-amber-400 midi-learn-selected"
                       : isMidiLearnActive
-                      ? "border border-amber-500/50 bg-amber-950/20 shadow-[0_0_10px_rgba(245,158,11,0.3)] hover:border-amber-400 hover:shadow-[0_0_14px_rgba(245,158,11,0.55)]"
-                      : "border border-transparent hover:bg-white/[0.03]"
+                      ? "border-amber-500/60 bg-amber-950/20 midi-learn-ready hover:border-amber-400"
+                      : "border-transparent hover:bg-white/[0.03]"
                   }`}
                   onContextMenu={(e) => {
                     if (isMidiLearnActive) return;
@@ -659,6 +737,19 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                         strokeDasharray={`${arcLength} ${circ}`}
                         strokeLinecap="round"
                       />
+                      {/* Halo luminoso concéntrico en GPU (evita recalcular filter drop-shadow SVG en cada frame en WebKitGTK) */}
+                      {!isFxBypassed && activeDash > 0.5 && (
+                        <circle
+                          cx="18"
+                          cy="18"
+                          r="14"
+                          fill="none"
+                          stroke="rgba(251, 191, 36, 0.25)"
+                          strokeWidth="5.5"
+                          strokeDasharray={`${activeDash} ${circ}`}
+                          strokeLinecap="round"
+                        />
+                      )}
                       {/* Pista activa luminosa (ámbar si está activo, atenuada si FX está en bypass) */}
                       <circle
                         cx="18"
@@ -669,22 +760,18 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                         strokeWidth="2.5"
                         strokeDasharray={`${activeDash} ${circ}`}
                         strokeLinecap="round"
-                        className={
-                          isFxBypassed
-                            ? "transition-all duration-75 opacity-60"
-                            : "transition-all duration-75 drop-shadow-[0_0_5px_rgba(251,191,36,0.85)]"
-                        }
+                        className={isFxBypassed ? "opacity-60" : ""}
                       />
                     </svg>
 
                     {/* Perilla Física Central */}
-                    <div className="absolute w-6 h-6 rounded-full bg-gradient-to-b from-[#34373e] via-[#1e2025] to-[#121316] border border-white/15 shadow-[0_2px_5px_rgba(0,0,0,0.8),inset_0_1px_0_rgba(255,255,255,0.25)] flex items-center justify-center group-hover:border-amber-400/60 transition">
+                    <div className="absolute w-6 h-6 rounded-full bg-gradient-to-b from-[#34373e] via-[#1e2025] to-[#121316] border border-white/15 shadow-[0_2px_5px_rgba(0,0,0,0.8),inset_0_1px_0_rgba(255,255,255,0.25)] flex items-center justify-center group-hover:border-amber-400/60 transition-colors">
                       {/* Aguja del knob */}
                       <div
-                        className={`absolute w-[1.5px] h-2.5 rounded-full origin-bottom bottom-1/2 transition-all ${
+                        className={`absolute w-[1.5px] h-2.5 rounded-full origin-bottom bottom-1/2 ${
                           isFxBypassed
                             ? "bg-zinc-500 shadow-none"
-                            : "bg-amber-400 shadow-[0_0_6px_#fbbf24]"
+                            : "bg-amber-400 shadow-[0_0_5px_#fbbf24]"
                         }`}
                         style={{ transform: `rotate(${rotDeg}deg)` }}
                       />
@@ -797,7 +884,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
 
       {/* 2. Deck Inferior: Bahía del Teclado de 49 Teclas Empotrado en el Chasis */}
       {!hideKeyboard && (
-        <div className="bg-[#050507] flex flex-col relative">
+        <div className="bg-[#050507] flex flex-col relative" style={{ contain: "layout paint" }}>
           {/* Hendidura superior de montaje del lecho de teclas (Keybed Seam) */}
           <div className="h-1 w-full bg-gradient-to-b from-black to-[#09090c] border-b border-black/90 shadow-[inset_0_2px_4px_rgba(0,0,0,0.95)] shrink-0 z-20" />
 
@@ -844,12 +931,12 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                         if (k.isOutOfRange) return;
                         if (e.buttons === 1) onReleaseNote(k.note);
                       }}
-                      className={`w-[22px] h-[106px] -mx-[11px] z-20 rounded-b-[2px] transition-all duration-75 relative ${
+                      className={`w-[22px] h-[106px] -mx-[11px] z-20 rounded-b-[2px] transition-colors duration-75 relative ${
                         k.isOutOfRange
                           ? "bg-zinc-950 border-x border-b border-black opacity-20 cursor-not-allowed shadow-none"
                           : k.isActive
                           ? "bg-gradient-to-b from-cyan-400 via-cyan-500 to-cyan-600 border-x border-cyan-400 border-b-[4px] border-b-cyan-700 shadow-[0_0_20px_rgba(6,182,212,0.95),inset_0_4px_6px_rgba(0,0,0,0.4)] cursor-pointer"
-                          : "bg-gradient-to-b from-[#18191c] via-[#121316] to-[#08080a] border-x border-[#060608] border-b-[4px] border-b-[#020203] shadow-[2px_6px_10px_rgba(0,0,0,0.95),-2px_6px_10px_rgba(0,0,0,0.95)] hover:bg-[#1f2026] cursor-pointer"
+                          : "bg-[#121316] bg-gradient-to-b from-[#18191c] via-[#121316] to-[#08080a] hover:from-[#22242a] hover:via-[#181a1f] hover:to-[#0c0d10] border-x border-[#060608] border-b-[4px] border-b-[#020203] shadow-[2px_6px_10px_rgba(0,0,0,0.95),-2px_6px_10px_rgba(0,0,0,0.95)] cursor-pointer"
                       }`}
                       style={{ flexShrink: 0 }}
                     >
@@ -886,25 +973,25 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                       if (k.isOutOfRange) return;
                       if (e.buttons === 1) onReleaseNote(k.note);
                     }}
-                    className={`flex-1 min-w-[20px] h-full rounded-b-[4px] transition-all duration-75 relative z-10 ${
+                    className={`flex-1 min-w-[20px] h-full rounded-b-[4px] transition-colors duration-75 relative z-10 ${
                       k.isOutOfRange
                         ? "bg-zinc-900/60 border-r border-zinc-950 opacity-20 cursor-not-allowed shadow-none"
                         : k.isActive
                         ? "bg-gradient-to-b from-cyan-300 via-cyan-400 to-cyan-500 text-black border-r border-cyan-300 shadow-[inset_0_4px_8px_rgba(0,0,0,0.25),inset_0_-2px_0_#0891b2,0_0_18px_rgba(6,182,212,0.9)] cursor-pointer"
-                        : "bg-gradient-to-b from-[#eef1f5] via-[#fafbfc] to-[#dce2ea] border-r border-black/30 shadow-[inset_0_-5px_0_#cbd5e1,0_2px_4px_rgba(0,0,0,0.3)] hover:brightness-105 cursor-pointer"
+                        : "bg-gradient-to-b from-[#eef1f5] via-[#fafbfc] to-[#dce2ea] hover:from-white hover:to-[#e6ebf2] border-r border-black/30 shadow-[inset_0_-5px_0_#cbd5e1,0_2px_4px_rgba(0,0,0,0.3)] cursor-pointer"
                     }`}
                   >
                     {/* Marcador de Octava en teclas C (C1 a C5) con grabado láser */}
                     {isCKey && (
                       <span
-                        className={`absolute left-1/2 -translate-x-1/2 font-mono font-bold tracking-tight select-none pointer-events-none transition-all ${
+                        className={`absolute left-1/2 -translate-x-1/2 font-mono font-bold tracking-tight select-none pointer-events-none ${
                           qwertyLabel && !k.isOutOfRange ? "bottom-7 text-[8.5px]" : "bottom-2.5 text-[9.5px]"
                         } ${
                           k.isActive
                             ? "text-black font-extrabold"
                             : isMiddleC
-                            ? "text-cyan-700 font-extrabold drop-shadow-[0_1px_0_rgba(255,255,255,0.9)]"
-                            : "text-zinc-500 font-bold drop-shadow-[0_1px_0_rgba(255,255,255,0.9)]"
+                            ? "text-cyan-700 font-extrabold"
+                            : "text-zinc-500 font-bold"
                         }`}
                       >
                         C{octaveNum}
@@ -917,7 +1004,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                         className={`absolute bottom-2.5 left-1/2 -translate-x-1/2 font-mono text-[10px] font-bold tracking-tight select-none pointer-events-none transition-colors ${
                           k.isActive
                             ? "text-black font-black"
-                            : "text-zinc-600/90 drop-shadow-[0_1px_0_rgba(255,255,255,0.7)]"
+                            : "text-zinc-600/90"
                         }`}
                       >
                         {qwertyLabel}

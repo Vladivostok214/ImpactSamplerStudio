@@ -868,45 +868,39 @@ export default function App() {
 
       {/* Contenido Principal: Hardware Monolítico Flotante y Centrado Ergonómicamente sobre Negro Profundo */}
       <main className="flex-1 p-2 sm:py-2.5 sm:px-3 flex flex-col justify-center items-center overflow-y-auto overflow-x-hidden bg-[#070709] relative">
-        {/* Capas de Fondo de Estudio Noir (Iluminación Cenital + Micro-Malla + Aura Reactiva) */}
-        <div className="absolute inset-0 pointer-events-none z-0 overflow-hidden">
-          {/* 1. Iluminación Cenital Definida (Studio Overhead Spotlight) */}
+        {/* Capas de Fondo de Estudio Noir (Iluminación Cenital + Micro-Malla + Aura Reactiva, aisladas en GPU) */}
+        <div
+          className="absolute inset-0 pointer-events-none z-0 overflow-hidden transform-gpu"
+          style={{ contain: "strict", backfaceVisibility: "hidden" }}
+        >
+          {/* 1. Micro-Malla Acústica de Estudio (Precision Dot Matrix con alta nitidez) */}
           <div
             className="absolute inset-0"
             style={{
-              background: "radial-gradient(ellipse 80% 50% at 50% 0%, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.03) 50%, transparent 75%)",
-            }}
-          />
-
-          {/* 2. Micro-Malla Acústica de Estudio (Precision Dot Matrix con alta nitidez) */}
-          <div
-            className="absolute inset-0"
-            style={{
-              backgroundImage: "radial-gradient(circle, rgba(255, 255, 255, 0.22) 1.2px, transparent 1.2px)",
+              backgroundImage: "radial-gradient(circle, rgba(255, 255, 255, 0.2) 1.2px, transparent 1.2px)",
               backgroundSize: "28px 28px",
-              maskImage: "radial-gradient(ellipse 85% 75% at 50% 50%, black 40%, transparent 95%)",
-              WebkitMaskImage: "radial-gradient(ellipse 85% 75% at 50% 50%, black 40%, transparent 95%)",
             }}
           />
 
-          {/* 3. Aura Reactiva al Instrumento Activo con Presencia Notoria y Transición Suave */}
+          {/* 2. Aura Reactiva al Instrumento Activo */}
           <div
-            className="absolute inset-0 transition-all duration-1000 ease-out"
+            className="absolute inset-0"
             style={{
               background: getAmbientGlow(),
             }}
           />
 
-          {/* 4. Viñeta Perimetral Profunda para Enmarcar la Consola */}
+          {/* 3. Iluminación Cenital Definida + Viñeta Perimetral Profunda (reemplaza WebkitMaskImage costoso en WebKitGTK) */}
           <div
             className="absolute inset-0"
             style={{
-              background: "radial-gradient(ellipse 95% 85% at 50% 50%, transparent 65%, rgba(0, 0, 0, 0.85) 100%)",
+              background:
+                "radial-gradient(ellipse 85% 75% at 50% 50%, transparent 40%, rgba(7, 7, 9, 0.96) 95%), radial-gradient(ellipse 80% 50% at 50% 0%, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.03) 50%, transparent 75%)",
             }}
           />
         </div>
 
-        <div className="studio-console flex flex-col w-full max-w-6xl my-auto relative z-10 transition-all duration-200">
+        <div className="studio-console flex flex-col w-full max-w-6xl my-auto relative z-10">
           {/* Consola de Estudio Monolítica Unificada (Controlador Hardware + Docking Multimodal) */}
           <HardwareSkeleton
             activeNotes={activeNotes}

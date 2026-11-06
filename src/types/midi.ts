@@ -27,6 +27,7 @@ export interface NormalizedMidiEvent {
 export interface AudioDeviceInfo {
   id: string;
   name: string;
+  displayName?: string;
   isDefault: boolean;
   sampleRates: number[];
   channels?: number;

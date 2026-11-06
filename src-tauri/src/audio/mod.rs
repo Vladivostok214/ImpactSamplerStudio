@@ -93,6 +93,8 @@ pub enum AudioEngineCommand {
 pub struct AudioDeviceInfo {
     pub id: String,
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     pub is_default: bool,
     pub sample_rates: Vec<u32>,
     pub channels: u16,

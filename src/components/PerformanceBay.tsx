@@ -208,20 +208,20 @@ export const PerformanceBay: React.FC<PerformanceBayProps> = ({
 
   // Estilos visuales compartidos por los 4 botones de la columna (solo apariencia)
   const fxBtnBase =
-    "w-full h-7 px-2 rounded-md flex items-center justify-center gap-1.5 font-mono text-[9.5px] tracking-wider transition-all active:scale-95 cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_3px_rgba(0,0,0,0.5)]";
+    "w-full h-7 px-2 rounded-md flex items-center justify-center gap-1.5 font-mono text-[9.5px] tracking-wider transition-colors active:scale-95 cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_3px_rgba(0,0,0,0.5)]";
   const fxBtnOff =
     "bg-[#18191e] text-zinc-400 hover:text-zinc-200 hover:bg-[#24262d] border border-white/10 hover:border-white/20 font-bold";
   const fxBtnCyan =
     "bg-cyan-950/30 text-cyan-300 border border-cyan-400/60 shadow-[0_0_6px_rgba(34,211,238,0.22),inset_0_1px_0_rgba(255,255,255,0.08)] font-black";
   const fxBtnLearnSel =
-    "border-2 border-amber-400 bg-amber-950/40 text-amber-200 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse font-bold";
+    "border border-amber-400 bg-amber-950/40 text-amber-200 midi-learn-selected font-bold";
   const fxBtnLearn =
-    "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400 font-semibold";
+    "border border-amber-500/60 bg-amber-950/20 text-amber-300 midi-learn-ready hover:border-amber-400 font-semibold";
 
   // LED indicador a la izquierda del texto
   const renderLed = (on: boolean, colorClass: string, glow: string) => (
     <span
-      className={`w-1 h-1 rounded-full shrink-0 transition-all ${
+      className={`w-1 h-1 rounded-full shrink-0 transition-colors ${
         on ? `${colorClass} ${glow}` : "bg-zinc-700"
       }`}
     />
@@ -242,9 +242,9 @@ export const PerformanceBay: React.FC<PerformanceBayProps> = ({
               ? "Desactivar Arpegiador"
               : "Activar Arpegiador"
           }
-          className={`flex-1 h-full px-1.5 flex items-center justify-center gap-1.5 font-mono text-[9.5px] tracking-wider transition-all cursor-pointer border-r border-white/10 ${
+          className={`flex-1 h-full px-1.5 flex items-center justify-center gap-1.5 font-mono text-[9.5px] tracking-wider transition-colors cursor-pointer border-r border-white/10 ${
             isArpLearnSelected
-              ? "border-2 border-amber-400 bg-amber-950/40 text-amber-200 shadow-[0_0_15px_rgba(245,158,11,0.8)] animate-pulse font-bold"
+              ? "bg-amber-950/40 text-amber-200 midi-learn-selected font-bold"
               : isMidiLearnActive
               ? "bg-amber-950/20 text-amber-300 hover:bg-amber-950/40 font-semibold"
               : arpState.enabled
@@ -268,9 +268,9 @@ export const PerformanceBay: React.FC<PerformanceBayProps> = ({
               ? "Desactivar Hold / Latch"
               : "Activar Hold / Latch"
           }
-          className={`flex-1 h-full px-1.5 flex items-center justify-center gap-1.5 font-mono text-[9.5px] tracking-wider transition-all cursor-pointer border-r border-white/10 ${
+          className={`flex-1 h-full px-1.5 flex items-center justify-center gap-1.5 font-mono text-[9.5px] tracking-wider transition-colors cursor-pointer border-r border-white/10 ${
             isHoldLearnSelected
-              ? "border-2 border-amber-400 bg-amber-950/40 text-amber-200 shadow-[0_0_15px_rgba(245,158,11,0.8)] animate-pulse font-bold"
+              ? "bg-amber-950/40 text-amber-200 midi-learn-selected font-bold"
               : isMidiLearnActive
               ? "bg-amber-950/20 text-amber-300 hover:bg-amber-950/40 font-semibold"
               : arpState.hold

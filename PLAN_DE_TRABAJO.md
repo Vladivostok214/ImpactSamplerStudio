@@ -32,7 +32,8 @@ flowchart TD
     F8 --> F9["Fase 9: Motor de Arpegiador Melódico Integrado"]
     F9 --> F91["Fase 9.1: Cápsulas Noir-Tech & DSP Avanzado (DJ Filter & Tube Drive)"]
     F91 --> F92["Fase 9.2: Preparación Multiplataforma & Empaque Universal (macOS .dmg & Windows .exe)"]
-    F92 --> F10["Fase 10: Wizard Interactivo de Calibración & Perfiles Hardware Universal"]
+    F92 --> F93["Fase 9.3: Migración & Ecosistema Linux Nativo (ALSA, PipeWire & WebKitGTK)"]
+    F93 --> F10["Fase 10: Wizard Interactivo de Calibración & Perfiles Hardware Universal"]
     F10 --> F11["Fase 11: Sistema de Sesiones (.impact), Gestión de Proyectos & Exportación"]
     F11 --> F12["Fase 12: Drum Kit Creator (WAV Pool a SF2 Compiler)"]
     F12 --> F13["Fase 13: Sistema de Auto-Actualizaciones OTA (Tauri Updater)"]
@@ -466,11 +467,46 @@ flowchart TD
      - Reactividad inmediata en caliente en el modal al alternar entre dispositivos o entre WASAPI y ASIO.
   5. **Iconografía Apple & Configuración Tauri (`tauri.conf.json`) ✅ [COMPLETADO]:**
      - Generación de `src-tauri/icons/icon.icns` (1.75 MB Retina) y configuración de targets multiplataforma (`["nsis", "dmg", "app"]`) junto a parámetros ergonómicos de DMG y `minimumSystemVersion: "11.0"`.
-  6. **Preservación del Marco de Ventana Nativo 📋 [SIGUIENTE PASO]:**
+  6. **Preservación del Marco de Ventana Nativo ✅ [COMPLETADO]:**
      - Mantenimiento de `decorations: true` para que los controles de ventana de macOS no interfieran con la interfaz.
-  7. **SoundFonts y Pipeline de CI/CD (GitHub Actions):**
+  7. **SoundFonts y Pipeline de CI/CD (GitHub Actions) ✅ [COMPLETADO]:**
      - Alojamiento de los 4 SoundFonts (784 MB) en GitHub Releases con inyección por `curl`.
      - Workflow dual en GitHub Actions (`windows-latest` y `macos-latest`) compilando Universal Binary (`universal-apple-darwin`).
+     - Generación del instalador oficial Universal `.dmg` autónomo con todos los SoundFonts integrados (1.22 GB).
+
+---
+
+### Fase 9.3: Migración & Ecosistema Linux Nativo (ALSA, PipeWire & Optimizaciones WebKitGTK) ✅ [COMPLETADA]
+
+* **Objetivo:** Dotar a la aplicación de paridad operativa, soporte de empaque nativo y optimización de audio de baja latencia en entornos Linux (Ubuntu / Debian / PipeWire / ALSA) manteniendo el 100% de compatibilidad con Windows y macOS.
+* **Entregables Logrados:**
+  1. **Configuración de Empaque Linux (`tauri.conf.json`):**
+     - Inclusión oficial de targets de distribución Linux: `["nsis", "dmg", "app", "deb", "appimage"]`.
+  2. **Persistencia Multiplataforma de Preferencias de Audio:**
+     - Almacenamiento seguro de `audio_preferences.json` en `$HOME/.config/ImpactSamplerStudio/` para sistemas Linux/Unix (en conjunto con `%APPDATA%` en Windows).
+  3. **Silenciamiento FFI de Advertencias ALSA a Nivel C:**
+     - Enlace FFI con `snd_lib_error_set_handler` y handler no-op de C (`noop_alsa_error_handler`) en `engine.rs` / `main.rs` bajo directiva `#[cfg(target_os = "linux")]`.
+     - Erradicación total de ruido y avisos internos de `libasound` en consola (`/dev/dsp`, `unable to open slave`, `Found no matching channel map`, `underrun occurred`).
+  4. **Filtrado Ergonómico de Dispositivos y Nombres Humanos (`/proc/asound/cards`):**
+     - Reducción de la matriz cruda de ALSA (más de 25 combinaciones confusas como `dmix`, `dsnoop`, `surround*`, `iec958`, etc.) a un conjunto limpio de destinos reales:
+       - `default`: Predeterminado del Sistema (PipeWire / Linux).
+       - `plughw:CARD=X,DEV=0`: Conexión directa a hardware de baja latencia por cada interfaz física.
+       - `jack`: Servidor de audio JACK profesional (si está en ejecución).
+     - Parser del kernel `/proc/asound/cards` que mapea nombres comerciales amigables en el dropdown (ej. **ZOOM F3 (Hardware Directo)**, **USB Audio Interface**, **Altavoces / Auriculares Integrados**).
+  5. **Preservación Fiel de Frecuencias de Muestreo y Buffers:**
+     - Adaptación de `probeDevice` en `AudioSettingsModal.tsx` y `get_device_details` en Rust para preservar y recordar la frecuencia seleccionada por el usuario (96 kHz, 192 kHz) sin que el modal la sobreescriba al valor nominal de fábrica (44.1 kHz).
+     - Reconocimiento dinámico de hosts de audio en la UI (`ALSA (PipeWire / Linux)`, `WASAPI`, `ASIO`, `CoreAudio`) con badges informativos nativos.
+  6. **Controles OLED Rápidos Integrados en la Consola Hardware (`HardwareSkeleton.tsx`):**
+     - Menús desplegables nativos de **INST** (SoundFonts) y **PATCH** (Presets) integrados directamente en la pantalla OLED de la consola, con cierre automático al hacer clic afuera o pulsar `Escape`.
+  7. **Optimizaciones de Renderizado para WebKitGTK en Linux:**
+     - Sustitución de `WebkitMaskImage` y desenfoques pesados por capas de GPU fijas (`contain: strict`, `transform-gpu`) en `App.tsx` e `InstrumentSelectModal.tsx`.
+     - Desactivación temporal de `scroll-snap` durante el evento `wheel` para scroll horizontal fluido en el carrusel de instrumentos.
+     - Animación CSS ligera para el pulso de MIDI Learn (`midi-learn-selected`).
+     - Corrección de hover en teclas negras y gradientes de pads/pasos en el secuenciador.
+  8. **Resolución de Recursos y Carga en Caliente de Samples de Batería (.AppImage / .deb):**
+     - Corrección de la sincronización en el ciclo de vida de Tauri (`setup()`): el motor de audio recarga y emite los 8 samples de batería de fábrica (`01_Kick.wav` a `08_Perc.wav`) y el kit de batería (`Yamaha_RX7_Drums.sf2`) hacia el hilo de audio en tiempo real una vez resuelta la ruta oficial de recursos del bundle empaquetado.
+     - Detección multinivel de rutas de recursos en Linux en `get_samples_dir()` y `get_soundfonts_dir()` (`/usr/lib/ImpactSampler Studio/` y puntos de montaje de AppImage `/tmp/.mount_XXXX/usr/lib/`).
+     - Cobertura de pruebas unitarias automatizadas (`test_reload_factory_assets_populates_all_pads`).
 
 ---
 
@@ -573,15 +609,13 @@ flowchart TD
 ---
 
 ## 3. Estado Actual del Proyecto y Próximo Hito
-**Fase 9.2: Preparación Multiplataforma, Motor de Dispositivos de Audio & Pipeline de Empaque Universal (100% COMPLETADA ✅):**
-* **Paso 1:** Motor de Audio Multiplataforma, Hot-Swap atómico, ASIO SDK, persistencia de preferencias de audio y telemetría en vivo con latencia real completados.
-* **Paso 2:** Iconografía Apple Retina (`icon.icns`), configuración multiplataforma en `tauri.conf.json` y layout ergonómico del DMG completados.
-* **Paso 3:** Adaptabilidad de Ventana macOS (`decorations: true`), reingeniería ergonómica en ancho 1080px (cinta superior del secuenciador y desahogo de dock de transporte), visibilidad instantánea y validación limpia con `cargo check` y `npm run build` completados.
-* **Paso 4:** Infraestructura de Descarga de SoundFonts para CI/CD completada (Release oficial `soundfonts-v1.0.0` con 4 `.sf2`, scripts PowerShell/Bash y validación SHA256 verificada al 100%).
-* **Paso 5:** Workflow de GitHub Actions para macOS Universal DMG bajo demanda completado (`.github/workflows/build-macos.yml` con `workflow_dispatch`, targets duales `aarch64` y `x86_64` y publicación de artefacto DMG).
-* **Paso 6:** Prueba Piloto de Compilación en la Nube completada con éxito en GitHub Actions (Run ID `39004878743`), generando el instalador oficial Universal `.dmg` autónomo con todos los SoundFonts de fábrica integrados (1.22 GB).
+**Fase 9.3: Migración & Ecosistema Linux Nativo (100% COMPLETADA ✅):**
+* **Triple Plataforma:** Soporte nativo verificado en Windows (.exe / ASIO / WASAPI), macOS (.dmg / CoreAudio) y Linux (.deb / AppImage / ALSA / PipeWire).
+* **Hardware Externo de Alta Fidelidad:** Funcionamiento verificado con interfaz profesional Zoom F3 en conexión directa a 96 kHz / 32-bit float con latencia ultra-baja y nombres amigables en UI.
+* **Ergonomía de Consola:** Selectores OLED rápidos (INST / PATCH) integrados en hardware y preservación fiel de frecuencias de muestreo y buffers en el modal de configuración.
+* **Rendimiento Gráfico:** Interfaz fluida y optimizada sobre WebKitGTK con capas GPU aisladas.
 
 **Siguiente Hito de Desarrollo:**
-La aplicación ahora cuenta con soporte completo y verificado para Windows y macOS. El siguiente paso en la hoja de ruta es la **Fase 10: Suite de Efectos DSP de Estudio & Enrutamiento Maestro** (o la fase que el usuario decida priorizar).
+La aplicación cuenta ahora con soporte completo, probado y verificado en **Windows, macOS y Linux**. El siguiente paso en la hoja de ruta es la **Fase 10: Wizard Interactivo de Calibración & Perfiles de Hardware Universal** (o la fase que el usuario decida priorizar).
 
 

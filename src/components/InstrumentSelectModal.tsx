@@ -189,48 +189,67 @@ export const InstrumentSelectModal: React.FC<InstrumentSelectModalProps> = ({
     const el = carouselRef.current;
     if (!el) return;
 
+    let snapTimeout: number | null = null;
+
     const onWheelHandler = (e: WheelEvent) => {
       // Si la rueda es vertical o diagonal, convertir a desplazamiento horizontal
       const delta = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
       if (delta !== 0) {
         e.preventDefault();
-        el.scrollBy({
-          left: delta * 1.5,
-          behavior: "auto",
-        });
+        // Desactivar temporalmente scroll-snap para evitar pelea de frames en WebKitGTK
+        el.style.scrollSnapType = "none";
+        el.style.scrollBehavior = "auto";
+        el.scrollLeft += delta * 1.35;
         checkScrollBounds();
+
+        if (snapTimeout !== null) {
+          window.clearTimeout(snapTimeout);
+        }
+        snapTimeout = window.setTimeout(() => {
+          if (el) {
+            el.style.scrollBehavior = "";
+            el.style.scrollSnapType = "";
+          }
+        }, 160);
       }
     };
 
     el.addEventListener("wheel", onWheelHandler, { passive: false });
-    return () => el.removeEventListener("wheel", onWheelHandler);
+    return () => {
+      el.removeEventListener("wheel", onWheelHandler);
+      if (snapTimeout !== null) {
+        window.clearTimeout(snapTimeout);
+      }
+    };
   }, [isOpen, availableSoundfonts.length]);
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-[#040406] text-white flex flex-col select-none animate-in fade-in duration-300 ease-out overflow-hidden">
-      {/* Fondo de Estudio Inmersivo: Micro-malla acústica y Spotlight Cenital */}
-      <div className="absolute inset-0 pointer-events-none z-0">
+    <div className="fixed inset-0 z-50 bg-[#040406] text-white flex flex-col select-none overflow-hidden isolate">
+      {/* Fondo de Estudio Inmersivo: Micro-malla acústica y Spotlight Cenital (aislado en capa GPU fija) */}
+      <div
+        className="absolute inset-0 pointer-events-none z-0 transform-gpu"
+        style={{ contain: "strict", backfaceVisibility: "hidden" }}
+      >
         <div
           className="absolute inset-0"
           style={{
-            backgroundImage: "radial-gradient(circle, rgba(255, 255, 255, 0.12) 1.2px, transparent 1.2px)",
+            backgroundImage: "radial-gradient(circle, rgba(255, 255, 255, 0.11) 1.2px, transparent 1.2px)",
             backgroundSize: "28px 28px",
-            maskImage: "radial-gradient(ellipse 90% 80% at 50% 50%, black 50%, transparent 95%)",
-            WebkitMaskImage: "radial-gradient(ellipse 90% 80% at 50% 50%, black 50%, transparent 95%)",
           }}
         />
         <div
           className="absolute inset-0"
           style={{
-            background: "radial-gradient(ellipse 90% 60% at 50% 0%, rgba(255, 255, 255, 0.08) 0%, transparent 70%)",
+            background:
+              "radial-gradient(ellipse 90% 80% at 50% 50%, transparent 45%, #040406 96%), radial-gradient(ellipse 90% 60% at 50% 0%, rgba(255, 255, 255, 0.08) 0%, transparent 70%)",
           }}
         />
       </div>
 
       {/* Encabezado Superior de Pantalla Completa */}
-      <header className="relative z-10 px-6 sm:px-10 py-5 flex items-center justify-between border-b border-white/[0.08] bg-black/60 backdrop-blur-xl shrink-0">
+      <header className="relative z-10 px-6 sm:px-10 py-5 flex items-center justify-between border-b border-white/[0.08] bg-[#060609]/95 shrink-0 transform-gpu">
         <div className="flex items-center gap-3.5">
           <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_10px_#10b981]" />
           <div>
@@ -256,7 +275,7 @@ export const InstrumentSelectModal: React.FC<InstrumentSelectModalProps> = ({
                 e.currentTarget.blur();
                 onClose();
               }}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-white/[0.1] bg-white/[0.05] hover:bg-white/[0.12] hover:border-white/20 text-zinc-300 hover:text-white text-xs font-mono transition cursor-pointer shadow-sm"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-white/[0.1] bg-white/[0.05] hover:bg-white/[0.12] hover:border-white/20 text-zinc-300 hover:text-white text-xs font-mono transition-colors cursor-pointer shadow-sm"
               title="Cerrar galería (ESC)"
             >
               <span>ESC</span>
@@ -282,7 +301,7 @@ export const InstrumentSelectModal: React.FC<InstrumentSelectModalProps> = ({
             type="button"
             onClick={() => scrollByAmount("left")}
             disabled={!canScrollLeft}
-            className={`absolute -left-3 sm:-left-5 z-30 w-11 h-11 rounded-full border border-white/[0.12] bg-black/85 backdrop-blur-md flex items-center justify-center text-zinc-300 hover:text-white hover:border-emerald-400/50 hover:bg-zinc-900 transition-all shadow-[0_4px_20px_rgba(0,0,0,0.8)] cursor-pointer ${
+            className={`absolute -left-3 sm:-left-5 z-30 w-11 h-11 rounded-full border border-white/[0.12] bg-zinc-950/95 flex items-center justify-center text-zinc-300 hover:text-white hover:border-emerald-400/50 hover:bg-zinc-900 transition-[transform,opacity,border-color,background-color,color] duration-200 transform-gpu shadow-[0_4px_20px_rgba(0,0,0,0.8)] cursor-pointer ${
               !canScrollLeft ? "opacity-0 pointer-events-none" : "opacity-90 hover:opacity-100 hover:scale-105"
             }`}
             title="Anterior (Flecha izquierda)"
@@ -294,7 +313,7 @@ export const InstrumentSelectModal: React.FC<InstrumentSelectModalProps> = ({
           <div
             ref={carouselRef}
             onScroll={checkScrollBounds}
-            className="w-full flex items-center gap-5 sm:gap-6 overflow-x-auto py-8 px-6 sm:px-12 no-scrollbar scroll-smooth snap-x snap-mandatory"
+            className="w-full flex items-center gap-5 sm:gap-6 overflow-x-auto py-8 px-6 sm:px-12 no-scrollbar scroll-smooth snap-x snap-proximity"
             style={{
               scrollbarWidth: "none",
               msOverflowStyle: "none",
@@ -303,17 +322,18 @@ export const InstrumentSelectModal: React.FC<InstrumentSelectModalProps> = ({
             {/* 1. Tarjeta Importar SoundFont (.sf2) */}
             <div
               onClick={handleTriggerImport}
-              className={`group shrink-0 snap-center relative w-64 sm:w-72 h-[340px] rounded-2xl border-2 border-dashed transition-all duration-300 flex flex-col items-center justify-center p-6 text-center cursor-pointer overflow-hidden ${
+              style={{ backfaceVisibility: "hidden" }}
+              className={`group shrink-0 snap-center relative w-64 sm:w-72 h-[340px] rounded-2xl border-2 border-dashed transition-[transform,border-color,background-color] duration-200 ease-out transform-gpu will-change-transform flex flex-col items-center justify-center p-6 text-center cursor-pointer overflow-hidden ${
                 isImporting
                   ? "border-emerald-500/70 bg-emerald-950/20 shadow-[0_0_35px_rgba(16,185,129,0.25)]"
                   : "border-white/[0.14] hover:border-emerald-400/60 bg-black/50 hover:bg-black/70 hover:scale-[1.02]"
               }`}
             >
               {/* Resplandor reactivo verde esmeralda */}
-              <div className="absolute inset-0 pointer-events-none opacity-0 group-hover:opacity-40 transition-opacity duration-500 bg-[radial-gradient(circle_at_50%_50%,rgba(16,185,129,0.35)_0%,transparent_70%)]" />
+              <div className="absolute inset-0 pointer-events-none opacity-0 group-hover:opacity-40 transition-opacity duration-300 transform-gpu bg-[radial-gradient(circle_at_50%_50%,rgba(16,185,129,0.35)_0%,transparent_70%)]" />
 
               <div className="relative z-10 flex flex-col items-center">
-                <div className="w-16 h-16 rounded-2xl bg-zinc-900/90 border border-white/[0.1] flex items-center justify-center mb-4 shadow-[0_10px_25px_rgba(0,0,0,0.7)] group-hover:border-emerald-400/50 group-hover:scale-110 transition-all duration-300">
+                <div className="w-16 h-16 rounded-2xl bg-zinc-900/90 border border-white/[0.1] flex items-center justify-center mb-4 shadow-[0_10px_25px_rgba(0,0,0,0.7)] group-hover:border-emerald-400/50 group-hover:scale-110 transition-[transform,border-color] duration-200 transform-gpu">
                   {isImporting ? (
                     <UploadCloud size={28} className="text-emerald-400 animate-pulse" />
                   ) : (
@@ -344,7 +364,8 @@ export const InstrumentSelectModal: React.FC<InstrumentSelectModalProps> = ({
                 <div
                   key={sf.filename}
                   onClick={() => !isLoading && !isDeleting && handleSelect(sf)}
-                  className={`group shrink-0 snap-center relative w-64 sm:w-72 h-[340px] rounded-2xl border overflow-hidden transition-all duration-300 flex flex-col justify-between p-5 cursor-pointer ${
+                  style={{ backfaceVisibility: "hidden", contain: "layout paint" }}
+                  className={`group shrink-0 snap-center relative w-64 sm:w-72 h-[340px] rounded-2xl border overflow-hidden transition-[transform,border-color,background-color] duration-200 ease-out transform-gpu will-change-transform flex flex-col justify-between p-5 cursor-pointer ${
                     isSelected
                       ? `${config.accentBorder} bg-black/95 scale-[1.02]`
                       : "border-white/[0.09] bg-black/70 hover:border-white/35 hover:bg-black/85 hover:scale-[1.01]"
@@ -352,7 +373,7 @@ export const InstrumentSelectModal: React.FC<InstrumentSelectModalProps> = ({
                 >
                   {/* Underglow reactivo */}
                   <div
-                    className={`absolute inset-0 pointer-events-none transition-opacity duration-500 z-0 ${
+                    className={`absolute inset-0 pointer-events-none transition-opacity duration-300 transform-gpu z-0 ${
                       isSelected ? "opacity-80" : "opacity-0 group-hover:opacity-45"
                     }`}
                     style={{
@@ -363,15 +384,26 @@ export const InstrumentSelectModal: React.FC<InstrumentSelectModalProps> = ({
                   {/* Imagen o Showcase del Instrumento */}
                   <div className="absolute top-3 inset-x-0 h-48 flex items-center justify-center p-2 pointer-events-none z-10">
                     {config.imgSrc ? (
-                      <img
-                        src={config.imgSrc}
-                        alt={config.title}
-                        loading="eager"
-                        decoding="async"
-                        className="w-full h-full object-contain filter drop-shadow-[0_14px_28px_rgba(0,0,0,0.95)] group-hover:scale-106 transition-transform duration-300"
-                      />
+                      <div className="relative w-full h-full flex items-center justify-center transform-gpu will-change-transform group-hover:scale-105 transition-transform duration-200 ease-out">
+                        {/* Sombra ambiental pre-calculada por gradiente (evita recalcular drop-shadow gaussiano sobre alfa en cada frame en WebKitGTK) */}
+                        <div
+                          className="absolute inset-x-6 bottom-2 h-10 rounded-full pointer-events-none"
+                          style={{
+                            background: "radial-gradient(ellipse at center, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.5) 50%, transparent 78%)",
+                          }}
+                        />
+                        <img
+                          src={config.imgSrc}
+                          alt={config.title}
+                          loading="eager"
+                          decoding="async"
+                          draggable={false}
+                          style={{ backfaceVisibility: "hidden" }}
+                          className="relative z-10 w-full h-full object-contain transform-gpu"
+                        />
+                      </div>
                     ) : (
-                      <div className="w-24 h-24 rounded-2xl bg-zinc-900/90 border border-emerald-500/30 flex flex-col items-center justify-center p-3 shadow-[0_12px_24px_rgba(0,0,0,0.8)] group-hover:border-emerald-400 group-hover:scale-105 transition-all">
+                      <div className="w-24 h-24 rounded-2xl bg-zinc-900/90 border border-emerald-500/30 flex flex-col items-center justify-center p-3 shadow-[0_12px_24px_rgba(0,0,0,0.8)] group-hover:border-emerald-400 group-hover:scale-105 transition-[transform,border-color] duration-200 transform-gpu">
                         <Music size={38} className="text-emerald-400/90 mb-1" />
                         <span className="text-[9px] font-mono text-emerald-300 font-bold uppercase tracking-wider">
                           USER SF2
@@ -400,13 +432,13 @@ export const InstrumentSelectModal: React.FC<InstrumentSelectModalProps> = ({
                           onClick={(e) => handleDelete(e, sf)}
                           disabled={isDeleting || isCurrent}
                           title={isCurrent ? "No se puede eliminar mientras está en uso" : "Eliminar SoundFont"}
-                          className="p-1 rounded-md text-zinc-500 hover:text-rose-400 hover:bg-rose-950/40 transition disabled:opacity-30 disabled:hover:text-zinc-500 cursor-pointer"
+                          className="p-1 rounded-md text-zinc-500 hover:text-rose-400 hover:bg-rose-950/40 transition-colors disabled:opacity-30 disabled:hover:text-zinc-500 cursor-pointer"
                         >
                           <Trash2 size={13} />
                         </button>
                       )}
                       {isCurrent && (
-                        <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-black/80 border border-emerald-500/50 backdrop-blur-md text-[9.5px] font-mono text-emerald-300 font-bold tracking-wider shadow-[0_0_12px_rgba(16,185,129,0.35)]">
+                        <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-zinc-950/90 border border-emerald-500/50 text-[9.5px] font-mono text-emerald-300 font-bold tracking-wider shadow-[0_0_12px_rgba(16,185,129,0.35)]">
                           <span className={`w-1.5 h-1.5 rounded-full ${config.activeLed}`} />
                           ACTIVO
                         </span>
@@ -416,10 +448,17 @@ export const InstrumentSelectModal: React.FC<InstrumentSelectModalProps> = ({
 
                   {/* Pie de tarjeta con info y acción */}
                   <div className="relative z-30 flex flex-col justify-end">
-                    <h3 className="text-base font-extrabold text-white tracking-tight drop-shadow-[0_2px_4px_rgba(0,0,0,0.95)] truncate" title={config.title}>
+                    <h3
+                      className="text-base font-extrabold text-white tracking-tight truncate"
+                      style={{ textShadow: "0 2px 4px rgba(0,0,0,0.95)" }}
+                      title={config.title}
+                    >
                       {config.title}
                     </h3>
-                    <p className="text-[11px] font-mono text-zinc-300/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.95)] truncate mt-0.5 font-medium">
+                    <p
+                      className="text-[11px] font-mono text-zinc-300/90 truncate mt-0.5 font-medium"
+                      style={{ textShadow: "0 1px 2px rgba(0,0,0,0.95)" }}
+                    >
                       {config.subtitle}
                     </p>
 
@@ -427,11 +466,12 @@ export const InstrumentSelectModal: React.FC<InstrumentSelectModalProps> = ({
                       <span
                         className={
                           isCurrent
-                            ? "text-emerald-400 flex items-center gap-1.5 font-bold drop-shadow-[0_0_8px_rgba(16,185,129,0.4)]"
+                            ? "text-emerald-400 flex items-center gap-1.5 font-bold"
                             : isSelected
                             ? "text-zinc-100 font-bold"
-                            : "text-zinc-300 group-hover:text-white font-medium"
+                            : "text-zinc-300 group-hover:text-white font-medium transition-colors"
                         }
+                        style={isCurrent ? { textShadow: "0 0 8px rgba(16,185,129,0.4)" } : undefined}
                       >
                         {isCurrent ? (
                           <>
@@ -443,7 +483,7 @@ export const InstrumentSelectModal: React.FC<InstrumentSelectModalProps> = ({
                         )}
                       </span>
                       {!isCurrent && (
-                        <ArrowRight size={13} className="text-zinc-400 group-hover:text-white group-hover:translate-x-1 transition-all" />
+                        <ArrowRight size={13} className="text-zinc-400 group-hover:text-white group-hover:translate-x-1 transition-[transform,color] duration-200 transform-gpu" />
                       )}
                     </div>
                   </div>
@@ -460,7 +500,7 @@ export const InstrumentSelectModal: React.FC<InstrumentSelectModalProps> = ({
             type="button"
             onClick={() => scrollByAmount("right")}
             disabled={!canScrollRight}
-            className={`absolute -right-3 sm:-right-5 z-30 w-11 h-11 rounded-full border border-white/[0.12] bg-black/85 backdrop-blur-md flex items-center justify-center text-zinc-300 hover:text-white hover:border-emerald-400/50 hover:bg-zinc-900 transition-all shadow-[0_4px_20px_rgba(0,0,0,0.8)] cursor-pointer ${
+            className={`absolute -right-3 sm:-right-5 z-30 w-11 h-11 rounded-full border border-white/[0.12] bg-zinc-950/95 flex items-center justify-center text-zinc-300 hover:text-white hover:border-emerald-400/50 hover:bg-zinc-900 transition-[transform,opacity,border-color,background-color,color] duration-200 transform-gpu shadow-[0_4px_20px_rgba(0,0,0,0.8)] cursor-pointer ${
               !canScrollRight ? "opacity-0 pointer-events-none" : "opacity-90 hover:opacity-100 hover:scale-105"
             }`}
             title="Siguiente (Flecha derecha)"

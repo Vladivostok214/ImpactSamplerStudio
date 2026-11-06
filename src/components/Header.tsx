@@ -116,19 +116,19 @@ export const Header: React.FC<HeaderProps> = ({
   };
 
   return (
-    <header className="h-14 bg-[#08080a]/75 backdrop-blur-md border-b border-white/[0.08] px-4 md:px-6 flex items-center justify-center z-30 shadow-[0_4px_30px_rgba(0,0,0,0.5),inset_0_1px_0_0_rgba(255,255,255,0.06)] w-full transition-all">
+    <header className="h-14 bg-[#08080a]/95 border-b border-white/[0.08] px-4 md:px-6 flex items-center justify-center z-30 shadow-[0_4px_30px_rgba(0,0,0,0.5),inset_0_1px_0_0_rgba(255,255,255,0.06)] w-full transform-gpu">
       <div className="studio-console flex items-center justify-between">
         {/* Lado Izquierdo: Brand Logo + Monitores Hardware Inline */}
         <div className="flex items-center space-x-3 sm:space-x-4">
           <button
             type="button"
             onClick={onOpenInstrumentSelect}
-            className="text-sm font-black tracking-widest text-white flex items-center select-none hover:opacity-90 transition cursor-pointer group focus:outline-none shrink-0"
+            className="text-sm font-black tracking-widest text-white flex items-center select-none hover:opacity-90 transition-opacity cursor-pointer group focus:outline-none shrink-0"
             style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif' }}
             title="Instrumentos"
           >
             <h1>
-              IMPACT<span className="text-emerald-400 group-hover:drop-shadow-[0_0_10px_rgba(16,185,129,0.7)] transition-all">SAMPLER</span>
+              IMPACT<span className="text-emerald-400 transition-colors" style={{ textShadow: "0 0 10px rgba(16, 185, 129, 0.45)" }}>SAMPLER</span>
             </h1>
           </button>
 
@@ -218,33 +218,30 @@ export const Header: React.FC<HeaderProps> = ({
               e.currentTarget.blur();
               onToggleQwerty?.();
             }}
-            className={`p-2 rounded-xl border transition flex items-center justify-center cursor-pointer select-none ${
+            className={`p-2 rounded-xl border transition-colors flex items-center justify-center cursor-pointer select-none ${
               qwertyEnabled
                 ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/50 shadow-[0_0_12px_rgba(16,185,129,0.3)]"
                 : "bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-zinc-200 border-white/[0.08]"
             }`}
             title="Teclado de computadora QWERTY (ON/OFF)"
           >
-            <Keyboard
-              size={16}
-              className={qwertyEnabled ? "drop-shadow-[0_0_6px_rgba(52,211,153,0.8)]" : ""}
-            />
+            <Keyboard size={16} />
           </button>
 
           {/* MIDI Learn Toggle Button */}
           <button
             type="button"
             onClick={onToggleMidiLearn}
-            className={`px-2.5 py-1.5 rounded-xl border transition flex items-center gap-1.5 cursor-pointer text-xs font-mono select-none ${
+            className={`px-2.5 py-1.5 rounded-xl border transition-colors flex items-center gap-1.5 cursor-pointer text-xs font-mono select-none ${
               isMidiLearnActive
-                ? "bg-amber-500/20 text-amber-300 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.5)] font-bold"
+                ? "bg-amber-500/20 text-amber-300 border-amber-400 shadow-[0_0_14px_rgba(245,158,11,0.45)] font-bold"
                 : "bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border-white/[0.08]"
             }`}
             title={isMidiLearnActive ? "Desactivar MIDI Learn" : "MIDI Learn"}
           >
             <span
-              className={`w-2 h-2 rounded-full transition-all ${
-                isMidiLearnActive ? "bg-amber-400 shadow-[0_0_8px_#f59e0b] animate-pulse" : "bg-zinc-600"
+              className={`w-2 h-2 rounded-full transition-colors ${
+                isMidiLearnActive ? "bg-amber-400 shadow-[0_0_8px_#f59e0b]" : "bg-zinc-600"
               }`}
             />
             <span className="text-[11px] font-mono tracking-wider font-semibold">

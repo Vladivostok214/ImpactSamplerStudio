@@ -206,82 +206,82 @@ const DRUM_KIT_NAMES = [
 const PAD_ROLE_THEMES = [
   // Pad 1 (Kick) - Ámbar Neón
   {
-    border: "border-amber-500/35",
-    bg: "bg-gradient-to-b from-[#1c1710] via-[#12100d] to-[#0a0907]",
+    border: "border-amber-500/35 hover:border-amber-400/70",
+    bg: "bg-gradient-to-b from-[#1c1710] via-[#12100d] to-[#0a0907] hover:from-[#261f15] hover:via-[#191510] hover:to-[#0f0d0a]",
     text: "text-amber-300",
     shadow: "shadow-[0_0_10px_rgba(245,158,11,0.2),inset_0_1px_1px_rgba(255,255,255,0.08)]",
-    selected: "border-2 border-amber-400 text-amber-100 shadow-[0_0_16px_rgba(245,158,11,0.6),inset_0_1px_1px_rgba(255,255,255,0.25)] font-black",
-    hit: "bg-gradient-to-b from-amber-400 via-amber-500 to-amber-600 text-black border-2 border-white shadow-[0_0_24px_rgba(245,158,11,1),inset_0_0_10px_rgba(255,255,255,0.8)] font-black scale-[0.98]",
+    selected: "border-amber-400 text-amber-100 shadow-[0_0_14px_rgba(245,158,11,0.5),inset_0_0_0_1px_rgba(251,191,36,0.55)] font-black",
+    hit: "bg-gradient-to-b from-amber-400 via-amber-500 to-amber-600 text-black border-white shadow-[0_0_20px_rgba(245,158,11,0.9),inset_0_0_0_1px_#ffffff] font-black scale-[0.98]",
     led: "#f59e0b",
   },
   // Pad 2 (Snare) - Esmeralda
   {
-    border: "border-emerald-500/35",
-    bg: "bg-gradient-to-b from-[#101c15] via-[#0d130f] to-[#070b08]",
+    border: "border-emerald-500/35 hover:border-emerald-400/70",
+    bg: "bg-gradient-to-b from-[#101c15] via-[#0d130f] to-[#070b08] hover:from-[#16271d] hover:via-[#111a14] hover:to-[#0a100c]",
     text: "text-emerald-300",
     shadow: "shadow-[0_0_10px_rgba(16,185,129,0.2),inset_0_1px_1px_rgba(255,255,255,0.08)]",
-    selected: "border-2 border-emerald-400 text-emerald-100 shadow-[0_0_16px_rgba(16,185,129,0.6),inset_0_1px_1px_rgba(255,255,255,0.25)] font-black",
-    hit: "bg-gradient-to-b from-emerald-400 via-emerald-500 to-emerald-600 text-black border-2 border-white shadow-[0_0_24px_rgba(16,185,129,1),inset_0_0_10px_rgba(255,255,255,0.8)] font-black scale-[0.98]",
+    selected: "border-emerald-400 text-emerald-100 shadow-[0_0_14px_rgba(16,185,129,0.5),inset_0_0_0_1px_rgba(52,211,153,0.55)] font-black",
+    hit: "bg-gradient-to-b from-emerald-400 via-emerald-500 to-emerald-600 text-black border-white shadow-[0_0_20px_rgba(16,185,129,0.9),inset_0_0_0_1px_#ffffff] font-black scale-[0.98]",
     led: "#10b981",
   },
   // Pad 3 (Clap) - Teal
   {
-    border: "border-teal-500/35",
-    bg: "bg-gradient-to-b from-[#101c1a] via-[#0d1312] to-[#070b0a]",
+    border: "border-teal-500/35 hover:border-teal-400/70",
+    bg: "bg-gradient-to-b from-[#101c1a] via-[#0d1312] to-[#070b0a] hover:from-[#152623] hover:via-[#111918] hover:to-[#0a100f]",
     text: "text-teal-300",
     shadow: "shadow-[0_0_10px_rgba(20,184,166,0.2),inset_0_1px_1px_rgba(255,255,255,0.08)]",
-    selected: "border-2 border-teal-400 text-teal-100 shadow-[0_0_16px_rgba(20,184,166,0.6),inset_0_1px_1px_rgba(255,255,255,0.25)] font-black",
-    hit: "bg-gradient-to-b from-teal-400 via-teal-500 to-teal-600 text-black border-2 border-white shadow-[0_0_24px_rgba(20,184,166,1),inset_0_0_10px_rgba(255,255,255,0.8)] font-black scale-[0.98]",
+    selected: "border-teal-400 text-teal-100 shadow-[0_0_14px_rgba(20,184,166,0.5),inset_0_0_0_1px_rgba(45,212,191,0.55)] font-black",
+    hit: "bg-gradient-to-b from-teal-400 via-teal-500 to-teal-600 text-black border-white shadow-[0_0_20px_rgba(20,184,166,0.9),inset_0_0_0_1px_#ffffff] font-black scale-[0.98]",
     led: "#14b8a6",
   },
   // Pad 4 (Closed Hat) - Cyan
   {
-    border: "border-cyan-500/35",
-    bg: "bg-gradient-to-b from-[#0e1a1e] via-[#0c1215] to-[#060a0c]",
+    border: "border-cyan-500/35 hover:border-cyan-400/70",
+    bg: "bg-gradient-to-b from-[#0e1a1e] via-[#0c1215] to-[#060a0c] hover:from-[#14252b] hover:via-[#10191d] hover:to-[#090f12]",
     text: "text-cyan-300",
     shadow: "shadow-[0_0_10px_rgba(6,182,212,0.2),inset_0_1px_1px_rgba(255,255,255,0.08)]",
-    selected: "border-2 border-cyan-400 text-cyan-100 shadow-[0_0_16px_rgba(6,182,212,0.6),inset_0_1px_1px_rgba(255,255,255,0.25)] font-black",
-    hit: "bg-gradient-to-b from-cyan-400 via-cyan-500 to-cyan-600 text-black border-2 border-white shadow-[0_0_24px_rgba(6,182,212,1),inset_0_0_10px_rgba(255,255,255,0.8)] font-black scale-[0.98]",
+    selected: "border-cyan-400 text-cyan-100 shadow-[0_0_14px_rgba(6,182,212,0.5),inset_0_0_0_1px_rgba(34,211,238,0.55)] font-black",
+    hit: "bg-gradient-to-b from-cyan-400 via-cyan-500 to-cyan-600 text-black border-white shadow-[0_0_20px_rgba(6,182,212,0.9),inset_0_0_0_1px_#ffffff] font-black scale-[0.98]",
     led: "#06b6d4",
   },
   // Pad 5 (Open Hat) - Sky
   {
-    border: "border-sky-500/35",
-    bg: "bg-gradient-to-b from-[#0e1820] via-[#0c1117] to-[#06090d]",
+    border: "border-sky-500/35 hover:border-sky-400/70",
+    bg: "bg-gradient-to-b from-[#0e1820] via-[#0c1117] to-[#06090d] hover:from-[#14222e] hover:via-[#101820] hover:to-[#090d14]",
     text: "text-sky-300",
     shadow: "shadow-[0_0_10px_rgba(14,165,233,0.2),inset_0_1px_1px_rgba(255,255,255,0.08)]",
-    selected: "border-2 border-sky-400 text-sky-100 shadow-[0_0_16px_rgba(14,165,233,0.6),inset_0_1px_1px_rgba(255,255,255,0.25)] font-black",
-    hit: "bg-gradient-to-b from-sky-400 via-sky-500 to-sky-600 text-black border-2 border-white shadow-[0_0_24px_rgba(14,165,233,1),inset_0_0_10px_rgba(255,255,255,0.8)] font-black scale-[0.98]",
+    selected: "border-sky-400 text-sky-100 shadow-[0_0_14px_rgba(14,165,233,0.5),inset_0_0_0_1px_rgba(56,189,248,0.55)] font-black",
+    hit: "bg-gradient-to-b from-sky-400 via-sky-500 to-sky-600 text-black border-white shadow-[0_0_20px_rgba(14,165,233,0.9),inset_0_0_0_1px_#ffffff] font-black scale-[0.98]",
     led: "#0ea5e9",
   },
   // Pad 6 (Low Tom) - Orange
   {
-    border: "border-orange-500/35",
-    bg: "bg-gradient-to-b from-[#1e150f] via-[#140e0a] to-[#0b0805]",
+    border: "border-orange-500/35 hover:border-orange-400/70",
+    bg: "bg-gradient-to-b from-[#1e150f] via-[#140e0a] to-[#0b0805] hover:from-[#291d14] hover:via-[#1c130e] hover:to-[#110c08]",
     text: "text-orange-300",
     shadow: "shadow-[0_0_10px_rgba(249,115,22,0.2),inset_0_1px_1px_rgba(255,255,255,0.08)]",
-    selected: "border-2 border-orange-400 text-orange-100 shadow-[0_0_16px_rgba(249,115,22,0.6),inset_0_1px_1px_rgba(255,255,255,0.25)] font-black",
-    hit: "bg-gradient-to-b from-orange-400 via-orange-500 to-orange-600 text-black border-2 border-white shadow-[0_0_24px_rgba(249,115,22,1),inset_0_0_10px_rgba(255,255,255,0.8)] font-black scale-[0.98]",
+    selected: "border-orange-400 text-orange-100 shadow-[0_0_14px_rgba(249,115,22,0.5),inset_0_0_0_1px_rgba(251,146,60,0.55)] font-black",
+    hit: "bg-gradient-to-b from-orange-400 via-orange-500 to-orange-600 text-black border-white shadow-[0_0_20px_rgba(249,115,22,0.9),inset_0_0_0_1px_#ffffff] font-black scale-[0.98]",
     led: "#f97316",
   },
   // Pad 7 (High Tom) - Rose
   {
-    border: "border-rose-500/35",
-    bg: "bg-gradient-to-b from-[#1e1015] via-[#140b0e] to-[#0b0607]",
+    border: "border-rose-500/35 hover:border-rose-400/70",
+    bg: "bg-gradient-to-b from-[#1e1015] via-[#140b0e] to-[#0b0607] hover:from-[#29161d] hover:via-[#1c0f13] hover:to-[#11090b]",
     text: "text-rose-300",
     shadow: "shadow-[0_0_10px_rgba(244,63,94,0.2),inset_0_1px_1px_rgba(255,255,255,0.08)]",
-    selected: "border-2 border-rose-400 text-rose-100 shadow-[0_0_16px_rgba(244,63,94,0.6),inset_0_1px_1px_rgba(255,255,255,0.25)] font-black",
-    hit: "bg-gradient-to-b from-rose-400 via-rose-500 to-rose-600 text-black border-2 border-white shadow-[0_0_24px_rgba(244,63,94,1),inset_0_0_10px_rgba(255,255,255,0.8)] font-black scale-[0.98]",
+    selected: "border-rose-400 text-rose-100 shadow-[0_0_14px_rgba(244,63,94,0.5),inset_0_0_0_1px_rgba(251,113,133,0.55)] font-black",
+    hit: "bg-gradient-to-b from-rose-400 via-rose-500 to-rose-600 text-black border-white shadow-[0_0_20px_rgba(244,63,94,0.9),inset_0_0_0_1px_#ffffff] font-black scale-[0.98]",
     led: "#f43f5e",
   },
   // Pad 8 (Crash) - Purple
   {
-    border: "border-purple-500/35",
-    bg: "bg-gradient-to-b from-[#191020] via-[#110b16] to-[#09060c]",
+    border: "border-purple-500/35 hover:border-purple-400/70",
+    bg: "bg-gradient-to-b from-[#191020] via-[#110b16] to-[#09060c] hover:from-[#24172e] hover:via-[#180f1f] hover:to-[#0e0913]",
     text: "text-purple-300",
     shadow: "shadow-[0_0_10px_rgba(168,85,247,0.2),inset_0_1px_1px_rgba(255,255,255,0.08)]",
-    selected: "border-2 border-purple-400 text-purple-100 shadow-[0_0_16px_rgba(168,85,247,0.6),inset_0_1px_1px_rgba(255,255,255,0.25)] font-black",
-    hit: "bg-gradient-to-b from-purple-400 via-purple-500 to-purple-600 text-black border-2 border-white shadow-[0_0_24px_rgba(168,85,247,1),inset_0_0_10px_rgba(255,255,255,0.8)] font-black scale-[0.98]",
+    selected: "border-purple-400 text-purple-100 shadow-[0_0_14px_rgba(168,85,247,0.5),inset_0_0_0_1px_rgba(192,132,252,0.55)] font-black",
+    hit: "bg-gradient-to-b from-purple-400 via-purple-500 to-purple-600 text-black border-white shadow-[0_0_20px_rgba(168,85,247,0.9),inset_0_0_0_1px_#ffffff] font-black scale-[0.98]",
     led: "#a855f7",
   },
 ];
@@ -531,7 +531,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
     <div className="w-full flex flex-col bg-[#050507] border-t border-white/[0.08] select-none relative z-40">
       {/* 1. Bahía de Secuenciación Rítmica TR-Style (Visible únicamente en modo SEQ) */}
       {isSeqOpen && (
-        <div className="p-3 sm:p-3.5 flex flex-col gap-1.5 animate-in fade-in duration-150">
+        <div className="p-3 sm:p-3.5 flex flex-col gap-1.5" style={{ contain: "layout paint" }}>
           {/* Cinta Superior de Control del Secuenciador (Kit, Banco, Grilla, Páginas, Cuantización y Edición) */}
           <div className="flex items-center justify-between pb-2 mb-1 border-b border-white/[0.08] flex-nowrap gap-2 text-[10px] font-mono select-none">
             {/* Izquierda: Kit + Banco A/B */}
@@ -541,12 +541,12 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                 <button
                   type="button"
                   onClick={() => setIsKitMenuOpen(!isKitMenuOpen)}
-                  className="h-7 px-2 bg-[#0e0f14] hover:bg-[#161820] border border-white/15 hover:border-emerald-500/60 rounded-md flex items-center gap-1.5 text-[9.5px] font-mono transition shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_2px_4px_rgba(0,0,0,0.6)] group select-none cursor-pointer"
+                  className="h-7 px-2 bg-[#0e0f14] hover:bg-[#161820] border border-white/15 hover:border-emerald-500/60 rounded-md flex items-center gap-1.5 text-[9.5px] font-mono transition-colors shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_2px_4px_rgba(0,0,0,0.6)] group select-none cursor-pointer"
                   title="Kit de Batería"
                 >
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#10b981]" />
                   <span className="text-[9.5px] uppercase font-bold tracking-wider text-zinc-400">KIT:</span>
-                  <span className="font-bold text-zinc-100 group-hover:text-emerald-400 transition max-w-[90px] truncate">
+                  <span className="font-bold text-zinc-100 group-hover:text-emerald-400 transition-colors max-w-[90px] truncate">
                     {padEngineMode === "drumKitSf2" ? "Yamaha RX7" : "Custom WAV"}
                   </span>
                   <ChevronDown
@@ -559,7 +559,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
 
                 {/* Menú Desplegable Flotante de Kits (hacia abajo) */}
                 {isKitMenuOpen && (
-                  <div className="absolute top-full mt-1.5 left-0 z-50 w-52 bg-[#0d0e12] border border-white/20 rounded-xl shadow-[0_15px_40px_rgba(0,0,0,0.95),0_0_1px_1px_rgba(255,255,255,0.08)] py-1 text-xs font-mono text-zinc-200 animate-in fade-in zoom-in-95 duration-100">
+                  <div className="absolute top-full mt-1.5 left-0 z-50 w-52 bg-[#0d0e12] border border-white/20 rounded-xl shadow-[0_15px_40px_rgba(0,0,0,0.95),0_0_1px_1px_rgba(255,255,255,0.08)] py-1 text-xs font-mono text-zinc-200">
                     <div className="px-3 py-1 text-[9.5px] uppercase font-bold tracking-wider text-zinc-400 border-b border-white/10 mb-1">
                       Kits de Batería
                     </div>
@@ -616,11 +616,11 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                         ? `Banco A/B: ${bankMapped ? `Asignado (${bankMapped})` : "Sin asignar"}`
                         : `Cambiar Banco (Actual: ${currentBank.toUpperCase()})`
                     }
-                    className={`h-7 px-2.5 rounded-md text-[9.5px] font-mono font-bold tracking-wider border transition-all active:scale-95 shadow-[inset_0_1px_0_rgba(255,255,255,0.1),0_2px_4px_rgba(0,0,0,0.5)] cursor-pointer flex items-center gap-1.5 ${
+                    className={`h-7 px-2.5 rounded-md text-[9.5px] font-mono font-bold tracking-wider border transition-colors active:scale-95 shadow-[inset_0_1px_0_rgba(255,255,255,0.1),0_2px_4px_rgba(0,0,0,0.5)] cursor-pointer flex items-center gap-1.5 ${
                       isBankSelected
-                        ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                        ? "border-amber-400 bg-amber-950/40 midi-learn-selected text-amber-200"
                         : isMidiLearnActive
-                        ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                        ? "border-amber-500/60 bg-amber-950/20 text-amber-300 midi-learn-ready hover:border-amber-400"
                         : currentBank === "b"
                         ? "bg-purple-900/40 text-purple-200 border-purple-500/60 shadow-[0_0_8px_rgba(168,85,247,0.4)]"
                         : "bg-cyan-950/40 text-cyan-200 border-cyan-500/60 shadow-[0_0_8px_rgba(6,182,212,0.4)]"
@@ -655,12 +655,12 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                           ? `Resolución Grilla: ${gridMapped ? `Asignado (${gridMapped})` : "Sin asignar"}`
                           : "Seleccionar Resolución de Grilla"
                       }
-                      className={`h-7 px-2.5 rounded-md text-[9.5px] font-mono font-bold flex items-center gap-1.5 shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)] cursor-pointer transition select-none ${
+                      className={`h-7 px-2.5 rounded-md text-[9.5px] font-mono font-bold flex items-center gap-1.5 border shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)] cursor-pointer transition-colors select-none ${
                         isGridSelected
-                          ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                          ? "border-amber-400 bg-amber-950/40 midi-learn-selected text-amber-200"
                           : isMidiLearnActive
-                          ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
-                          : "bg-[#040406] hover:bg-[#121318] border border-white/15 hover:border-emerald-500/60 text-emerald-400"
+                          ? "border-amber-500/60 bg-amber-950/20 text-amber-300 midi-learn-ready hover:border-amber-400"
+                          : "bg-[#040406] hover:bg-[#121318] border-white/15 hover:border-emerald-500/60 text-emerald-400"
                       }`}
                     >
                       <span className="text-zinc-400 text-[9px] font-semibold tracking-wider">GRID:</span>
@@ -675,7 +675,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
 
                     {/* Menú Desplegable Flotante hacia abajo */}
                     {isGridMenuOpen && (
-                      <div className="absolute top-full mt-1.5 right-0 z-50 w-48 bg-[#0d0e12] border border-white/20 rounded-xl shadow-[0_15px_40px_rgba(0,0,0,0.95),0_0_1px_1px_rgba(255,255,255,0.08)] py-1 text-xs font-mono text-zinc-200 animate-in fade-in zoom-in-95 duration-100">
+                      <div className="absolute top-full mt-1.5 right-0 z-50 w-48 bg-[#0d0e12] border border-white/20 rounded-xl shadow-[0_15px_40px_rgba(0,0,0,0.95),0_0_1px_1px_rgba(255,255,255,0.08)] py-1 text-xs font-mono text-zinc-200">
                         <div className="px-3 py-1 text-[9px] uppercase font-bold tracking-wider text-zinc-400 border-b border-white/10 mb-1">
                           Resolución de Grilla
                         </div>
@@ -747,11 +747,11 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                           ? `Página 1/2: ${pageMapped ? `Asignado (${pageMapped})` : "Sin asignar"}`
                           : undefined
                       }
-                      className={`flex items-center bg-[#040406] border rounded-md p-0.5 shadow-[inset_0_1px_3px_rgba(0,0,0,0.8)] gap-0.5 cursor-pointer ${
+                      className={`flex items-center bg-[#040406] border rounded-md p-0.5 shadow-[inset_0_1px_3px_rgba(0,0,0,0.8)] gap-0.5 cursor-pointer transition-colors ${
                         isPageSelected
-                          ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse"
+                          ? "border-amber-400 bg-amber-950/40 midi-learn-selected"
                           : isMidiLearnActive
-                          ? "border-amber-500/60 hover:border-amber-400"
+                          ? "border-amber-500/60 midi-learn-ready hover:border-amber-400"
                           : "border-white/15"
                       }`}
                     >
@@ -759,7 +759,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                         type="button"
                         onClick={() => !isMidiLearnActive && setActivePage(0)}
                         title={isMidiLearnActive ? undefined : "Página 1 (Pasos 1-16)"}
-                        className={`w-6 h-6 rounded font-mono text-[9px] font-bold transition-all cursor-pointer flex items-center justify-center relative ${
+                        className={`w-6 h-6 rounded font-mono text-[9px] font-bold transition-colors cursor-pointer flex items-center justify-center relative ${
                           activePage === 0
                             ? "bg-emerald-500/30 text-emerald-300 border border-emerald-500/50 shadow-[0_0_8px_rgba(16,185,129,0.3)]"
                             : "text-zinc-400 hover:text-white"
@@ -774,7 +774,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                         type="button"
                         onClick={() => !isMidiLearnActive && setActivePage(1)}
                         title={isMidiLearnActive ? undefined : "Página 2 (Pasos 17-32)"}
-                        className={`w-6 h-6 rounded font-mono text-[9px] font-bold transition-all cursor-pointer flex items-center justify-center relative ${
+                        className={`w-6 h-6 rounded font-mono text-[9px] font-bold transition-colors cursor-pointer flex items-center justify-center relative ${
                           activePage === 1
                             ? "bg-emerald-500/30 text-emerald-300 border border-emerald-500/50 shadow-[0_0_8px_rgba(16,185,129,0.3)]"
                             : "text-zinc-400 hover:text-white"
@@ -796,7 +796,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                   type="button"
                   onClick={() => setIsQMenuOpen(!isQMenuOpen)}
                   title={`Cuantización de Entrada: ${quantizeMode.toUpperCase()} (${Math.round(quantizeStrength * 100)}%)`}
-                  className={`h-7 w-7 rounded-md text-[10px] font-mono font-bold border transition-all flex items-center justify-center relative active:scale-95 cursor-pointer select-none ${
+                  className={`h-7 w-7 rounded-md text-[10px] font-mono font-bold border transition-colors flex items-center justify-center relative active:scale-95 cursor-pointer select-none ${
                     quantizeMode !== "off"
                       ? "bg-cyan-950/40 text-cyan-300 border-cyan-500/60 shadow-[0_0_8px_rgba(6,182,212,0.4)]"
                       : "bg-white/[0.03] text-zinc-500 border-white/10 hover:text-white"
@@ -810,7 +810,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
 
                 {/* Popover Minimalista hacia abajo */}
                 {isQMenuOpen && (
-                  <div className="absolute top-full mt-1.5 right-0 z-50 w-52 bg-[#0c0d12] border border-white/20 rounded-xl shadow-[0_15px_40px_rgba(0,0,0,0.95),0_0_1px_1px_rgba(255,255,255,0.08)] p-2.5 text-xs font-mono text-zinc-200 animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-2.5">
+                  <div className="absolute top-full mt-1.5 right-0 z-50 w-52 bg-[#0c0d12] border border-white/20 rounded-xl shadow-[0_15px_40px_rgba(0,0,0,0.95),0_0_1px_1px_rgba(255,255,255,0.08)] p-2.5 text-xs font-mono text-zinc-200 flex flex-col gap-2.5">
                     {/* Selector Horizontal de Modos */}
                     <div className="flex items-center justify-between bg-black/60 border border-white/10 rounded-lg p-0.5">
                       {(["off", "eighth", "sixteenth", "thirtySecond"] as const).map((m) => (
@@ -818,7 +818,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                           key={`q-mode-${m}`}
                           type="button"
                           onClick={() => onSetQuantizeMode?.(m)}
-                          className={`flex-1 py-1 rounded text-[9px] font-bold uppercase transition-all cursor-pointer ${
+                          className={`flex-1 py-1 rounded text-[9px] font-bold uppercase transition-colors cursor-pointer ${
                             quantizeMode === m
                               ? "bg-cyan-500/25 text-cyan-300 border border-cyan-500/40 shadow-[0_0_6px_rgba(6,182,212,0.3)]"
                               : "text-zinc-400 hover:text-white"
@@ -857,7 +857,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                         onRequantize?.();
                         setIsQMenuOpen(false);
                       }}
-                      className="w-full py-1 bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-500/40 hover:border-cyan-400 rounded-md text-[9.5px] font-bold text-cyan-200 transition-all active:scale-95 cursor-pointer shadow-[0_0_8px_rgba(6,182,212,0.2)] text-center"
+                      className="w-full py-1 bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-500/40 hover:border-cyan-400 rounded-md text-[9.5px] font-bold text-cyan-200 transition-colors active:scale-95 cursor-pointer shadow-[0_0_8px_rgba(6,182,212,0.2)] text-center"
                     >
                       RE-QUANTIZE
                     </button>
@@ -885,9 +885,9 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                         onUndo();
                       }}
                       title={isMidiLearnActive ? `Deshacer (Undo): ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Deshacer (Undo)"}
-                      className={`px-2 h-full flex items-center justify-center gap-1.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-all cursor-pointer border-r border-white/10 ${
+                      className={`px-2 h-full flex items-center justify-center gap-1.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors cursor-pointer border-r border-white/10 ${
                         isSelected
-                          ? "bg-amber-950/40 text-amber-200 shadow-[inset_0_0_12px_rgba(245,158,11,0.6)] animate-pulse"
+                          ? "bg-amber-950/40 text-amber-200 midi-learn-selected"
                           : isMidiLearnActive
                           ? "bg-amber-950/20 text-amber-300 hover:text-amber-200 hover:bg-amber-950/40"
                           : "text-zinc-300 hover:text-white hover:bg-white/[0.06] active:bg-white/[0.12]"
@@ -918,9 +918,9 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                         }
                       }}
                       title={isMidiLearnActive ? `Borrar Pista: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Borrar Notas de la Pista Seleccionada"}
-                      className={`px-2 h-full flex items-center justify-center gap-1.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-all cursor-pointer border-r border-white/10 ${
+                      className={`px-2 h-full flex items-center justify-center gap-1.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors cursor-pointer border-r border-white/10 ${
                         isSelected
-                          ? "bg-amber-950/40 text-amber-200 shadow-[inset_0_0_12px_rgba(245,158,11,0.6)] animate-pulse"
+                          ? "bg-amber-950/40 text-amber-200 midi-learn-selected"
                           : isMidiLearnActive
                           ? "bg-amber-950/20 text-amber-300 hover:text-amber-200 hover:bg-amber-950/40"
                           : "text-zinc-400 hover:text-amber-400 hover:bg-white/[0.06] active:bg-white/[0.12]"
@@ -947,9 +947,9 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                         onClear();
                       }}
                       title={isMidiLearnActive ? `Borrar Todo el Patrón: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Borrar Todo el Patrón"}
-                      className={`w-7 h-full flex items-center justify-center transition-all cursor-pointer ${
+                      className={`w-7 h-full flex items-center justify-center transition-colors cursor-pointer ${
                         isSelected
-                          ? "bg-amber-950/40 text-amber-200 shadow-[inset_0_0_12px_rgba(245,158,11,0.6)] animate-pulse"
+                          ? "bg-amber-950/40 text-amber-200 midi-learn-selected"
                           : isMidiLearnActive
                           ? "bg-amber-950/20 text-amber-300 hover:text-amber-200 hover:bg-amber-950/40"
                           : "text-zinc-400 hover:text-red-400 hover:bg-white/[0.06] active:bg-white/[0.12]"
@@ -1039,18 +1039,18 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                       ? `Pad ${padNum}: Asignar MIDI (${getMidiNoteName(midiNote)})`
                       : `Pad ${padNum}: ${padName}`
                   }
-                  className={`w-36 sm:w-40 mr-2 h-9 sm:h-9.5 rounded-lg flex items-center justify-center transition-all shrink-0 cursor-pointer select-none border relative overflow-hidden active:scale-[0.98] ${
+                  className={`w-36 sm:w-40 mr-2 h-9 sm:h-9.5 rounded-lg flex items-center justify-center transition-colors shrink-0 cursor-pointer select-none border relative overflow-hidden active:scale-[0.98] ${
                     isLearnSelected
-                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_20px_rgba(245,158,11,0.85)] ring-2 ring-amber-400/60 animate-pulse text-amber-100"
+                      ? "border-amber-400 bg-amber-950/40 midi-learn-selected text-amber-100"
                       : isMidiLearnActive
-                      ? "border-2 border-amber-500/60 shadow-[0_0_12px_rgba(245,158,11,0.35)] hover:border-amber-400 hover:shadow-[0_0_16px_rgba(245,158,11,0.6)] bg-gradient-to-b from-[#18140e] to-[#0c0a07] text-amber-200"
+                      ? "border-amber-500/70 midi-learn-ready hover:border-amber-400 bg-gradient-to-b from-[#18140e] to-[#0c0a07] text-amber-200"
                       : isHit
                       ? theme.hit
                       : isDragging
-                      ? "bg-cyan-950/80 border-2 border-cyan-400 text-cyan-200 scale-[1.02] shadow-[0_0_20px_rgba(34,211,238,0.9)]"
+                      ? "bg-cyan-950/80 border-cyan-400 text-cyan-200 scale-[1.02] shadow-[0_0_20px_rgba(34,211,238,0.9),inset_0_0_0_1px_#22d3ee]"
                       : isSelected
-                      ? theme.selected
-                      : `${theme.border} ${theme.bg} ${theme.text} ${theme.shadow} hover:brightness-125`
+                      ? `${theme.bg} ${theme.selected}`
+                      : `${theme.border} ${theme.bg} ${theme.text} ${theme.shadow}`
                   }`}
                 >
                   {/* Nombre del Sample centrado */}
@@ -1094,39 +1094,39 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                               onToggleStep(padIdx, actualStep);
                             }
                           }}
-                          className={`flex-1 min-w-[22px] sm:min-w-[26px] h-9 sm:h-9.5 rounded-[4px] font-mono text-[9.5px] transition-all relative overflow-hidden active:scale-95 ${
+                          className={`flex-1 min-w-[22px] sm:min-w-[26px] h-9 sm:h-9.5 rounded-[4px] font-mono text-[9.5px] transition-colors duration-75 relative overflow-hidden active:scale-95 ${
                             isStepDisabled
                               ? "opacity-15 bg-[#090a0d] border border-white/[0.04] cursor-not-allowed pointer-events-none"
                               : isActive
                               ? isPlayhead
                                 ? isPaused
-                                  ? "bg-amber-300 text-black border border-amber-200 shadow-[0_0_16px_rgba(245,158,11,0.8)] z-10 brightness-105 cursor-pointer"
-                                  : "bg-emerald-300 text-black border border-white shadow-[0_0_20px_#ffffff] z-10 brightness-110 cursor-pointer"
-                                : "bg-gradient-to-b from-[#3a2f1c] via-[#2a2113] to-[#18130a] border-x border-[#0e0c07] border-t border-amber-500/70 border-b-[3px] border-b-[#090704] shadow-[0_3px_6px_rgba(0,0,0,0.8),inset_0_0_12px_rgba(245,158,11,0.35)] hover:brightness-125 cursor-pointer"
+                                  ? "bg-amber-300 text-black border border-amber-200 shadow-[0_0_14px_rgba(245,158,11,0.8)] z-10 cursor-pointer"
+                                  : "bg-emerald-300 text-black border border-white shadow-[0_0_16px_#ffffff] z-10 cursor-pointer"
+                                : "bg-[#2a2113] bg-gradient-to-b from-[#3a2f1c] via-[#2a2113] to-[#18130a] hover:from-[#4a3c24] hover:via-[#362b19] hover:to-[#221a0e] border-x border-[#0e0c07] border-t border-amber-500/70 hover:border-t-amber-400 border-b-[3px] border-b-[#090704] shadow-[0_3px_6px_rgba(0,0,0,0.8),inset_0_0_12px_rgba(245,158,11,0.35)] cursor-pointer"
                               : isPlayhead
                               ? isPaused
-                                ? "bg-[#332b1f] border border-amber-400/80 shadow-[0_0_12px_rgba(245,158,11,0.5)] cursor-pointer"
-                                : "bg-[#282d38] border border-emerald-400/80 shadow-[0_0_12px_rgba(16,185,129,0.4)] cursor-pointer"
+                                ? "bg-[#332b1f] border border-amber-400/80 shadow-[0_0_10px_rgba(245,158,11,0.45)] cursor-pointer"
+                                : "bg-[#282d38] border border-emerald-400/80 shadow-[0_0_10px_rgba(16,185,129,0.35)] cursor-pointer"
                               : isEvenGroup
-                              ? "bg-gradient-to-b from-[#2a2d36] via-[#1e2027] to-[#14151a] border-x border-[#0e0f13] border-t border-white/[0.12] border-b-[3px] border-b-[#0a0b0e] shadow-[0_3px_6px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.06)] hover:brightness-125 cursor-pointer"
-                              : "bg-gradient-to-b from-[#21232b] via-[#17181e] to-[#0f1014] border-x border-[#0b0c0f] border-t border-white/[0.08] border-b-[3px] border-b-[#07080a] shadow-[0_3px_6px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.04)] hover:brightness-125 cursor-pointer"
+                              ? "bg-[#1e2027] bg-gradient-to-b from-[#2a2d36] via-[#1e2027] to-[#14151a] hover:from-[#343844] hover:via-[#262932] hover:to-[#191b22] border-x border-[#0e0f13] border-t border-white/[0.12] hover:border-t-white/25 border-b-[3px] border-b-[#0a0b0e] shadow-[0_3px_6px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.06)] cursor-pointer"
+                              : "bg-[#17181e] bg-gradient-to-b from-[#21232b] via-[#17181e] to-[#0f1014] hover:from-[#2b2e38] hover:via-[#1f2129] hover:to-[#14161c] border-x border-[#0b0c0f] border-t border-white/[0.08] hover:border-t-white/20 border-b-[3px] border-b-[#07080a] shadow-[0_3px_6px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.04)] cursor-pointer"
                           }`}
                         >
                           {/* Lente Óptica LED Interna Centrada */}
                           {!isStepDisabled && (
                             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                               <span
-                                className={`w-4 h-1.5 rounded-sm transition-all ${
+                                className={`w-4 h-1.5 rounded-sm ${
                                   isActive
                                     ? isPlayhead
                                       ? isPaused
-                                        ? "bg-amber-200 shadow-[0_0_12px_#f59e0b] scale-110"
-                                        : "bg-white shadow-[0_0_16px_#ffffff] scale-110"
-                                      : "bg-amber-400 shadow-[0_0_10px_#f59e0b,0_0_20px_rgba(245,158,11,0.9)]"
+                                        ? "bg-amber-200 shadow-[0_0_10px_#f59e0b] scale-110"
+                                        : "bg-white shadow-[0_0_12px_#ffffff] scale-110"
+                                      : "bg-amber-400 shadow-[0_0_8px_#f59e0b]"
                                     : isPlayhead
                                     ? isPaused
-                                      ? "bg-amber-400 shadow-[0_0_10px_#f59e0b]"
-                                      : "bg-emerald-400 shadow-[0_0_10px_#10b981]"
+                                      ? "bg-amber-400 shadow-[0_0_8px_#f59e0b]"
+                                      : "bg-emerald-400 shadow-[0_0_8px_#10b981]"
                                     : isBeatStart
                                     ? "bg-white/35"
                                     : "bg-white/10"
@@ -1165,11 +1165,11 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                     onSelectLearnTarget?.({ type: "action", id: "workstationMode" });
                   }
                 }}
-                className={`flex items-center bg-[#040406] border rounded-md p-0.5 shadow-[inset_0_1px_3px_rgba(0,0,0,0.8)] ${
+                className={`flex items-center bg-[#040406] border rounded-md p-0.5 shadow-[inset_0_1px_3px_rgba(0,0,0,0.8)] transition-colors ${
                   isWsSelected
-                    ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse"
+                    ? "border-amber-400 bg-amber-950/40 midi-learn-selected"
                     : isMidiLearnActive
-                    ? "border-amber-500/60 hover:border-amber-400"
+                    ? "border-amber-500/60 midi-learn-ready hover:border-amber-400"
                     : "border-white/15"
                 }`}
                 title={
@@ -1182,7 +1182,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                   type="button"
                   onClick={() => !isMidiLearnActive && onChangeViewMode?.("keys")}
                   title={isMidiLearnActive ? undefined : "Modo Teclado"}
-                  className={`px-2.5 py-1 rounded font-mono text-[9.5px] font-bold tracking-wider transition-all cursor-pointer ${
+                  className={`px-2.5 py-1 rounded font-mono text-[9.5px] font-bold tracking-wider transition-colors cursor-pointer ${
                     !isSeqOpen
                       ? "bg-gradient-to-b from-cyan-400 to-cyan-600 text-black shadow-[0_0_12px_rgba(6,182,212,0.6)] font-black"
                       : "text-zinc-400 hover:text-white hover:bg-white/5"
@@ -1194,7 +1194,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                   type="button"
                   onClick={() => !isMidiLearnActive && onChangeViewMode?.("seq")}
                   title={isMidiLearnActive ? undefined : "Modo Secuenciador"}
-                  className={`px-2.5 py-1 rounded font-mono text-[9.5px] font-bold tracking-wider transition-all cursor-pointer ${
+                  className={`px-2.5 py-1 rounded font-mono text-[9.5px] font-bold tracking-wider transition-colors cursor-pointer ${
                     isSeqOpen
                       ? "bg-gradient-to-b from-amber-400 to-amber-600 text-black shadow-[0_0_12px_rgba(245,158,11,0.6)] font-black"
                       : "text-zinc-400 hover:text-white hover:bg-white/5"
@@ -1226,12 +1226,12 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                     onAdjustBpm(-1);
                   }}
                   title={isMidiLearnActive ? `Tempo -1: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Tempo -1"}
-                  className={`w-6 h-6 flex items-center justify-center rounded font-mono font-bold text-xs transition cursor-pointer ${
+                  className={`w-6 h-6 flex items-center justify-center rounded font-mono font-bold text-xs border transition-colors cursor-pointer ${
                     isSelected
-                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                      ? "border-amber-400 bg-amber-950/40 midi-learn-selected text-amber-200"
                       : isMidiLearnActive
-                      ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
-                      : "text-zinc-400 hover:text-white hover:bg-white/10"
+                      ? "border-amber-500/60 bg-amber-950/20 text-amber-300 midi-learn-ready hover:border-amber-400"
+                      : "border-transparent text-zinc-400 hover:text-white hover:bg-white/10"
                   }`}
                 >
                   -
@@ -1266,7 +1266,8 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                     setIsEditingBpm(true);
                   }}
                   title="Tempo BPM"
-                  className="font-mono text-xs font-bold text-emerald-400 tracking-wider cursor-pointer hover:brightness-125 transition select-none drop-shadow-[0_0_6px_rgba(16,185,129,0.5)] tabular-nums"
+                  style={{ textShadow: "0 0 6px rgba(16, 185, 129, 0.5)" }}
+                  className="font-mono text-xs font-bold text-emerald-400 tracking-wider cursor-pointer hover:text-emerald-300 transition-colors select-none tabular-nums"
                 >
                   {Math.round(bpm)}
                 </span>
@@ -1289,12 +1290,12 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                     onAdjustBpm(1);
                   }}
                   title={isMidiLearnActive ? `Tempo +1: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Tempo +1"}
-                  className={`w-6 h-6 flex items-center justify-center rounded font-mono font-bold text-xs transition cursor-pointer ${
+                  className={`w-6 h-6 flex items-center justify-center rounded font-mono font-bold text-xs border transition-colors cursor-pointer ${
                     isSelected
-                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                      ? "border-amber-400 bg-amber-950/40 midi-learn-selected text-amber-200"
                       : isMidiLearnActive
-                      ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
-                      : "text-zinc-400 hover:text-white hover:bg-white/10"
+                      ? "border-amber-500/60 bg-amber-950/20 text-amber-300 midi-learn-ready hover:border-amber-400"
+                      : "border-transparent text-zinc-400 hover:text-white hover:bg-white/10"
                   }`}
                 >
                   +
@@ -1317,11 +1318,11 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                     onTapTempo();
                   }}
                   title={isMidiLearnActive ? `Tap Tempo: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Tap Tempo"}
-                  className={`px-2 py-1 ml-1 text-[9.5px] font-mono font-bold uppercase tracking-wider rounded border transition active:scale-95 cursor-pointer ${
+                  className={`px-2 py-1 ml-1 text-[9.5px] font-mono font-bold uppercase tracking-wider rounded border transition-colors active:scale-95 cursor-pointer ${
                     isSelected
-                      ? "border-2 border-amber-400 bg-amber-950/40 shadow-[0_0_15px_rgba(245,158,11,0.8)] ring-2 ring-amber-400/60 animate-pulse text-amber-200"
+                      ? "border-amber-400 bg-amber-950/40 midi-learn-selected text-amber-200"
                       : isMidiLearnActive
-                      ? "border border-amber-500/60 bg-amber-950/20 text-amber-300 hover:border-amber-400"
+                      ? "border-amber-500/60 bg-amber-950/20 text-amber-300 midi-learn-ready hover:border-amber-400"
                       : "bg-white/[0.06] hover:bg-emerald-500 hover:text-black text-zinc-300 border-white/10"
                   }`}
                 >
@@ -1355,11 +1356,11 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                         ? "Metrónomo Sonoro: Activo"
                         : "Metrónomo Sonoro: Inactivo"
                     }
-                    className={`w-9 sm:w-10 h-full flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                    className={`w-9 sm:w-10 h-full flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
                       onToggleVisualMetronome ? "border-r border-white/10" : ""
                     } ${
                       isClickSelected
-                        ? "bg-amber-950/40 text-amber-200 shadow-[inset_0_0_12px_rgba(245,158,11,0.6)] animate-pulse"
+                        ? "bg-amber-950/40 text-amber-200 midi-learn-selected"
                         : isMidiLearnActive
                         ? "bg-amber-950/20 text-amber-300 hover:text-amber-200 hover:bg-amber-950/40"
                         : isClickEnabled
@@ -1372,7 +1373,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                       <path d="M12 4v16" />
                       <circle cx="12" cy="11" r="1.5" fill="currentColor" />
                     </svg>
-                    <span className={`w-1.5 h-1.5 rounded-full transition-all shrink-0 ${isClickEnabled ? "bg-amber-400 shadow-[0_0_4px_#f59e0b]" : "bg-zinc-600"}`} />
+                    <span className={`w-1.5 h-1.5 rounded-full transition-colors shrink-0 ${isClickEnabled ? "bg-amber-400 shadow-[0_0_4px_#f59e0b]" : "bg-zinc-600"}`} />
                   </button>
                 );
               })()}
@@ -1398,9 +1399,9 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                         ? "Metrónomo Visual: Activo"
                         : "Metrónomo Visual: Inactivo"
                     }
-                    className={`w-9 sm:w-10 h-full flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                    className={`w-9 sm:w-10 h-full flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
                       isSelected
-                        ? "bg-amber-950/40 text-amber-200 shadow-[inset_0_0_12px_rgba(245,158,11,0.6)] animate-pulse"
+                        ? "bg-amber-950/40 text-amber-200 midi-learn-selected"
                         : isMidiLearnActive
                         ? "bg-amber-950/20 text-amber-300 hover:text-amber-200 hover:bg-amber-950/40"
                         : isVisualMetronomeVisible
@@ -1409,7 +1410,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                     }`}
                   >
                     <Eye size={13} className="shrink-0" />
-                    <span className={`w-1.5 h-1.5 rounded-full transition-all shrink-0 ${isVisualMetronomeVisible ? "bg-emerald-400 shadow-[0_0_4px_#10b981]" : "bg-zinc-600"}`} />
+                    <span className={`w-1.5 h-1.5 rounded-full transition-colors shrink-0 ${isVisualMetronomeVisible ? "bg-emerald-400 shadow-[0_0_4px_#10b981]" : "bg-zinc-600"}`} />
                   </button>
                 );
               })()}
@@ -1435,9 +1436,9 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                     onStop();
                   }}
                   title={isMidiLearnActive ? `Stop: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Stop"}
-                  className={`w-9 sm:w-10 h-full flex items-center justify-center transition-all cursor-pointer border-r border-white/10 ${
+                  className={`w-9 sm:w-10 h-full flex items-center justify-center transition-colors cursor-pointer border-r border-white/10 ${
                     isSelected
-                      ? "bg-amber-950/40 text-amber-200 shadow-[inset_0_0_12px_rgba(245,158,11,0.6)] animate-pulse"
+                      ? "bg-amber-950/40 text-amber-200 midi-learn-selected"
                       : isMidiLearnActive
                       ? "bg-amber-950/20 text-amber-300 hover:text-amber-200 hover:bg-amber-950/40"
                       : "text-zinc-400 hover:text-white hover:bg-white/[0.06] active:bg-white/[0.12]"
@@ -1465,9 +1466,9 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                     onTogglePlay();
                   }}
                   title={isMidiLearnActive ? `Play / Pause: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Play / Pause (Espacio)"}
-                  className={`px-3.5 sm:px-4 h-full text-[11px] font-mono uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all cursor-pointer border-r border-white/10 ${
+                  className={`px-3.5 sm:px-4 h-full text-[11px] font-mono uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors cursor-pointer border-r border-white/10 ${
                     isSelected
-                      ? "bg-amber-950/40 text-amber-200 shadow-[inset_0_0_12px_rgba(245,158,11,0.6)] animate-pulse font-bold"
+                      ? "bg-amber-950/40 text-amber-200 midi-learn-selected font-bold"
                       : isMidiLearnActive
                       ? "bg-amber-950/20 text-amber-300 hover:text-amber-200 hover:bg-amber-950/40 font-semibold"
                       : isPlaying
@@ -1509,9 +1510,9 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                     onToggleRecord();
                   }}
                   title={isMidiLearnActive ? `Grabar Overdub: ${mapped ? `Asignado (${mapped})` : "Sin asignar"}` : "Grabar Overdub"}
-                  className={`px-3 sm:px-3.5 h-full text-[11px] font-mono uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                  className={`px-3 sm:px-3.5 h-full text-[11px] font-mono uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
                     isSelected
-                      ? "bg-amber-950/40 text-amber-200 shadow-[inset_0_0_12px_rgba(245,158,11,0.6)] animate-pulse font-bold"
+                      ? "bg-amber-950/40 text-amber-200 midi-learn-selected font-bold"
                       : isMidiLearnActive
                       ? "bg-amber-950/20 text-amber-300 hover:text-amber-200 hover:bg-amber-950/40 font-semibold"
                       : isRecording
@@ -1520,7 +1521,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                   }`}
                 >
                   <span
-                    className={`w-2 h-2 rounded-full transition-all shrink-0 ${
+                    className={`w-2 h-2 rounded-full transition-colors shrink-0 ${
                       isRecording ? "bg-red-500 shadow-[0_0_6px_#ef4444]" : "bg-zinc-500"
                     }`}
                   />
@@ -1541,7 +1542,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
           onClick={(e) => e.stopPropagation()}
         >
           {/* Menú Principal */}
-          <div className="bg-[#0e0e12]/95 backdrop-blur-2xl border border-white/10 rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.08)] py-1 w-52 text-xs font-mono text-zinc-200">
+          <div className="bg-[#0e0e12] border border-white/15 rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.08)] py-1 w-52 text-xs font-mono text-zinc-200">
             <div className="px-3 py-1.5 text-[10px] uppercase font-bold tracking-wider text-zinc-400 border-b border-white/5 mb-1 flex items-center justify-between">
               <span>Pad {contextMenu.padIdx + 1}</span>
               <span className="text-[9.5px] text-emerald-400 font-bold">Config</span>
@@ -1636,7 +1637,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
 
           {/* Submenú Nivel 1: Categorías (Sin emojis, nombres concisos en mayúsculas) */}
           {isSf2MenuOpen && (
-            <div className="ml-1 bg-[#0e0e12]/95 backdrop-blur-2xl border border-white/10 rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.08)] py-1 w-36 text-xs font-mono text-zinc-200 animate-in fade-in duration-100">
+            <div className="ml-1 bg-[#0e0e12] border border-white/15 rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.08)] py-1 w-36 text-xs font-mono text-zinc-200">
               <div className="px-2.5 py-1 text-[9.5px] uppercase font-bold tracking-wider text-zinc-400 border-b border-white/5 mb-1 font-sans">
                 CATEGORÍAS
               </div>
@@ -1664,7 +1665,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
 
           {/* Submenú Nivel 2: Lista de Sonidos de la Categoría Seleccionada */}
           {isSf2MenuOpen && activeSf2Category && (
-            <div className="ml-1 bg-[#0e0e12]/95 backdrop-blur-2xl border border-white/10 rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.08)] py-1 w-48 text-xs font-mono text-zinc-200 animate-in fade-in duration-100 max-h-72 overflow-y-auto">
+            <div className="ml-1 bg-[#0e0e12] border border-white/15 rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.08)] py-1 w-48 text-xs font-mono text-zinc-200 max-h-72 overflow-y-auto">
               <div className="px-2.5 py-1 text-[9.5px] uppercase font-bold tracking-wider text-emerald-400 border-b border-white/5 mb-1 font-sans">
                 {SF2_DRUM_CATEGORIES.find((c) => c.id === activeSf2Category)?.name}
               </div>

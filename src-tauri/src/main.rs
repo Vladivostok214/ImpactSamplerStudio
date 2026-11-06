@@ -1150,6 +1150,9 @@ fn set_arp_octaves(octaves: u8, state: State<'_, AppState>) -> Result<(), String
 }
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    crate::audio::engine::silence_alsa_logging();
+
     let (producer, consumer) = RingBuffer::<AudioEngineCommand>::new(1024);
     let audio_engine = Arc::new(Mutex::new(AudioEngine::new()));
 
@@ -1263,6 +1266,12 @@ fn main() {
             // Inicializar directorio de datos de usuario para guardar SoundFonts importados
             if let Ok(data_dir) = app.path().app_data_dir() {
                 soundfont::init_user_data_dir(Some(data_dir));
+            }
+
+            // Cargar o refrescar samples de fábrica y batería en el motor de audio con la ruta oficial resuelta
+            if let Ok(mut prod) = state.audio_producer.lock() {
+                let engine = state.audio_engine.lock().unwrap();
+                engine.reload_factory_assets(&mut prod);
             }
 
             let mut midi_mgr = state.midi_manager.lock().unwrap();
