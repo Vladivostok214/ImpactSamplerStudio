@@ -169,6 +169,7 @@ interface StepSequencerProps {
   onAdjustBpm: (delta: number) => void;
   onTapTempo: () => void;
   onToggleStep: (padIdx: number, stepIdx: number) => void;
+  onSetStep?: (padIdx: number, stepIdx: number, active: boolean, saveUndo?: boolean) => void;
   onClear: () => void;
   onChangeResolution: (res: StepResolution) => void;
   onTriggerPad?: (padIdx: number) => void;
@@ -310,6 +311,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
   onAdjustBpm,
   onTapTempo,
   onToggleStep,
+  onSetStep,
   onClear,
   onChangeResolution,
   onTriggerPad,
@@ -358,6 +360,60 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
   const [customDrumNames, setCustomDrumNames] = useState<Record<number, string>>({});
   const [localDragOverPad, setLocalDragOverPad] = useState<number | null>(null);
   const [activePage, setActivePage] = useState<0 | 1>(0);
+
+  // Estado de trazo continuo (Paint / Erase drag) sobre los pasos de la grilla
+  const stepDragRef = useRef<{
+    active: boolean;
+    mode: "paint" | "erase";
+    undoSaved: boolean;
+    lastKey: string;
+  }>({
+    active: false,
+    mode: "paint",
+    undoSaved: false,
+    lastKey: "",
+  });
+
+  const patternRef = useRef<number[][]>(pattern);
+  patternRef.current = pattern;
+
+  useEffect(() => {
+    const endStepDrag = () => {
+      if (stepDragRef.current.active) {
+        stepDragRef.current.active = false;
+        stepDragRef.current.lastKey = "";
+      }
+    };
+    window.addEventListener("pointerup", endStepDrag);
+    window.addEventListener("pointercancel", endStepDrag);
+    window.addEventListener("blur", endStepDrag);
+    return () => {
+      window.removeEventListener("pointerup", endStepDrag);
+      window.removeEventListener("pointercancel", endStepDrag);
+      window.removeEventListener("blur", endStepDrag);
+    };
+  }, []);
+
+  const applyStepStroke = (padIdx: number, actualStep: number, targetActive: boolean) => {
+    const key = `${padIdx}:${actualStep}`;
+    if (stepDragRef.current.lastKey === key) return;
+    stepDragRef.current.lastKey = key;
+
+    const currentVel = patternRef.current[padIdx]?.[actualStep] || 0;
+    const isCurrentlyActive = currentVel > 0;
+    if (isCurrentlyActive === targetActive) return;
+
+    const shouldSaveUndo = !stepDragRef.current.undoSaved;
+    if (shouldSaveUndo) {
+      stepDragRef.current.undoSaved = true;
+    }
+
+    if (onSetStep) {
+      onSetStep(padIdx, actualStep, targetActive, shouldSaveUndo);
+    } else {
+      onToggleStep(padIdx, actualStep);
+    }
+  };
 
   // Auto-sincronizar página visual durante la reproducción en 1/32
   useEffect(() => {
@@ -1089,24 +1145,43 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                         <button
                           type="button"
                           disabled={isStepDisabled}
-                          onClick={() => {
-                            if (!isStepDisabled) {
-                              onToggleStep(padIdx, actualStep);
-                            }
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
                           }}
-                          className={`flex-1 min-w-[22px] sm:min-w-[26px] h-9 sm:h-9.5 rounded-[4px] font-mono text-[9.5px] transition-colors duration-75 relative overflow-hidden active:scale-95 ${
+                          onPointerDown={(e) => {
+                            e.preventDefault();
+                            if (isStepDisabled) return;
+
+                            let mode: "paint" | "erase";
+                            if (e.button === 2) {
+                              mode = "erase";
+                            } else {
+                              mode = isActive ? "erase" : "paint";
+                            }
+
+                            stepDragRef.current = {
+                              active: true,
+                              mode,
+                              undoSaved: false,
+                              lastKey: "",
+                            };
+
+                            applyStepStroke(padIdx, actualStep, mode === "paint");
+                          }}
+                          onPointerEnter={() => {
+                            if (isStepDisabled || !stepDragRef.current.active) return;
+                            applyStepStroke(
+                              padIdx,
+                              actualStep,
+                              stepDragRef.current.mode === "paint"
+                            );
+                          }}
+                          className={`flex-1 min-w-[22px] sm:min-w-[26px] h-9 sm:h-9.5 rounded-[4px] font-mono text-[9.5px] relative overflow-hidden touch-none ${
                             isStepDisabled
                               ? "opacity-15 bg-[#090a0d] border border-white/[0.04] cursor-not-allowed pointer-events-none"
                               : isActive
-                              ? isPlayhead
-                                ? isPaused
-                                  ? "bg-amber-300 text-black border border-amber-200 shadow-[0_0_14px_rgba(245,158,11,0.8)] z-10 cursor-pointer"
-                                  : "bg-emerald-300 text-black border border-white shadow-[0_0_16px_#ffffff] z-10 cursor-pointer"
-                                : "bg-[#2a2113] bg-gradient-to-b from-[#3a2f1c] via-[#2a2113] to-[#18130a] hover:from-[#4a3c24] hover:via-[#362b19] hover:to-[#221a0e] border-x border-[#0e0c07] border-t border-amber-500/70 hover:border-t-amber-400 border-b-[3px] border-b-[#090704] shadow-[0_3px_6px_rgba(0,0,0,0.8),inset_0_0_12px_rgba(245,158,11,0.35)] cursor-pointer"
-                              : isPlayhead
-                              ? isPaused
-                                ? "bg-[#332b1f] border border-amber-400/80 shadow-[0_0_10px_rgba(245,158,11,0.45)] cursor-pointer"
-                                : "bg-[#282d38] border border-emerald-400/80 shadow-[0_0_10px_rgba(16,185,129,0.35)] cursor-pointer"
+                              ? "bg-[#2a2113] bg-gradient-to-b from-[#3a2f1c] via-[#2a2113] to-[#18130a] hover:from-[#4a3c24] hover:via-[#362b19] hover:to-[#221a0e] border-x border-[#0e0c07] border-t border-amber-500/70 hover:border-t-amber-400 border-b-[3px] border-b-[#090704] shadow-[0_3px_6px_rgba(0,0,0,0.8),inset_0_0_12px_rgba(245,158,11,0.35)] cursor-pointer"
                               : isEvenGroup
                               ? "bg-[#1e2027] bg-gradient-to-b from-[#2a2d36] via-[#1e2027] to-[#14151a] hover:from-[#343844] hover:via-[#262932] hover:to-[#191b22] border-x border-[#0e0f13] border-t border-white/[0.12] hover:border-t-white/25 border-b-[3px] border-b-[#0a0b0e] shadow-[0_3px_6px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.06)] cursor-pointer"
                               : "bg-[#17181e] bg-gradient-to-b from-[#21232b] via-[#17181e] to-[#0f1014] hover:from-[#2b2e38] hover:via-[#1f2129] hover:to-[#14161c] border-x border-[#0b0c0f] border-t border-white/[0.08] hover:border-t-white/20 border-b-[3px] border-b-[#07080a] shadow-[0_3px_6px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.04)] cursor-pointer"
@@ -1120,8 +1195,8 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                                   isActive
                                     ? isPlayhead
                                       ? isPaused
-                                        ? "bg-amber-200 shadow-[0_0_10px_#f59e0b] scale-110"
-                                        : "bg-white shadow-[0_0_12px_#ffffff] scale-110"
+                                        ? "bg-amber-200 shadow-[0_0_10px_#f59e0b]"
+                                        : "bg-white shadow-[0_0_12px_#ffffff]"
                                       : "bg-amber-400 shadow-[0_0_8px_#f59e0b]"
                                     : isPlayhead
                                     ? isPaused

@@ -838,21 +838,24 @@ fn sequencer_set_step(
     pad_index: usize,
     step_index: usize,
     velocity: u8,
+    save_undo: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     if pad_index >= 8 || step_index >= 32 {
         return Err("Índice de paso o pad fuera de rango".to_string());
     }
+    let should_save_undo = save_undo.unwrap_or(true);
     if let Ok(mut prod) = state.audio_producer.lock() {
         let _ = prod.push(AudioEngineCommand::SequencerSetStep {
             pad_index,
             step_index,
             velocity,
+            save_undo: should_save_undo,
         });
     }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut seq) = engine.shared_sequencer.lock() {
-        seq.set_step(pad_index, step_index, velocity);
+        seq.set_step(pad_index, step_index, velocity, should_save_undo);
     }
     Ok(())
 }

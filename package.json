@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:bin": "tauri build --no-bundle",
+    "update:local": "tauri build --no-bundle && sudo install -m 755 src-tauri/target/release/impact_sampler /usr/bin/impact_sampler"
   },
   "dependencies": {
     "@fontsource/geist-mono": "^5.3.0",

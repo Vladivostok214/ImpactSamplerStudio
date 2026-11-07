@@ -64,7 +64,7 @@ pub enum AudioEngineCommand {
     SequencerTapTempo,
     SequencerSetRecord(bool),
     SequencerToggleRecord,
-    SequencerSetStep { pad_index: usize, step_index: usize, velocity: u8 },
+    SequencerSetStep { pad_index: usize, step_index: usize, velocity: u8, save_undo: bool },
     SequencerToggleStep { pad_index: usize, step_index: usize },
     SequencerClear,
     SequencerSetResolution(StepResolution),

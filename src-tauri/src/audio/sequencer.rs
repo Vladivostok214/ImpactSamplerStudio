@@ -433,12 +433,38 @@ impl StepSequencer {
     }
 
     /// Asigna o modifica un paso en la grilla visual mapeándolo a su tick nominal
-    pub fn set_step(&mut self, pad_idx: usize, step_idx: usize, velocity: u8) {
+    pub fn set_step(&mut self, pad_idx: usize, step_idx: usize, velocity: u8, save_undo: bool) {
         let max_steps = self.resolution.steps_per_bar();
         if pad_idx < NUM_PADS && step_idx < max_steps {
             let target_tick = (step_idx as u32 * self.resolution.ticks_per_step()) % TICKS_PER_BAR;
+            let already_active = {
+                let bank = self.get_active_bank();
+                let track = &bank.tracks[pad_idx];
+                let mut found = false;
+                for i in 0..track.count {
+                    if track.events[i].tick == target_tick && track.events[i].velocity > 0 {
+                        found = true;
+                        break;
+                    }
+                }
+                found
+            };
+
+            let target_active = velocity > 0;
+            if already_active == target_active {
+                return;
+            }
+
+            if save_undo {
+                self.save_undo_state();
+            }
+
             let bank = self.get_active_bank_mut();
-            bank.tracks[pad_idx].add_or_update(target_tick, target_tick, velocity);
+            if target_active {
+                bank.tracks[pad_idx].add_or_update(target_tick, target_tick, velocity);
+            } else {
+                bank.tracks[pad_idx].remove_at_tick(target_tick);
+            }
         }
     }
 

@@ -859,10 +859,9 @@ impl AudioRenderState {
                             self.sync_shared_sequencer();
                             self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
                         }
-                        AudioEngineCommand::SequencerSetStep { pad_index, step_index, velocity } => {
-                            self.sequencer.set_step(pad_index, step_index, velocity);
+                        AudioEngineCommand::SequencerSetStep { pad_index, step_index, velocity, save_undo } => {
+                            self.sequencer.set_step(pad_index, step_index, velocity, save_undo);
                             self.sync_shared_sequencer();
-                            self.send_ui_event(SequencerUiEvent::PatternUpdated(self.sequencer.get_active_pattern()));
                         }
                         AudioEngineCommand::SequencerToggleStep { pad_index, step_index } => {
                             self.sequencer.toggle_step(pad_index, step_index);

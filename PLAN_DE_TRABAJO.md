@@ -4,20 +4,7 @@
 
 ---
 
-## 1. Estrategia de Verificación y Hardware (Fase 1)
-
-### ¿Debe estar conectado el controlador en la Fase 1?
-* **Sí, es altamente recomendable.** Tener el cable USB conectado nos permitirá validar de forma inmediata que Windows expone el puerto MIDI, que `midir` se enlaza correctamente y que los paquetes de datos físicos (teclas, pads, faders) llegan sin pérdidas ni jitter.
-* *(Nota: El código incluirá un modo de simulación/mock para desarrollo en caso de no tener el hardware conectado en algún momento).*
-
-### ¿Habrá UI o será por consola?
-* Implementaremos un **enfoque híbrido en dos pasos**:
-  1. **Sniffer CLI (Consola):** Un ejecutable/modo rápido en Rust (`cargo run --bin sniffer`) que en cuestión de segundos enumerará los puertos MIDI de Windows y mostrará en consola en tiempo real los mensajes capturados al presionar teclas, golpear pads o mover faders. Esto valida la capa de hardware y drivers sin interferencia del frontend.
-  2. **UI Base (Tauri v2):** La ventana de la aplicación mostrará un panel inicial con el selector de dispositivo MIDI, selector de salida de audio WASAPI y un monitor visual en tiempo real de eventos recibidos.
-
----
-
-## 2. Fases de Desarrollo
+## 1. Fases de Desarrollo
 
 ```mermaid
 flowchart TD
@@ -268,7 +255,7 @@ flowchart TD
 
 ---
 
-### Fase 5.3: Microajustes de Ergonomía, UX/UI y Síntesis de Tooltips ✅ [EN PROGRESO / COMPLETADA]
+### Fase 5.3: Microajustes de Ergonomía, UX/UI y Síntesis de Tooltips ✅ [COMPLETADA]
 * **Objetivo:** Eliminar la sobrecarga y el ruido visual en la interacción con el mouse, suprimiendo los carteles emergentes en elementos táctiles continuos (pasos del secuenciador y teclas del piano) y sintetizando el resto de tooltips a textos breves, directos y profesionales al estilo de equipamiento de audio de estudio de alta gama.
 * **Entregables y Mejoras Implementadas:**
   1. **Depuración y Eliminación de Tooltips Invasivos:**
@@ -283,6 +270,14 @@ flowchart TD
      - **Header:** `Instrumentos`, `MIDI Learn` / `Desactivar MIDI Learn`, `Ajustes de Audio / MIDI`, `Monitor MIDI` y `Volumen Master: 80%`.
      - **Barra de Transporte y Control Rítmico:** Modo Teclado, Modo Secuenciador, Kit de Batería, Banco A/B, Resolución Grid, Metrónomo Sonoro, Tempo BPM, Tempo -1 / +1, Tap Tempo, Stop, Play / Pause (Espacio), Grabar Overdub, Metrónomo Visual y Borrar Patrón.
      - **Modal de Ajustes (`AudioSettingsModal.tsx`):** `Restablecer a valores de fábrica`.
+  3. **Pintado y Borrado Continuo de Pasos por Arrastre (`Paint / Erase Drag` con Undo Único por Trazo):**
+     - **Pintado Continuo (Clic Izquierdo + Arrastrar):** Al presionar el botón izquierdo sobre un paso en `StepSequencer.tsx`, se fija el valor objetivo (`!isActive`) y al deslizar el puntero sobre cualquier otro paso de la grilla (misma fila o cruzando entre los 8 tracks) se aplica ese estado de forma continua en un solo trazo.
+     - **Borrado Rápido (Clic Derecho + Arrastrar):** Al mantener clic derecho y arrastrar sobre los pasos (`onContextMenu` suprimido en botones de pasos), actúa como goma de borrar instantánea desactivando cualquier paso encendido bajo el cursor.
+     - **Snapshot de Undo Único por Trazo (`sequencer_set_step`):** Nuevo comando en Rust (`AudioEngineCommand::SequencerSetStep` en `mod.rs`, `StepSequencer::set_step` en `sequencer.rs` y `engine.rs`) con parámetro `save_undo: bool` y guarda *no-op* si el paso ya tenía ese estado. Solo el primer impacto del trazo guarda snapshot en la pila LIFO de 16 estados, permitiendo que `UNDO` revierta la ráfaga completa de pasos pintados o borrados con un solo clic.
+     - **Actualización Optimista 0ms:** `handleSequencerSetStep` en `App.tsx` actualiza el estado local de React inmediatamente sin eco IPC redundante (`PatternUpdated` omitido), preservando intacto el modo MIDI Learn en clic simple.
+  4. **Playhead Ligero en Lente LED Central (`StepSequencer.tsx`):**
+     - **Eliminación de Repintado de Columna Completa:** Durante la reproducción del secuenciador (`isPlayhead`), el cuerpo exterior del botón conserva su acabado y bordes estáticos sin recalcular `box-shadow` ni fondos traslúcidos en los 8 botones de cada columna a cada pulso de semicorchea/fusa.
+     - **Iluminación Exclusiva del Lente LED (`w-4 h-1.5`):** El cabezal de reproducción se indica únicamente en la ranura LED central de cada paso (verde esmeralda `#10b981` en pasos vacíos, blanco puro `#ffffff` cuando coincide con un paso activo y ámbar en pausa), logrando fluidez total a 60fps mientras se pintan o borran pasos con el loop corriendo.
 
 ---
 
@@ -443,9 +438,9 @@ flowchart TD
 
 ---
 
-### Fase 9.2: Preparación Multiplataforma, Motor de Dispositivos de Audio & Pipeline de Empaque Universal 🚧 [EN PROGRESO]
+### Fase 9.2: Preparación Multiplataforma, Motor de Dispositivos de Audio & Pipeline de Empaque Universal ✅ [COMPLETADA]
 * **Objetivo:** Transformar el subsistema de audio y la interfaz de ImpactSampler Studio en un entorno 100% operativo y agnóstico al sistema operativo. Esto incluye la selección real de interfaces de audio (Hot-Swap en caliente sin reinicio), enrutamiento de canales estéreo en interfaces multicanal, control de Buffer Size y Sample Rate basados en las capacidades físicas del hardware, telemetría dinámica en la consola y la integración de un pipeline de CI/CD automatizado con GitHub Actions que compile simultáneamente para **Windows (instalador NSIS `.exe`)** y **macOS (imagen de disco Universal `.dmg`)**.
-* **Documento Detallado de la Fase:** Ver desglose paso a paso y especificaciones técnicas completas en [PLAN_DE_TRABAJO_FASE_9.2.md](PLAN_DE_TRABAJO_FASE_9.2.md).
+* **Documento Detallado de la Fase:** Ver desglose paso a paso y especificaciones técnicas completas en [docs/archive/PLAN_DE_TRABAJO_FASE_9.2.md](docs/archive/PLAN_DE_TRABAJO_FASE_9.2.md).
 * **Componentes y Especificaciones Técnicas:**
   1. **Motor Real de Dispositivos de Audio & Enrutamiento en Rust (`engine.rs`) ✅ [COMPLETADO]:**
      - Hot-swap atómico de dispositivos de audio (`set_audio_device`) preservando el estado completo en RAM (SoundFonts, presets, samples de pads, gains, FX rack y secuenciador) sin reinicio.
@@ -608,11 +603,12 @@ flowchart TD
 
 ---
 
-## 3. Estado Actual del Proyecto y Próximo Hito
+## 2. Estado Actual del Proyecto y Próximo Hito
 **Fase 9.3: Migración & Ecosistema Linux Nativo (100% COMPLETADA ✅):**
 * **Triple Plataforma:** Soporte nativo verificado en Windows (.exe / ASIO / WASAPI), macOS (.dmg / CoreAudio) y Linux (.deb / AppImage / ALSA / PipeWire).
 * **Hardware Externo de Alta Fidelidad:** Funcionamiento verificado con interfaz profesional Zoom F3 en conexión directa a 96 kHz / 32-bit float con latencia ultra-baja y nombres amigables en UI.
 * **Ergonomía de Consola:** Selectores OLED rápidos (INST / PATCH) integrados en hardware y preservación fiel de frecuencias de muestreo y buffers en el modal de configuración.
+* **Edición Rápida y Fluidez en Secuenciador:** Pintado y borrado continuo de pasos por arrastre (*Paint / Erase Drag*) con un único snapshot de `UNDO` por trazo (`sequencer_set_step`) y playhead ligero confinado al lente LED central de cada paso sin repintar el botón completo.
 * **Rendimiento Gráfico:** Interfaz fluida y optimizada sobre WebKitGTK con capas GPU aisladas.
 
 **Siguiente Hito de Desarrollo:**

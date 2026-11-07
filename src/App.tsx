@@ -691,6 +691,33 @@ export default function App() {
     }
   };
 
+  const handleSequencerSetStep = (
+    padIdx: number,
+    stepIdx: number,
+    active: boolean,
+    saveUndo: boolean = true
+  ) => {
+    const velocity = active ? 127 : 0;
+    setSequencerState((prev) => {
+      if ((prev.pattern[padIdx]?.[stepIdx] > 0) === active) {
+        return prev;
+      }
+      const nextPat = prev.pattern.map((row) => [...row]);
+      if (nextPat[padIdx]) {
+        nextPat[padIdx][stepIdx] = velocity;
+      }
+      return { ...prev, pattern: nextPat };
+    });
+    invoke("sequencer_set_step", {
+      padIndex: padIdx,
+      stepIndex: stepIdx,
+      velocity,
+      saveUndo,
+    }).catch((err) => {
+      console.error("Error al configurar paso:", err);
+    });
+  };
+
   const handleSequencerClear = async () => {
     try {
       await invoke("sequencer_clear");
@@ -956,6 +983,7 @@ export default function App() {
               onAdjustBpm={handleSequencerAdjustBpm}
               onTapTempo={handleSequencerTapTempo}
               onToggleStep={handleSequencerToggleStep}
+              onSetStep={handleSequencerSetStep}
               onClear={handleSequencerClear}
               onChangeResolution={handleSequencerChangeResolution}
               onTriggerPad={handleSequencerTriggerPad}
