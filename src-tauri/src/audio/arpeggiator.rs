@@ -413,6 +413,40 @@ impl Arpeggiator {
         note_to_kill
     }
 
+    /// Prepara el estado del arpegiador al reconstruir el stream de audio (A06):
+    /// - Conserva configuración (`enabled`, `hold`, `mode`, `rate`, `octaves`).
+    /// - Actualiza `sample_rate_f`.
+    /// - Limpia las teclas físicas transitorias (`held_notes`) cuyo `NoteOff` pudo ocurrir
+    ///   mientras el motor estaba suspendido, evitando notas colgadas.
+    /// - Limpia `active_playing_note` y los contadores de articulación de muestras del stream anterior.
+    /// - Si `hold` está activo y tenía un acorde retenido (`hold_notes`), reconstruye la secuencia
+    ///   y prepara el acumulador de ticks para disparar limpiamente en el nuevo stream.
+    pub fn prepare_for_stream_rebuild(&mut self, sample_rate: f32) {
+        self.update_sample_rate(sample_rate);
+        self.held_notes = [None; 16];
+        self.held_velocities = [0; 16];
+        self.held_count = 0;
+        self.active_playing_note = None;
+        self.note_duration_samples = 0;
+        self.note_sample_counter = 0;
+        self.sample_accumulator = 0.0;
+
+        if self.enabled && self.hold && self.hold_count > 0 {
+            self.rebuild_sequence();
+            self.seq_index = 0;
+            self.tick_accumulator = self.rate.ticks_per_step();
+        } else {
+            self.hold_notes = [None; 16];
+            self.hold_velocities = [0; 16];
+            self.hold_count = 0;
+            self.sequence = [0; 96];
+            self.sequence_velocities = [0; 96];
+            self.sequence_len = 0;
+            self.seq_index = 0;
+            self.tick_accumulator = 0;
+        }
+    }
+
     pub fn set_mode(&mut self, mode: ArpMode) {
         self.mode = mode;
         self.rebuild_sequence();
@@ -428,11 +462,15 @@ impl Arpeggiator {
     }
 
     pub fn set_hold(&mut self, hold: bool) {
+        let was_hold = self.hold;
         self.hold = hold;
         if hold {
-            self.hold_notes = self.held_notes;
-            self.hold_velocities = self.held_velocities;
-            self.hold_count = self.held_count;
+            if self.held_count > 0 || !was_hold {
+                self.hold_notes = self.held_notes;
+                self.hold_velocities = self.held_velocities;
+                self.hold_count = self.held_count;
+            }
+            self.rebuild_sequence();
         } else if self.held_count == 0 {
             self.hold_notes = [None; 16];
             self.hold_velocities = [0; 16];

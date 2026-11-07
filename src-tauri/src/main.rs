@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use rtrb::RingBuffer;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use audio::engine::AudioEngine;
+use audio::engine::{pack_bank_patch, AudioEngine};
 use audio::{
     ArpMode, ArpRate, ArpStateInfo, AudioDeviceInfo, AudioEngineCommand, FxRouting,
     KnobMappingInfo, KnobTarget, PadEngineMode, PadPlaybackMode, PadSampleData, PadSlotInfo,
@@ -62,6 +62,38 @@ fn remove_user_soundfont(filename: String) -> Result<(), String> {
     delete_user_soundfont(&filename)
 }
 
+/// Política explícita de encolado para comandos persistentes de configuración (A06 — R1/R2/R5):
+/// - Debe invocarse bajo la misma sección crítica que actualizó `shared_*` (manteniendo el orden de locks
+///   `state.audio_engine` -> `state.audio_producer`) para impedir inversión de orden entre hilos IPC.
+/// - Empaqueta el comando como `AudioEngineCommand::IpcPreApplied(Box::new(cmd))`:
+///   - Durante el streaming activo (`process_commands`), el hilo de audio lo desenvuelve y lo aplica al
+///     estado local de renderizado.
+///   - Durante una reconstrucción del stream (`reconcile_pending_commands_before_rebuild`), se ignora
+///     porque su efecto ya fue aplicado en orden exacto a los espejos `shared_*` desde IPC. Esto impide
+///     reejecutar comandos no idempotentes (`TogglePlay`, `ToggleRecord`, `ToggleBank`, `Undo`, `Clear`,
+///     `Requantize`) y evita que comandos IPC antiguos en una cola llena sobrescriban un estado más
+///     reciente en `shared_*`, sin descartar jamás eventos MIDI físicos legítimos de la cola.
+fn push_persistent_config_command(
+    engine: &AudioEngine,
+    prod_mutex: &Mutex<rtrb::Producer<AudioEngineCommand>>,
+    cmd: AudioEngineCommand,
+    label: &str,
+) {
+    if let Ok(mut prod) = prod_mutex.lock() {
+        if prod
+            .push(AudioEngineCommand::IpcPreApplied(Box::new(cmd)))
+            .is_err()
+        {
+            if engine.is_running.load(std::sync::atomic::Ordering::SeqCst) {
+                eprintln!(
+                    "[Audio IPC Warning] Cola de comandos llena al enviar '{}'. El espejo compartido conserva la configuración más reciente para el próximo rebuild.",
+                    label
+                );
+            }
+        }
+    }
+}
+
 #[tauri::command]
 fn load_soundfont(filename: String, state: State<'_, AppState>) -> Result<SoundFontInfo, String> {
     let (sf_arc, info) = load_soundfont_from_file(&filename)?;
@@ -69,12 +101,25 @@ fn load_soundfont(filename: String, state: State<'_, AppState>) -> Result<SoundF
     let default_patch = default_preset.map(|p| p.patch).unwrap_or(0);
     let default_bank = default_preset.map(|p| p.bank).unwrap_or(0);
 
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::LoadSoundFont {
-            sound_font: sf_arc,
-            patch_number: default_patch,
-            bank_number: default_bank,
-        });
+    {
+        let engine = state.audio_engine.lock().unwrap();
+        if let Ok(mut sf_guard) = engine.shared_soundfont.lock() {
+            *sf_guard = Some(sf_arc.clone());
+        }
+        engine.shared_bank_patch.store(
+            pack_bank_patch(default_bank, default_patch),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        push_persistent_config_command(
+            &engine,
+            &state.audio_producer,
+            AudioEngineCommand::LoadSoundFont {
+                sound_font: sf_arc,
+                patch_number: default_patch,
+                bank_number: default_bank,
+            },
+            "LoadSoundFont",
+        );
     }
 
     *state.current_soundfont.lock().unwrap() = Some(info.clone());
@@ -88,11 +133,21 @@ fn select_soundfont_preset(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let bank = bank_number.unwrap_or(0);
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SelectPreset {
-            patch_number,
-            bank_number: bank,
-        });
+    {
+        let engine = state.audio_engine.lock().unwrap();
+        engine.shared_bank_patch.store(
+            pack_bank_patch(bank, patch_number),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        push_persistent_config_command(
+            &engine,
+            &state.audio_producer,
+            AudioEngineCommand::SelectPreset {
+                patch_number,
+                bank_number: bank,
+            },
+            "SelectPreset",
+        );
     }
     Ok(())
 }
@@ -258,9 +313,17 @@ fn set_audio_sample_rate(
 
 #[tauri::command]
 fn set_master_volume(gain: f32, state: State<'_, AppState>) -> Result<(), String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SetMasterGain(gain.clamp(0.0, 1.0)));
+    let clamped = gain.clamp(0.0, 1.0);
+    let engine = state.audio_engine.lock().unwrap();
+    if let Ok(mut g) = engine.shared_master_gain.lock() {
+        *g = clamped;
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SetMasterGain(clamped),
+        "SetMasterGain",
+    );
     Ok(())
 }
 
@@ -358,12 +421,15 @@ fn get_pad_engine_mode(state: State<'_, AppState>) -> PadEngineMode {
 #[tauri::command]
 fn set_pad_engine_mode(mode: PadEngineMode, state: State<'_, AppState>) -> Result<(), String> {
     let engine = state.audio_engine.lock().unwrap();
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SetPadEngineMode { mode });
-    }
     if let Ok(mut m) = engine.shared_pad_engine_mode.lock() {
         *m = mode;
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SetPadEngineMode { mode },
+        "SetPadEngineMode",
+    );
     Ok(())
 }
 
@@ -442,16 +508,19 @@ fn pick_and_load_pad_sample(
         let sample_data = PadSampleData::from_file(&path, target_rate)?;
         let arc_sample = Arc::new(sample_data);
 
-        if let Ok(mut prod) = state.audio_producer.lock() {
-            let _ = prod.push(AudioEngineCommand::LoadPadSample {
-                pad_index,
-                sample: arc_sample.clone(),
-            });
-        }
-
         if let Ok(mut slots) = engine.shared_pad_samples.lock() {
             slots[pad_index] = Some(arc_sample.clone());
         }
+
+        push_persistent_config_command(
+            &engine,
+            &state.audio_producer,
+            AudioEngineCommand::LoadPadSample {
+                pad_index,
+                sample: arc_sample.clone(),
+            },
+            "LoadPadSample",
+        );
 
         let mode = engine.shared_pad_modes.lock().unwrap()[pad_index];
         let gain = engine.shared_pad_gains.lock().unwrap()[pad_index];
@@ -485,16 +554,19 @@ fn load_pad_sample_from_file(
     let sample_data = PadSampleData::from_file(p, target_rate)?;
     let arc_sample = Arc::new(sample_data);
 
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::LoadPadSample {
-            pad_index,
-            sample: arc_sample.clone(),
-        });
-    }
-
     if let Ok(mut slots) = engine.shared_pad_samples.lock() {
         slots[pad_index] = Some(arc_sample.clone());
     }
+
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::LoadPadSample {
+            pad_index,
+            sample: arc_sample.clone(),
+        },
+        "LoadPadSample",
+    );
 
     let mode = engine.shared_pad_modes.lock().unwrap()[pad_index];
     let gain = engine.shared_pad_gains.lock().unwrap()[pad_index];
@@ -516,12 +588,15 @@ fn clear_pad_slot(pad_index: usize, state: State<'_, AppState>) -> Result<PadSlo
     }
 
     let engine = state.audio_engine.lock().unwrap();
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::ClearPadSample { pad_index });
-    }
     if let Ok(mut slots) = engine.shared_pad_samples.lock() {
         slots[pad_index] = None;
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::ClearPadSample { pad_index },
+        "ClearPadSample",
+    );
     let mode = engine.shared_pad_modes.lock().unwrap()[pad_index];
     let gain = engine.shared_pad_gains.lock().unwrap()[pad_index];
 
@@ -546,12 +621,15 @@ fn set_pad_slot_mode(
     }
 
     let engine = state.audio_engine.lock().unwrap();
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SetPadMode { pad_index, mode });
-    }
     if let Ok(mut modes) = engine.shared_pad_modes.lock() {
         modes[pad_index] = mode;
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SetPadMode { pad_index, mode },
+        "SetPadMode",
+    );
     let sample_name = engine.shared_pad_samples.lock().unwrap()[pad_index]
         .as_ref()
         .map(|s| s.name.clone());
@@ -574,13 +652,20 @@ fn set_pad_slot_gain(pad_index: usize, gain: f32, state: State<'_, AppState>) ->
         return Err("Índice de pad inválido".to_string());
     }
 
+    let clamped = gain.clamp(0.0, 1.0);
     let engine = state.audio_engine.lock().unwrap();
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SetPadGain { pad_index, gain });
-    }
     if let Ok(mut gains) = engine.shared_pad_gains.lock() {
-        gains[pad_index] = gain;
+        gains[pad_index] = clamped;
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SetPadGain {
+            pad_index,
+            gain: clamped,
+        },
+        "SetPadGain",
+    );
     Ok(())
 }
 
@@ -589,13 +674,16 @@ fn set_drum_pad_note(pad_index: usize, note: i32, state: State<'_, AppState>) ->
     if pad_index >= 8 {
         return Err("Índice de pad inválido".to_string());
     }
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SetDrumPadNote { pad_index, note });
-    }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut notes) = engine.shared_drum_pad_notes.lock() {
         notes[pad_index] = note;
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SetDrumPadNote { pad_index, note },
+        "SetDrumPadNote",
+    );
     Ok(())
 }
 
@@ -616,8 +704,20 @@ fn set_midi_learn_mappings(
     pads: [i32; 8],
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SetMidiLearnCcMappings { faders, knobs });
+    {
+        let engine = state.audio_engine.lock().unwrap();
+        if let Ok(mut f_guard) = engine.shared_midi_fader_ccs.lock() {
+            *f_guard = faders;
+        }
+        if let Ok(mut k_guard) = engine.shared_midi_knob_ccs.lock() {
+            *k_guard = knobs;
+        }
+        push_persistent_config_command(
+            &engine,
+            &state.audio_producer,
+            AudioEngineCommand::SetMidiLearnCcMappings { faders, knobs },
+            "SetMidiLearnCcMappings",
+        );
     }
     let mut input_pad_notes = [0u8; 8];
     for (i, &note) in pads.iter().enumerate() {
@@ -669,13 +769,16 @@ fn set_knob_mapping(
     if knob_index >= 8 {
         return Err("Índice de knob inválido".to_string());
     }
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SetKnobMapping { knob_index, target });
-    }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut fx) = engine.shared_fx_rack.lock() {
         fx.set_knob_mapping(knob_index, target);
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SetKnobMapping { knob_index, target },
+        "SetKnobMapping",
+    );
     Ok(engine.get_knob_mappings())
 }
 
@@ -689,16 +792,19 @@ fn set_knob_value(
         return Err("Índice de knob inválido".to_string());
     }
     let val_clamped = value.clamp(0.0, 1.0);
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SetKnobValue {
-            knob_index,
-            value: val_clamped,
-        });
-    }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut fx) = engine.shared_fx_rack.lock() {
         fx.set_knob_value(knob_index, val_clamped);
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SetKnobValue {
+            knob_index,
+            value: val_clamped,
+        },
+        "SetKnobValue",
+    );
     Ok(())
 }
 
@@ -710,11 +816,14 @@ fn get_fx_routing(state: State<'_, AppState>) -> FxRouting {
 
 #[tauri::command]
 fn set_fx_routing(routing: FxRouting, state: State<'_, AppState>) -> Result<FxRouting, String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SetFxRouting(routing));
-    }
     let engine = state.audio_engine.lock().unwrap();
     engine.set_fx_routing(routing);
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SetFxRouting(routing),
+        "SetFxRouting",
+    );
     Ok(routing)
 }
 
@@ -728,25 +837,31 @@ fn get_sequencer_state(state: State<'_, AppState>) -> SequencerStateInfo {
 
 #[tauri::command]
 fn sequencer_play(state: State<'_, AppState>) -> Result<(), String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerPlay);
-    }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.play();
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerPlay,
+        "SequencerPlay",
+    );
     Ok(())
 }
 
 #[tauri::command]
 fn sequencer_stop(state: State<'_, AppState>) -> Result<(), String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerStop);
-    }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.stop();
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerStop,
+        "SequencerStop",
+    );
     Ok(())
 }
 
@@ -758,30 +873,33 @@ fn sequencer_toggle_play(state: State<'_, AppState>) -> Result<bool, String> {
     } else {
         false
     };
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerTogglePlay);
-    }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerTogglePlay,
+        "SequencerTogglePlay",
+    );
     Ok(is_playing)
 }
 
 #[tauri::command]
 fn sequencer_set_bpm(bpm: f32, state: State<'_, AppState>) -> Result<(), String> {
     let clamped = bpm.clamp(40.0, 300.0);
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerSetBpm(clamped));
-    }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.set_bpm(clamped);
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerSetBpm(clamped),
+        "SequencerSetBpm",
+    );
     Ok(())
 }
 
 #[tauri::command]
 fn sequencer_adjust_bpm(delta: f32, state: State<'_, AppState>) -> Result<f32, String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerAdjustBpm(delta));
-    }
     let engine = state.audio_engine.lock().unwrap();
     let new_bpm = if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.adjust_bpm(delta);
@@ -789,32 +907,44 @@ fn sequencer_adjust_bpm(delta: f32, state: State<'_, AppState>) -> Result<f32, S
     } else {
         120.0
     };
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerAdjustBpm(delta),
+        "SequencerAdjustBpm",
+    );
     Ok(new_bpm)
 }
 
 #[tauri::command]
 fn sequencer_tap_tempo(state: State<'_, AppState>) -> Result<Option<f32>, String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerTapTempo);
-    }
     let engine = state.audio_engine.lock().unwrap();
     let tempo = if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.tap_tempo()
     } else {
         None
     };
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerTapTempo,
+        "SequencerTapTempo",
+    );
     Ok(tempo)
 }
 
 #[tauri::command]
 fn sequencer_set_record(recording: bool, state: State<'_, AppState>) -> Result<(), String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerSetRecord(recording));
-    }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.set_recording(recording);
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerSetRecord(recording),
+        "SequencerSetRecord",
+    );
     Ok(())
 }
 
@@ -826,9 +956,12 @@ fn sequencer_toggle_record(state: State<'_, AppState>) -> Result<bool, String> {
     } else {
         false
     };
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerToggleRecord);
-    }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerToggleRecord,
+        "SequencerToggleRecord",
+    );
     Ok(rec)
 }
 
@@ -844,18 +977,21 @@ fn sequencer_set_step(
         return Err("Índice de paso o pad fuera de rango".to_string());
     }
     let should_save_undo = save_undo.unwrap_or(true);
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerSetStep {
-            pad_index,
-            step_index,
-            velocity,
-            save_undo: should_save_undo,
-        });
-    }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.set_step(pad_index, step_index, velocity, should_save_undo);
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerSetStep {
+            pad_index,
+            step_index,
+            velocity,
+            save_undo: should_save_undo,
+        },
+        "SequencerSetStep",
+    );
     Ok(())
 }
 
@@ -868,30 +1004,36 @@ fn sequencer_toggle_step(
     if pad_index >= 8 || step_index >= 32 {
         return Err("Índice de paso o pad fuera de rango".to_string());
     }
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerToggleStep {
-            pad_index,
-            step_index,
-        });
-    }
     let engine = state.audio_engine.lock().unwrap();
     let new_val = if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.toggle_step(pad_index, step_index)
     } else {
         0
     };
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerToggleStep {
+            pad_index,
+            step_index,
+        },
+        "SequencerToggleStep",
+    );
     Ok(new_val)
 }
 
 #[tauri::command]
 fn sequencer_clear(state: State<'_, AppState>) -> Result<(), String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerClear);
-    }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.clear_pattern();
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerClear,
+        "SequencerClear",
+    );
     Ok(())
 }
 
@@ -905,35 +1047,38 @@ fn sequencer_set_resolution(
         "sixteenth" | "1/16" => StepResolution::Sixteenth,
         _ => StepResolution::Eighth,
     };
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerSetResolution(res));
-    }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.set_resolution(res);
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerSetResolution(res),
+        "SequencerSetResolution",
+    );
     Ok(res)
 }
 
 #[tauri::command]
 fn sequencer_toggle_click(state: State<'_, AppState>) -> Result<bool, String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerToggleClick);
-    }
     let engine = state.audio_engine.lock().unwrap();
     let enabled = if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.toggle_click()
     } else {
         false
     };
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerToggleClick,
+        "SequencerToggleClick",
+    );
     Ok(enabled)
 }
 
 #[tauri::command]
 fn sequencer_toggle_bank(state: State<'_, AppState>) -> Result<SequencerBankToggleResult, String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerToggleBank);
-    }
     let engine = state.audio_engine.lock().unwrap();
     let res = if let Ok(mut seq) = engine.shared_sequencer.lock() {
         let bank = seq.toggle_bank();
@@ -948,18 +1093,27 @@ fn sequencer_toggle_bank(state: State<'_, AppState>) -> Result<SequencerBankTogg
             pattern: [[0u8; MAX_STEPS]; NUM_PADS],
         }
     };
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerToggleBank,
+        "SequencerToggleBank",
+    );
     Ok(res)
 }
 
 #[tauri::command]
 fn sequencer_pause(state: State<'_, AppState>) -> Result<(), String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerPause);
-    }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.pause();
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerPause,
+        "SequencerPause",
+    );
     Ok(())
 }
 
@@ -979,25 +1133,31 @@ fn sequencer_set_selected_pad(pad_index: usize, state: State<'_, AppState>) -> R
     if pad_index >= 8 {
         return Err("Índice de pad inválido".to_string());
     }
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerSetSelectedPad(pad_index));
-    }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.set_selected_pad(pad_index);
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerSetSelectedPad(pad_index),
+        "SequencerSetSelectedPad",
+    );
     Ok(())
 }
 
 #[tauri::command]
 fn sequencer_clear_selected_track(state: State<'_, AppState>) -> Result<(), String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerClearSelectedTrack);
-    }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.clear_selected_track();
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerClearSelectedTrack,
+        "SequencerClearSelectedTrack",
+    );
     Ok(())
 }
 
@@ -1006,13 +1166,16 @@ fn sequencer_clear_track(pad_index: usize, state: State<'_, AppState>) -> Result
     if pad_index >= 8 {
         return Err("Índice de pad inválido".to_string());
     }
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerClearTrack(pad_index));
-    }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.clear_track(pad_index);
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerClearTrack(pad_index),
+        "SequencerClearTrack",
+    );
     Ok(())
 }
 
@@ -1028,13 +1191,16 @@ fn sequencer_set_quantize_mode(
         "thirtySecond" => QuantizeMode::ThirtySecond,
         _ => return Err("Modo de cuantización no válido".to_string()),
     };
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerSetQuantizeMode(q_mode));
-    }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.set_quantize_mode(q_mode);
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerSetQuantizeMode(q_mode),
+        "SequencerSetQuantizeMode",
+    );
     Ok(q_mode)
 }
 
@@ -1044,25 +1210,31 @@ fn sequencer_set_quantize_strength(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let clamped = strength.clamp(0.0, 1.0);
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerSetQuantizeStrength(clamped));
-    }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.set_quantize_strength(clamped);
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerSetQuantizeStrength(clamped),
+        "SequencerSetQuantizeStrength",
+    );
     Ok(())
 }
 
 #[tauri::command]
 fn sequencer_requantize(state: State<'_, AppState>) -> Result<(), String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerRequantize);
-    }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.requantize_pattern();
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerRequantize,
+        "SequencerRequantize",
+    );
     Ok(())
 }
 
@@ -1072,21 +1244,21 @@ fn sequencer_set_latency_compensation(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let clamped = ticks.clamp(-96, 96);
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerSetLatencyCompensation(clamped));
-    }
     let engine = state.audio_engine.lock().unwrap();
     if let Ok(mut seq) = engine.shared_sequencer.lock() {
         seq.set_latency_compensation_ticks(clamped);
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerSetLatencyCompensation(clamped),
+        "SequencerSetLatencyCompensation",
+    );
     Ok(())
 }
 
 #[tauri::command]
 fn sequencer_undo(app_handle: AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SequencerUndo);
-    }
     let engine = state.audio_engine.lock().unwrap();
     let is_running = engine.is_running.load(std::sync::atomic::Ordering::SeqCst);
     let undone = if let Ok(mut seq) = engine.shared_sequencer.lock() {
@@ -1099,14 +1271,27 @@ fn sequencer_undo(app_handle: AppHandle, state: State<'_, AppState>) -> Result<b
     } else {
         false
     };
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SequencerUndo,
+        "SequencerUndo",
+    );
     Ok(undone)
 }
 
 #[tauri::command]
 fn set_midi_mute(muted: bool, state: State<'_, AppState>) -> Result<(), String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SetMidiMute(muted));
-    }
+    let engine = state.audio_engine.lock().unwrap();
+    engine
+        .shared_midi_muted
+        .store(muted, std::sync::atomic::Ordering::SeqCst);
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SetMidiMute(muted),
+        "SetMidiMute",
+    );
     Ok(())
 }
 
@@ -1119,41 +1304,76 @@ fn get_arp_state(state: State<'_, AppState>) -> Result<ArpStateInfo, String> {
 
 #[tauri::command]
 fn set_arp_enabled(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SetArpEnabled(enabled));
+    let engine = state.audio_engine.lock().unwrap();
+    if let Ok(mut arp) = engine.shared_arpeggiator.lock() {
+        arp.set_enabled(enabled);
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SetArpEnabled(enabled),
+        "SetArpEnabled",
+    );
     Ok(())
 }
 
 #[tauri::command]
 fn set_arp_hold(hold: bool, state: State<'_, AppState>) -> Result<(), String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SetArpHold(hold));
+    let engine = state.audio_engine.lock().unwrap();
+    if let Ok(mut arp) = engine.shared_arpeggiator.lock() {
+        arp.set_hold(hold);
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SetArpHold(hold),
+        "SetArpHold",
+    );
     Ok(())
 }
 
 #[tauri::command]
 fn set_arp_mode(mode: ArpMode, state: State<'_, AppState>) -> Result<(), String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SetArpMode(mode));
+    let engine = state.audio_engine.lock().unwrap();
+    if let Ok(mut arp) = engine.shared_arpeggiator.lock() {
+        arp.set_mode(mode);
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SetArpMode(mode),
+        "SetArpMode",
+    );
     Ok(())
 }
 
 #[tauri::command]
 fn set_arp_rate(rate: ArpRate, state: State<'_, AppState>) -> Result<(), String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SetArpRate(rate));
+    let engine = state.audio_engine.lock().unwrap();
+    if let Ok(mut arp) = engine.shared_arpeggiator.lock() {
+        arp.set_rate(rate);
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SetArpRate(rate),
+        "SetArpRate",
+    );
     Ok(())
 }
 
 #[tauri::command]
 fn set_arp_octaves(octaves: u8, state: State<'_, AppState>) -> Result<(), String> {
-    if let Ok(mut prod) = state.audio_producer.lock() {
-        let _ = prod.push(AudioEngineCommand::SetArpOctaves(octaves));
+    let engine = state.audio_engine.lock().unwrap();
+    if let Ok(mut arp) = engine.shared_arpeggiator.lock() {
+        arp.set_octaves(octaves);
     }
+    push_persistent_config_command(
+        &engine,
+        &state.audio_producer,
+        AudioEngineCommand::SetArpOctaves(octaves),
+        "SetArpOctaves",
+    );
     Ok(())
 }
 

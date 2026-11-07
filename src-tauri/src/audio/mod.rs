@@ -79,6 +79,11 @@ pub enum AudioEngineCommand {
     SequencerRequantize,
     SequencerSetLatencyCompensation(i32),
     SequencerUndo,
+    /// Marca un comando cuyo efecto persistente ya fue aplicado al espejo `shared_*` en IPC
+    /// (R1/R2), de modo que `process_commands` en el stream activo lo aplique al estado local,
+    /// pero `reconcile_pending_commands_before_rebuild` no lo reejecute ni sobrescriba un
+    /// estado `shared_*` más reciente si hubo saturación posterior de la cola.
+    IpcPreApplied(Box<AudioEngineCommand>),
     SetMidiMute(bool),
     // Fase 9: Arpeggiator Commands
     SetArpEnabled(bool),

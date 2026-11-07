@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
@@ -212,9 +212,10 @@ pub struct AudioEngine {
     pub is_running: Arc<AtomicBool>,
     pub device_invalidated: Arc<AtomicBool>,
     command_consumer: Arc<Mutex<Option<Consumer<AudioEngineCommand>>>>,
-    shared_soundfont: Arc<Mutex<Option<Arc<SoundFont>>>>,
-    shared_patch: Arc<AtomicI32>,
-    shared_master_gain: Arc<Mutex<f32>>,
+    pub shared_soundfont: Arc<Mutex<Option<Arc<SoundFont>>>>,
+    /// Par atómico indivisible `(bank_number << 32) | (patch_number as u32)` para el SoundFont melódico (A06)
+    pub shared_bank_patch: Arc<AtomicU64>,
+    pub shared_master_gain: Arc<Mutex<f32>>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
     watchdog_started: Arc<AtomicBool>,
     ui_event_thread_started: Arc<AtomicBool>,
@@ -235,12 +236,90 @@ pub struct AudioEngine {
     pub shared_sequencer: Arc<Mutex<StepSequencer>>,
     // Fase 9: Arpeggiator (Sincronizado a shared para lecturas de estado)
     pub shared_arpeggiator: Arc<Mutex<Arpeggiator>>,
+    // MIDI Learn & Mute: Espejos compartidos para persistencia entre reconstrucciones de stream (A06)
+    pub shared_midi_fader_ccs: Arc<Mutex<[u8; 9]>>,
+    pub shared_midi_knob_ccs: Arc<Mutex<[u8; 8]>>,
+    pub shared_midi_muted: Arc<AtomicBool>,
     #[cfg(target_os = "windows")]
     pub standby_asio_driver: Arc<Mutex<Option<Arc<asio_sys::Driver>>>>,
 }
 
 unsafe impl Send for AudioEngine {}
 unsafe impl Sync for AudioEngine {}
+
+#[inline]
+pub fn pack_bank_patch(bank: i32, patch: i32) -> u64 {
+    ((bank as u32 as u64) << 32) | (patch as u32 as u64)
+}
+
+#[inline]
+pub fn unpack_bank_patch(packed: u64) -> (i32, i32) {
+    let bank = (packed >> 32) as u32 as i32;
+    let patch = (packed & 0xFFFF_FFFF) as u32 as i32;
+    (bank, patch)
+}
+
+/// Resuelve si el `controller` MIDI corresponde al Master Volume (Fader 9 aprendido o fallback CC 7 / CC 46).
+#[inline]
+pub fn is_master_volume_cc(controller: u8, midi_fader_ccs: &[u8; 9]) -> bool {
+    controller == midi_fader_ccs[8] || controller == 7 || controller == 46
+}
+
+/// Resuelve el índice de knob `0..8` para un `controller` MIDI dado:
+/// 1. Prioridad absoluta al mapeo personalizado por MIDI Learn (`midi_knob_ccs`).
+/// 2. Fallback a los rangos de fábrica Nektar Impact LX49+ (`56..=63`) y General MIDI (`74, 71, 5, 84, 78, 76, 77, 10`)
+///    únicamente si el slot fallback no fue reasignado a otro CC distinto por MIDI Learn (R3).
+#[inline]
+pub fn resolve_knob_cc_index(controller: u8, midi_knob_ccs: &[u8; 8]) -> Option<usize> {
+    if let Some(idx) = midi_knob_ccs.iter().position(|&cc| cc == controller) {
+        return Some(idx);
+    }
+    let fallback_idx = match controller {
+        56..=63 => Some((controller - 56) as usize),
+        74 => Some(0),
+        71 => Some(1),
+        5 => Some(2),
+        84 => Some(3),
+        78 => Some(4),
+        76 => Some(5),
+        77 => Some(6),
+        10 => Some(7),
+        _ => None,
+    }?;
+    // Si el slot sigue en su valor por defecto (56 + idx) o si es un CC GM secundario para ese slot,
+    // permitimos el fallback; evitamos que un CC antiguo de fábrica (56..=63) mueva un knob que fue
+    // explícitamente remapeado a otro CC distinto por MIDI Learn.
+    if (56..=63).contains(&controller) && midi_knob_ccs[fallback_idx] != controller {
+        return None;
+    }
+    Some(fallback_idx)
+}
+
+/// Resuelve el índice de fader de pad `0..8` para un `controller` MIDI dado:
+/// 1. Prioridad absoluta al mapeo personalizado por MIDI Learn (`midi_fader_ccs[..8]`).
+/// 2. Fallback a los rangos de fábrica Nektar Impact LX49+ (`38..=45`) y General MIDI (`73, 75, 72, 91..=95`).
+#[inline]
+pub fn resolve_pad_fader_cc_index(controller: u8, midi_fader_ccs: &[u8; 9]) -> Option<usize> {
+    if let Some(idx) = midi_fader_ccs[..8].iter().position(|&cc| cc == controller) {
+        return Some(idx);
+    }
+    let fallback_idx = match controller {
+        38..=45 => Some((controller - 38) as usize),
+        73 => Some(0),
+        75 => Some(1),
+        72 => Some(2),
+        91 => Some(3),
+        92 => Some(4),
+        93 => Some(5),
+        94 => Some(6),
+        95 => Some(7),
+        _ => None,
+    }?;
+    if (38..=45).contains(&controller) && midi_fader_ccs[fallback_idx] != controller {
+        return None;
+    }
+    Some(fallback_idx)
+}
 
 fn load_factory_pad_samples(target_sample_rate: u32) -> [Option<Arc<PadSampleData>>; 8] {
     let mut slots: [Option<Arc<PadSampleData>>; 8] = std::array::from_fn(|_| None);
@@ -303,7 +382,7 @@ struct AudioRenderState {
     command_consumer: Arc<Mutex<Option<Consumer<AudioEngineCommand>>>>,
     synthesizer: Option<Synthesizer>,
     shared_soundfont: Arc<Mutex<Option<Arc<SoundFont>>>>,
-    shared_patch: Arc<AtomicI32>,
+    shared_bank_patch: Arc<AtomicU64>,
     shared_master_gain: Arc<Mutex<f32>>,
     left_buf: Vec<f32>,
     right_buf: Vec<f32>,
@@ -337,19 +416,496 @@ struct AudioRenderState {
     arpeggiator: Arpeggiator,
     shared_arpeggiator: Arc<Mutex<Arpeggiator>>,
     selected_channel_pair: Arc<AtomicUsize>,
-    // MIDI Learn: Mapeos dinámicos CC
+    // MIDI Learn: Mapeos dinámicos CC y estado Mute
     midi_fader_ccs: [u8; 9],
     midi_knob_ccs: [u8; 8],
     is_midi_muted: bool,
+    shared_midi_fader_ccs: Arc<Mutex<[u8; 9]>>,
+    shared_midi_knob_ccs: Arc<Mutex<[u8; 8]>>,
+    shared_midi_muted: Arc<AtomicBool>,
+    // Sincronización diferida (R4): dirty flags para reintentar actualización de espejos shared_*
+    // cuando try_lock() falla durante eventos en el callback de audio (sin bloquear ni asignar memoria).
+    dirty_shared_master_gain: bool,
+    dirty_shared_pad_gains: bool,
+    dirty_shared_fx_rack: bool,
+    dirty_shared_fx_routing: bool,
+    dirty_shared_sequencer: bool,
+    dirty_shared_arpeggiator: bool,
 }
 
 impl AudioRenderState {
+    /// Política explícita de saneamiento y reconciliación de comandos pendientes en la cola antes de reconstruir el stream (A06 / R1 / R2 / R3):
+    /// - Distingue entre:
+    ///   1. `AudioEngineCommand::IpcPreApplied(...)`: comandos originados en IPC cuyo efecto persistente
+    ///      **ya fue aplicado** al espejo `shared_*` bajo la sección crítica `audio_engine -> audio_producer`.
+    ///      Se descartan al drenar la cola para **no reejecutar** operaciones no idempotentes (`TogglePlay`,
+    ///      `ToggleRecord`, `ToggleBank`, `Undo`, `Clear`, `Requantize`) ni sobrescribir con valores pre-saturación
+    ///      un estado `shared_*` más reciente si la cola llegó a llenarse (`PushError::Full` en R2).
+    ///   2. Comandos originados fuera de `shared_*` (como eventos del hilo MIDI físico `midir`, `trigger_virtual_*`
+    ///      o pruebas unitarias directas):
+    ///      - Configuración, controles CC (aprendidos + fallback GM/LX49+ mediante los helpers de R3), ediciones
+    ///        y `SequencerExecuteAction` (incluyendo `FxRouteKeys` / `FxRoutePads` / `Undo` / `TogglePlay`):
+    ///        se aplican en orden FIFO sobre `shared_*`.
+    ///      - `NoteOn` / `NoteOff` cuando el arpegiador está activo: se procesan sobre `shared_arpeggiator`
+    ///        para capturar acordes `HOLD` antes de que `prepare_for_stream_rebuild` limpie `held_notes`.
+    ///      - Eventos transitorios obsoletos del stream anterior (`PadTrigger` sin grabación activa, `PadRelease`,
+    ///        `PitchBend`, y `NoteOn`/`NoteOff` directos): se descartan para impedir notas colgadas o disparos tardíos.
+    #[allow(clippy::too_many_arguments)]
+    fn reconcile_pending_commands_before_rebuild(
+        consumer: &Arc<Mutex<Option<Consumer<AudioEngineCommand>>>>,
+        shared_soundfont: &Arc<Mutex<Option<Arc<SoundFont>>>>,
+        shared_bank_patch: &Arc<AtomicU64>,
+        shared_master_gain: &Arc<Mutex<f32>>,
+        shared_pad_samples: &Arc<Mutex<[Option<Arc<PadSampleData>>; 8]>>,
+        shared_pad_modes: &Arc<Mutex<[PadPlaybackMode; 8]>>,
+        shared_pad_gains: &Arc<Mutex<[f32; 8]>>,
+        shared_pad_engine_mode: &Arc<Mutex<PadEngineMode>>,
+        shared_drum_soundfont: &Arc<Mutex<Option<Arc<SoundFont>>>>,
+        shared_drum_patch: &Arc<AtomicI32>,
+        shared_drum_pad_notes: &Arc<Mutex<[i32; 8]>>,
+        shared_fx_rack: &Arc<Mutex<AudioFxRack>>,
+        shared_fx_routing: &Arc<Mutex<FxRouting>>,
+        shared_sequencer: &Arc<Mutex<StepSequencer>>,
+        shared_arpeggiator: &Arc<Mutex<Arpeggiator>>,
+        shared_midi_fader_ccs: &Arc<Mutex<[u8; 9]>>,
+        shared_midi_knob_ccs: &Arc<Mutex<[u8; 8]>>,
+        shared_midi_muted: &Arc<AtomicBool>,
+    ) {
+        let Ok(mut cons_guard) = consumer.lock() else {
+            return;
+        };
+        let Some(cons) = cons_guard.as_mut() else {
+            return;
+        };
+
+        while let Ok(cmd) = cons.pop() {
+            match cmd {
+                // R1 & R2: Los comandos IPC envueltos en IpcPreApplied ya actualizaron `shared_*` en el momento
+                // de la llamada IPC. No deben reejecutarse aquí (evita doble ejecución de TogglePlay/Undo/etc.
+                // y evita que comandos IPC antiguos pre-saturación reviertan un estado IPC más reciente).
+                AudioEngineCommand::IpcPreApplied(_) => {}
+
+                // Eventos transitorios de ejecución en vivo del stream anterior: se descartan
+                // salvo NoteOn/NoteOff cuando el arpegiador está activo con HOLD para capturar
+                // acordes armados justo antes del rebuild.
+                AudioEngineCommand::NoteOn { note, velocity } => {
+                    if !shared_midi_muted.load(Ordering::SeqCst) {
+                        if let Ok(mut arp) = shared_arpeggiator.lock() {
+                            if arp.enabled {
+                                let vel_7bit = (velocity * 127.0).round().clamp(1.0, 127.0) as u8;
+                                arp.handle_note_on(note, vel_7bit);
+                            }
+                        }
+                    }
+                }
+                AudioEngineCommand::NoteOff { note } => {
+                    if let Ok(mut arp) = shared_arpeggiator.lock() {
+                        if arp.enabled {
+                            arp.handle_note_off(note);
+                        }
+                    }
+                }
+                AudioEngineCommand::PadTrigger { pad_index, velocity: _ } => {
+                    // No dispara audio tardío en el nuevo stream, pero si el secuenciador estaba en
+                    // PLAY + REC cuando entró el golpe físico antes del rebuild, preserva el paso grabado (R4/7.8).
+                    if pad_index < 8 {
+                        if let Ok(mut seq) = shared_sequencer.lock() {
+                            if seq.is_playing && seq.is_recording {
+                                seq.save_undo_state();
+                                seq.record_live_hit(pad_index, 127u8);
+                            }
+                        }
+                    }
+                }
+                AudioEngineCommand::PadRelease { .. }
+                | AudioEngineCommand::PitchBend { .. } => {}
+
+                // Configuración persistente directa (desde MIDI físico, trigger_virtual_cc o tests directos)
+                AudioEngineCommand::SetMidiLearnCcMappings { faders, knobs } => {
+                    if let Ok(mut f_guard) = shared_midi_fader_ccs.lock() {
+                        *f_guard = faders;
+                    }
+                    if let Ok(mut k_guard) = shared_midi_knob_ccs.lock() {
+                        *k_guard = knobs;
+                    }
+                }
+                AudioEngineCommand::LoadSoundFont {
+                    sound_font,
+                    patch_number,
+                    bank_number,
+                } => {
+                    if let Ok(mut sf_guard) = shared_soundfont.lock() {
+                        *sf_guard = Some(sound_font);
+                        shared_bank_patch
+                            .store(pack_bank_patch(bank_number, patch_number), Ordering::SeqCst);
+                    }
+                }
+                AudioEngineCommand::SelectPreset {
+                    patch_number,
+                    bank_number,
+                } => {
+                    shared_bank_patch
+                        .store(pack_bank_patch(bank_number, patch_number), Ordering::SeqCst);
+                }
+                AudioEngineCommand::SetMasterGain(gain) => {
+                    if let Ok(mut g) = shared_master_gain.lock() {
+                        *g = gain.clamp(0.0, 1.0);
+                    }
+                }
+                AudioEngineCommand::ControlChange { controller, value } => {
+                    let fader_ccs = *shared_midi_fader_ccs.lock().unwrap();
+                    let knob_ccs = *shared_midi_knob_ccs.lock().unwrap();
+                    if is_master_volume_cc(controller, &fader_ccs) {
+                        if let Ok(mut g) = shared_master_gain.lock() {
+                            *g = value.clamp(0.0, 1.0);
+                        }
+                    }
+                    if let Some(idx) = resolve_knob_cc_index(controller, &knob_ccs) {
+                        if let Ok(mut fx) = shared_fx_rack.lock() {
+                            fx.set_knob_value(idx, value);
+                        }
+                    }
+                    if let Some(idx) = resolve_pad_fader_cc_index(controller, &fader_ccs) {
+                        if let Ok(mut gains) = shared_pad_gains.lock() {
+                            gains[idx] = value.clamp(0.0, 1.0);
+                        }
+                    }
+                }
+                AudioEngineCommand::LoadPadSample { pad_index, sample } => {
+                    if pad_index < 8 {
+                        if let Ok(mut slots) = shared_pad_samples.lock() {
+                            slots[pad_index] = Some(sample);
+                        }
+                    }
+                }
+                AudioEngineCommand::ClearPadSample { pad_index } => {
+                    if pad_index < 8 {
+                        if let Ok(mut slots) = shared_pad_samples.lock() {
+                            slots[pad_index] = None;
+                        }
+                    }
+                }
+                AudioEngineCommand::SetPadMode { pad_index, mode } => {
+                    if pad_index < 8 {
+                        if let Ok(mut modes) = shared_pad_modes.lock() {
+                            modes[pad_index] = mode;
+                        }
+                    }
+                }
+                AudioEngineCommand::SetPadGain { pad_index, gain } => {
+                    if pad_index < 8 {
+                        if let Ok(mut gains) = shared_pad_gains.lock() {
+                            gains[pad_index] = gain.clamp(0.0, 1.0);
+                        }
+                    }
+                }
+                AudioEngineCommand::SetPadEngineMode { mode } => {
+                    if let Ok(mut m) = shared_pad_engine_mode.lock() {
+                        *m = mode;
+                    }
+                }
+                AudioEngineCommand::SetDrumPadNote { pad_index, note } => {
+                    if pad_index < 8 {
+                        if let Ok(mut notes) = shared_drum_pad_notes.lock() {
+                            notes[pad_index] = note;
+                        }
+                    }
+                }
+                AudioEngineCommand::LoadDrumKitSoundFont {
+                    sound_font,
+                    patch_number,
+                } => {
+                    if let Ok(mut sf_guard) = shared_drum_soundfont.lock() {
+                        *sf_guard = Some(sound_font);
+                    }
+                    shared_drum_patch.store(patch_number, Ordering::SeqCst);
+                }
+                AudioEngineCommand::SetKnobValue { knob_index, value } => {
+                    if let Ok(mut fx) = shared_fx_rack.lock() {
+                        fx.set_knob_value(knob_index, value);
+                    }
+                }
+                AudioEngineCommand::SetKnobMapping { knob_index, target } => {
+                    if let Ok(mut fx) = shared_fx_rack.lock() {
+                        fx.set_knob_mapping(knob_index, target);
+                    }
+                }
+                AudioEngineCommand::SetFxRouting(routing) => {
+                    if let Ok(mut r) = shared_fx_routing.lock() {
+                        *r = routing;
+                    }
+                }
+                AudioEngineCommand::SetMidiMute(muted) => {
+                    shared_midi_muted.store(muted, Ordering::SeqCst);
+                }
+                AudioEngineCommand::SetArpEnabled(enabled) => {
+                    if let Ok(mut arp) = shared_arpeggiator.lock() {
+                        arp.set_enabled(enabled);
+                    }
+                }
+                AudioEngineCommand::SetArpHold(hold) => {
+                    if let Ok(mut arp) = shared_arpeggiator.lock() {
+                        arp.set_hold(hold);
+                    }
+                }
+                AudioEngineCommand::SetArpMode(mode) => {
+                    if let Ok(mut arp) = shared_arpeggiator.lock() {
+                        arp.set_mode(mode);
+                    }
+                }
+                AudioEngineCommand::SetArpRate(rate) => {
+                    if let Ok(mut arp) = shared_arpeggiator.lock() {
+                        arp.set_rate(rate);
+                    }
+                }
+                AudioEngineCommand::SetArpOctaves(octaves) => {
+                    if let Ok(mut arp) = shared_arpeggiator.lock() {
+                        arp.set_octaves(octaves);
+                    }
+                }
+                // Comandos directos del secuenciador y acciones MIDI físicas que solo existen en la cola (R1)
+                AudioEngineCommand::SequencerPlay => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        seq.play();
+                    }
+                }
+                AudioEngineCommand::SequencerPause => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        seq.pause();
+                    }
+                }
+                AudioEngineCommand::SequencerStop => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        seq.stop();
+                    }
+                }
+                AudioEngineCommand::SequencerTogglePlay => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        seq.toggle_play();
+                    }
+                }
+                AudioEngineCommand::SequencerSetBpm(bpm) => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        seq.set_bpm(bpm);
+                    }
+                }
+                AudioEngineCommand::SequencerAdjustBpm(delta) => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        seq.adjust_bpm(delta);
+                    }
+                }
+                AudioEngineCommand::SequencerTapTempo => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        let _ = seq.tap_tempo();
+                    }
+                }
+                AudioEngineCommand::SequencerSetRecord(rec) => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        seq.set_recording(rec);
+                    }
+                }
+                AudioEngineCommand::SequencerToggleRecord => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        let _ = seq.toggle_recording();
+                    }
+                }
+                AudioEngineCommand::SequencerSetStep {
+                    pad_index,
+                    step_index,
+                    velocity,
+                    save_undo,
+                } => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        seq.set_step(pad_index, step_index, velocity, save_undo);
+                    }
+                }
+                AudioEngineCommand::SequencerToggleStep {
+                    pad_index,
+                    step_index,
+                } => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        seq.toggle_step(pad_index, step_index);
+                    }
+                }
+                AudioEngineCommand::SequencerClear => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        seq.clear_pattern();
+                    }
+                }
+                AudioEngineCommand::SequencerSetResolution(res) => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        seq.set_resolution(res);
+                    }
+                }
+                AudioEngineCommand::SequencerToggleClick => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        let _ = seq.toggle_click();
+                    }
+                }
+                AudioEngineCommand::SequencerToggleBank => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        let _ = seq.toggle_bank();
+                    }
+                }
+                AudioEngineCommand::SequencerSetSelectedPad(pad_idx) => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        seq.set_selected_pad(pad_idx);
+                    }
+                }
+                AudioEngineCommand::SequencerClearSelectedTrack => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        seq.clear_selected_track();
+                    }
+                }
+                AudioEngineCommand::SequencerClearTrack(pad_idx) => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        seq.clear_track(pad_idx);
+                    }
+                }
+                AudioEngineCommand::SequencerSetQuantizeMode(mode) => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        seq.set_quantize_mode(mode);
+                    }
+                }
+                AudioEngineCommand::SequencerSetQuantizeStrength(strength) => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        seq.set_quantize_strength(strength);
+                    }
+                }
+                AudioEngineCommand::SequencerRequantize => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        seq.requantize_pattern();
+                    }
+                }
+                AudioEngineCommand::SequencerSetLatencyCompensation(ticks) => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        seq.set_latency_compensation_ticks(ticks);
+                    }
+                }
+                AudioEngineCommand::SequencerUndo => {
+                    if let Ok(mut seq) = shared_sequencer.lock() {
+                        let _ = seq.undo();
+                    }
+                }
+                AudioEngineCommand::SequencerExecuteAction(action) => {
+                    match action {
+                        SequencerAction::Play => {
+                            if let Ok(mut seq) = shared_sequencer.lock() {
+                                seq.play();
+                            }
+                        }
+                        SequencerAction::Pause => {
+                            if let Ok(mut seq) = shared_sequencer.lock() {
+                                seq.pause();
+                            }
+                        }
+                        SequencerAction::Stop => {
+                            if let Ok(mut seq) = shared_sequencer.lock() {
+                                seq.stop();
+                            }
+                        }
+                        SequencerAction::TogglePlay => {
+                            if let Ok(mut seq) = shared_sequencer.lock() {
+                                seq.toggle_play();
+                            }
+                        }
+                        SequencerAction::ToggleRecord => {
+                            if let Ok(mut seq) = shared_sequencer.lock() {
+                                let _ = seq.toggle_recording();
+                            }
+                        }
+                        SequencerAction::ToggleClick => {
+                            if let Ok(mut seq) = shared_sequencer.lock() {
+                                let _ = seq.toggle_click();
+                            }
+                        }
+                        SequencerAction::ToggleBank => {
+                            if let Ok(mut seq) = shared_sequencer.lock() {
+                                let _ = seq.toggle_bank();
+                            }
+                        }
+                        SequencerAction::TapTempo => {
+                            if let Ok(mut seq) = shared_sequencer.lock() {
+                                let _ = seq.tap_tempo();
+                            }
+                        }
+                        SequencerAction::ClearAll => {
+                            if let Ok(mut seq) = shared_sequencer.lock() {
+                                seq.clear_pattern();
+                            }
+                        }
+                        SequencerAction::ClearTrack | SequencerAction::ClearSelectedTrack => {
+                            if let Ok(mut seq) = shared_sequencer.lock() {
+                                seq.clear_selected_track();
+                            }
+                        }
+                        SequencerAction::SetResolution(res) => {
+                            if let Ok(mut seq) = shared_sequencer.lock() {
+                                seq.set_resolution(res);
+                            }
+                        }
+                        SequencerAction::BpmDown => {
+                            if let Ok(mut seq) = shared_sequencer.lock() {
+                                seq.adjust_bpm(-1.0);
+                            }
+                        }
+                        SequencerAction::BpmUp => {
+                            if let Ok(mut seq) = shared_sequencer.lock() {
+                                seq.adjust_bpm(1.0);
+                            }
+                        }
+                        SequencerAction::Requantize => {
+                            if let Ok(mut seq) = shared_sequencer.lock() {
+                                seq.requantize_pattern();
+                            }
+                        }
+                        SequencerAction::Undo => {
+                            if let Ok(mut seq) = shared_sequencer.lock() {
+                                let _ = seq.undo();
+                            }
+                        }
+                        SequencerAction::CycleResolution => {
+                            if let Ok(mut seq) = shared_sequencer.lock() {
+                                seq.toggle_resolution();
+                            }
+                        }
+                        SequencerAction::FxRouteKeys => {
+                            if let Ok(mut r) = shared_fx_routing.lock() {
+                                *r = match *r {
+                                    FxRouting::Keys => FxRouting::Off,
+                                    FxRouting::Both => FxRouting::Pads,
+                                    FxRouting::Pads => FxRouting::Both,
+                                    FxRouting::Off => FxRouting::Keys,
+                                };
+                            }
+                        }
+                        SequencerAction::FxRoutePads => {
+                            if let Ok(mut r) = shared_fx_routing.lock() {
+                                *r = match *r {
+                                    FxRouting::Pads => FxRouting::Off,
+                                    FxRouting::Both => FxRouting::Keys,
+                                    FxRouting::Keys => FxRouting::Both,
+                                    FxRouting::Off => FxRouting::Pads,
+                                };
+                            }
+                        }
+                        SequencerAction::SetBpm
+                        | SequencerAction::AdvancePage
+                        | SequencerAction::CalibrateLatency
+                        | SequencerAction::ToggleWorkstationMode
+                        | SequencerAction::ToggleVisualMetronome => {}
+                    }
+                }
+            }
+        }
+    }
+
     fn new(
         sample_rate_f: f32,
         channels: usize,
         consumer: Arc<Mutex<Option<Consumer<AudioEngineCommand>>>>,
         shared_soundfont: Arc<Mutex<Option<Arc<SoundFont>>>>,
-        shared_patch: Arc<AtomicI32>,
+        shared_bank_patch: Arc<AtomicU64>,
         shared_master_gain: Arc<Mutex<f32>>,
         shared_pad_samples: Arc<Mutex<[Option<Arc<PadSampleData>>; 8]>>,
         shared_pad_modes: Arc<Mutex<[PadPlaybackMode; 8]>>,
@@ -364,7 +920,32 @@ impl AudioRenderState {
         ui_event_producer: Arc<Mutex<Option<Producer<SequencerUiEvent>>>>,
         shared_arpeggiator: Arc<Mutex<Arpeggiator>>,
         selected_channel_pair: Arc<AtomicUsize>,
+        shared_midi_fader_ccs: Arc<Mutex<[u8; 9]>>,
+        shared_midi_knob_ccs: Arc<Mutex<[u8; 8]>>,
+        shared_midi_muted: Arc<AtomicBool>,
     ) -> Self {
+        // 0. Reconciliar y sanear comandos pendientes en la cola antes de construir el estado del nuevo stream
+        Self::reconcile_pending_commands_before_rebuild(
+            &consumer,
+            &shared_soundfont,
+            &shared_bank_patch,
+            &shared_master_gain,
+            &shared_pad_samples,
+            &shared_pad_modes,
+            &shared_pad_gains,
+            &shared_pad_engine_mode,
+            &shared_drum_soundfont,
+            &shared_drum_patch,
+            &shared_drum_pad_notes,
+            &shared_fx_rack,
+            &shared_fx_routing,
+            &shared_sequencer,
+            &shared_arpeggiator,
+            &shared_midi_fader_ccs,
+            &shared_midi_knob_ccs,
+            &shared_midi_muted,
+        );
+
         let mut pad_sampler = PadSampler::new(sample_rate_f);
         let drum_pad_notes = *shared_drum_pad_notes.lock().unwrap();
 
@@ -407,19 +988,48 @@ impl AudioRenderState {
             }
         }
 
-        let fx_rack = if let Ok(guard) = shared_fx_rack.lock() {
+        // Inicializar sintetizador melódico restaurando archivo y el par atómico indivisible (bank, patch)
+        let mut synthesizer = None;
+        if let Ok(sf_guard) = shared_soundfont.lock() {
+            if let Some(sf) = sf_guard.as_ref() {
+                let settings = SynthesizerSettings::new(sample_rate_f as i32);
+                if let Ok(mut synth) = Synthesizer::new(sf, &settings) {
+                    let (bank, patch) = unpack_bank_patch(shared_bank_patch.load(Ordering::SeqCst));
+                    synth.process_midi_message(0, 0xB0, 0, bank);
+                    synth.process_midi_message(0, 0xB0, 32, 0);
+                    synth.process_midi_message(0, 0xC0, patch, 0);
+                    synthesizer = Some(synth);
+                }
+            }
+        }
+
+        let mut fx_rack = if let Ok(guard) = shared_fx_rack.lock() {
             guard.clone()
         } else {
             AudioFxRack::new(sample_rate_f)
         };
+        fx_rack.update_sample_rate(sample_rate_f);
 
         let fx_routing = *shared_fx_routing.lock().unwrap();
 
-        let sequencer = if let Ok(guard) = shared_sequencer.lock() {
+        let mut sequencer = if let Ok(guard) = shared_sequencer.lock() {
             guard.clone()
         } else {
             StepSequencer::new(sample_rate_f)
         };
+        sequencer.update_sample_rate(sample_rate_f);
+
+        let arpeggiator = if let Ok(mut guard) = shared_arpeggiator.lock() {
+            guard.prepare_for_stream_rebuild(sample_rate_f);
+            guard.clone()
+        } else {
+            Arpeggiator::new(sample_rate_f)
+        };
+
+        let master_gain = *shared_master_gain.lock().unwrap();
+        let midi_fader_ccs = *shared_midi_fader_ccs.lock().unwrap();
+        let midi_knob_ccs = *shared_midi_knob_ccs.lock().unwrap();
+        let is_midi_muted = shared_midi_muted.load(Ordering::SeqCst);
 
         Self {
             voices: std::array::from_fn(|_| Voice {
@@ -431,14 +1041,14 @@ impl AudioRenderState {
                 release: false,
                 envelope: 0.0,
             }),
-            master_gain: 100.0 / 127.0,
+            master_gain,
             pitch_bend_ratio: 1.0,
             sample_rate_f,
             channels,
             command_consumer: consumer,
-            synthesizer: None,
+            synthesizer,
             shared_soundfont,
-            shared_patch,
+            shared_bank_patch,
             shared_master_gain,
             left_buf: vec![0.0; 4096],
             right_buf: vec![0.0; 4096],
@@ -465,12 +1075,21 @@ impl AudioRenderState {
             sequencer,
             shared_sequencer,
             ui_event_producer,
-            arpeggiator: Arpeggiator::new(sample_rate_f),
+            arpeggiator,
             shared_arpeggiator,
             selected_channel_pair,
-            midi_fader_ccs: [38, 39, 40, 41, 42, 43, 44, 45, 46],
-            midi_knob_ccs: [56, 57, 58, 59, 60, 61, 62, 63],
-            is_midi_muted: false,
+            midi_fader_ccs,
+            midi_knob_ccs,
+            is_midi_muted,
+            shared_midi_fader_ccs,
+            shared_midi_knob_ccs,
+            shared_midi_muted,
+            dirty_shared_master_gain: false,
+            dirty_shared_pad_gains: false,
+            dirty_shared_fx_rack: false,
+            dirty_shared_fx_routing: false,
+            dirty_shared_sequencer: false,
+            dirty_shared_arpeggiator: false,
         }
     }
 
@@ -483,15 +1102,88 @@ impl AudioRenderState {
         }
     }
 
-    fn sync_shared_sequencer(&self) {
-        if let Ok(mut seq) = self.shared_sequencer.try_lock() {
-            *seq = self.sequencer.clone();
+    #[inline]
+    fn sync_shared_master_gain(&mut self) {
+        if let Ok(mut g) = self.shared_master_gain.try_lock() {
+            *g = self.master_gain;
+            self.dirty_shared_master_gain = false;
+        } else {
+            self.dirty_shared_master_gain = true;
         }
     }
 
-    fn sync_shared_arpeggiator(&self) {
+    #[inline]
+    fn sync_shared_pad_gains(&mut self) {
+        if let Ok(mut gains) = self.shared_pad_gains.try_lock() {
+            *gains = self.pad_gains;
+            self.dirty_shared_pad_gains = false;
+        } else {
+            self.dirty_shared_pad_gains = true;
+        }
+    }
+
+    #[inline]
+    fn sync_shared_fx_rack(&mut self) {
+        if let Ok(mut fx) = self.shared_fx_rack.try_lock() {
+            *fx = self.fx_rack.clone();
+            self.dirty_shared_fx_rack = false;
+        } else {
+            self.dirty_shared_fx_rack = true;
+        }
+    }
+
+    #[inline]
+    fn sync_shared_fx_routing(&mut self) {
+        if let Ok(mut r) = self.shared_fx_routing.try_lock() {
+            *r = self.fx_routing;
+            self.dirty_shared_fx_routing = false;
+        } else {
+            self.dirty_shared_fx_routing = true;
+        }
+    }
+
+    #[inline]
+    fn sync_shared_sequencer(&mut self) {
+        if let Ok(mut seq) = self.shared_sequencer.try_lock() {
+            *seq = self.sequencer.clone();
+            self.dirty_shared_sequencer = false;
+        } else {
+            self.dirty_shared_sequencer = true;
+        }
+    }
+
+    #[inline]
+    fn sync_shared_arpeggiator(&mut self) {
         if let Ok(mut arp) = self.shared_arpeggiator.try_lock() {
             *arp = self.arpeggiator.clone();
+            self.dirty_shared_arpeggiator = false;
+        } else {
+            self.dirty_shared_arpeggiator = true;
+        }
+    }
+
+    /// Reintenta sincronizar hacia `shared_*` cualquier estado modificado en callbacks previos
+    /// cuyo `try_lock()` hubiera fallado momentáneamente por contención con IPC (R4).
+    /// No bloquea ni realiza asignaciones dinámicas; se invoca al inicio de cada `process_commands()`.
+    #[inline]
+    fn flush_dirty_shared_mirrors(&mut self) {
+        if self.dirty_shared_master_gain {
+            self.sync_shared_master_gain();
+        }
+        if self.dirty_shared_pad_gains {
+            self.sync_shared_pad_gains();
+        }
+        if self.dirty_shared_fx_rack {
+            self.sync_shared_fx_rack();
+        }
+        if self.dirty_shared_fx_routing {
+            self.sync_shared_fx_routing();
+        }
+        if self.dirty_shared_sequencer {
+            self.sync_shared_sequencer();
+        }
+        if self.dirty_shared_arpeggiator {
+            self.sync_shared_arpeggiator();
         }
     }
 
@@ -557,14 +1249,44 @@ impl AudioRenderState {
         }
     }
 
+    /// Procesamiento de comandos en el callback de audio (R3 / R4 / R6):
+    /// - Todas las lecturas/escrituras sobre espejos compartidos usan operaciones atómicas (`AtomicU64`,
+    ///   `AtomicBool`, `AtomicI32`) o `Mutex::try_lock()` no bloqueante con sincronización diferida
+    ///   mediante `dirty_shared_*` (`flush_dirty_shared_mirrors`) cuando hay contención transitoria.
+    /// - `MAX_COMMANDS_PER_BLOCK = 256` acota la **cantidad** de comandos drenados por bloque, pero
+    ///   **no garantiza un límite duro de tiempo de ejecución** cuando la cola contiene comandos pesados
+    ///   preexistentes como `LoadSoundFont` o `LoadDrumKitSoundFont`, los cuales invocan `Synthesizer::new`
+    ///   y liberan el `Synthesizer` anterior en el heap (riesgo RT preexistente registrado en R6).
     fn process_commands(&mut self) {
-        if let Ok(mut cons_guard) = self.command_consumer.try_lock() {
+        const MAX_COMMANDS_PER_BLOCK: usize = 256;
+        // R4: Reintentar sincronización diferida de espejos cuyos try_lock() fallaron en bloques previos,
+        // incluso si en este callback no llegan comandos nuevos en la cola.
+        self.flush_dirty_shared_mirrors();
+
+        let command_consumer = self.command_consumer.clone();
+        if let Ok(mut cons_guard) = command_consumer.try_lock() {
             if let Some(consumer) = cons_guard.as_mut() {
-                while let Ok(cmd) = consumer.pop() {
+                let mut processed = 0usize;
+                while processed < MAX_COMMANDS_PER_BLOCK {
+                    let Ok(raw_cmd) = consumer.pop() else {
+                        break;
+                    };
+                    processed += 1;
+                    let cmd = match raw_cmd {
+                        AudioEngineCommand::IpcPreApplied(inner) => *inner,
+                        other => other,
+                    };
                     match cmd {
+                        AudioEngineCommand::IpcPreApplied(_) => {}
                         AudioEngineCommand::SetMidiLearnCcMappings { faders, knobs } => {
                             self.midi_fader_ccs = faders;
                             self.midi_knob_ccs = knobs;
+                            if let Ok(mut f_guard) = self.shared_midi_fader_ccs.try_lock() {
+                                *f_guard = faders;
+                            }
+                            if let Ok(mut k_guard) = self.shared_midi_knob_ccs.try_lock() {
+                                *k_guard = knobs;
+                            }
                         }
                         AudioEngineCommand::LoadSoundFont { sound_font, patch_number, bank_number } => {
                             let settings = SynthesizerSettings::new(self.sample_rate_f as i32);
@@ -575,10 +1297,11 @@ impl AudioRenderState {
                                 synth.process_midi_message(0, 0xC0, patch_number, 0);
                                 self.synthesizer = Some(synth);
                             }
-                            if let Ok(mut sf_guard) = self.shared_soundfont.lock() {
+                            if let Ok(mut sf_guard) = self.shared_soundfont.try_lock() {
                                 *sf_guard = Some(sound_font);
                             }
-                            self.shared_patch.store(patch_number, Ordering::SeqCst);
+                            self.shared_bank_patch
+                                .store(pack_bank_patch(bank_number, patch_number), Ordering::SeqCst);
                         }
                         AudioEngineCommand::SelectPreset { patch_number, bank_number } => {
                             if let Some(synth) = &mut self.synthesizer {
@@ -589,7 +1312,8 @@ impl AudioRenderState {
                                 synth.process_midi_message(0, 0xB0, 32, 0);
                                 synth.process_midi_message(0, 0xC0, patch_number, 0);
                             }
-                            self.shared_patch.store(patch_number, Ordering::SeqCst);
+                            self.shared_bank_patch
+                                .store(pack_bank_patch(bank_number, patch_number), Ordering::SeqCst);
                         }
                         AudioEngineCommand::NoteOn { note, velocity } => {
                             if !self.is_midi_muted {
@@ -622,77 +1346,27 @@ impl AudioRenderState {
                         }
                         AudioEngineCommand::SetMasterGain(gain) => {
                             self.master_gain = gain.clamp(0.0, 1.0);
-                            if let Ok(mut g_guard) = self.shared_master_gain.lock() {
-                                *g_guard = self.master_gain;
-                            }
+                            self.sync_shared_master_gain();
                         }
                         AudioEngineCommand::ControlChange { controller, value } => {
                             // 1. Master Volume (Fader 9 / CC configurado / CC 46 / CC 7)
-                            if controller == self.midi_fader_ccs[8] || controller == 7 || controller == 46 {
+                            if is_master_volume_cc(controller, &self.midi_fader_ccs) {
                                 self.master_gain = value.clamp(0.0, 1.0);
-                                if let Ok(mut g_guard) = self.shared_master_gain.try_lock() {
-                                    *g_guard = self.master_gain;
-                                }
+                                self.sync_shared_master_gain();
                             }
 
-                            // 2. Knobs K1..K8 (CC dinámico configurado o preset LX49+ / GM)
-                            let mut knob_idx = None;
-                            for (i, &cc) in self.midi_knob_ccs.iter().enumerate() {
-                                if cc == controller {
-                                    knob_idx = Some(i);
-                                    break;
-                                }
-                            }
-                            if knob_idx.is_none() {
-                                knob_idx = match controller {
-                                    56..=63 => Some((controller - 56) as usize),
-                                    74 => Some(0),
-                                    71 => Some(1),
-                                    5 => Some(2),
-                                    84 => Some(3),
-                                    78 => Some(4),
-                                    76 => Some(5),
-                                    77 => Some(6),
-                                    10 => Some(7),
-                                    _ => None,
-                                };
-                            }
-                            if let Some(idx) = knob_idx {
+                            // 2. Knobs K1..K8 (CC dinámico configurado o preset LX49+ / GM unificado en R3)
+                            if let Some(idx) = resolve_knob_cc_index(controller, &self.midi_knob_ccs) {
                                 self.fx_rack.set_knob_value(idx, value);
-                                if let Ok(mut fx) = self.shared_fx_rack.try_lock() {
-                                    fx.set_knob_value(idx, value);
-                                }
+                                self.sync_shared_fx_rack();
                             }
 
-                            // 3. Faders de Pads F1..F8 (CC dinámico configurado o preset LX49+ / GM)
-                            let mut pad_fader_idx = None;
-                            for (i, &cc) in self.midi_fader_ccs[..8].iter().enumerate() {
-                                if cc == controller {
-                                    pad_fader_idx = Some(i);
-                                    break;
-                                }
-                            }
-                            if pad_fader_idx.is_none() {
-                                pad_fader_idx = match controller {
-                                    38..=45 => Some((controller - 38) as usize),
-                                    73 => Some(0),
-                                    75 => Some(1),
-                                    72 => Some(2),
-                                    91 => Some(3),
-                                    92 => Some(4),
-                                    93 => Some(5),
-                                    94 => Some(6),
-                                    95 => Some(7),
-                                    _ => None,
-                                };
-                            }
-                            if let Some(idx) = pad_fader_idx {
+                            // 3. Faders de Pads F1..F8 (CC dinámico configurado o preset LX49+ / GM unificado en R3)
+                            if let Some(idx) = resolve_pad_fader_cc_index(controller, &self.midi_fader_ccs) {
                                 let pad_gain = value.clamp(0.0, 1.0);
                                 self.pad_gains[idx] = pad_gain;
                                 self.pad_sampler.set_gain(idx, pad_gain);
-                                if let Ok(mut gains) = self.shared_pad_gains.try_lock() {
-                                    gains[idx] = pad_gain;
-                                }
+                                self.sync_shared_pad_gains();
                             }
 
                             // 4. Sintetizador SoundFont Melódico
@@ -760,7 +1434,7 @@ impl AudioRenderState {
                         }
                         AudioEngineCommand::LoadPadSample { pad_index, sample } => {
                             self.pad_sampler.load_sample(pad_index, sample.clone());
-                            if let Ok(mut slots) = self.shared_pad_samples.lock() {
+                            if let Ok(mut slots) = self.shared_pad_samples.try_lock() {
                                 if pad_index < 8 {
                                     slots[pad_index] = Some(sample);
                                 }
@@ -768,7 +1442,7 @@ impl AudioRenderState {
                         }
                         AudioEngineCommand::ClearPadSample { pad_index } => {
                             self.pad_sampler.clear_sample(pad_index);
-                            if let Ok(mut slots) = self.shared_pad_samples.lock() {
+                            if let Ok(mut slots) = self.shared_pad_samples.try_lock() {
                                 if pad_index < 8 {
                                     slots[pad_index] = None;
                                 }
@@ -776,7 +1450,7 @@ impl AudioRenderState {
                         }
                         AudioEngineCommand::SetPadMode { pad_index, mode } => {
                             self.pad_sampler.set_mode(pad_index, mode);
-                            if let Ok(mut modes) = self.shared_pad_modes.lock() {
+                            if let Ok(mut modes) = self.shared_pad_modes.try_lock() {
                                 if pad_index < 8 {
                                     modes[pad_index] = mode;
                                 }
@@ -787,23 +1461,19 @@ impl AudioRenderState {
                             if pad_index < 8 {
                                 self.pad_gains[pad_index] = clamped_gain;
                                 self.pad_sampler.set_gain(pad_index, clamped_gain);
-                            }
-                            if let Ok(mut gains) = self.shared_pad_gains.lock() {
-                                if pad_index < 8 {
-                                    gains[pad_index] = clamped_gain;
-                                }
+                                self.sync_shared_pad_gains();
                             }
                         }
                         AudioEngineCommand::SetPadEngineMode { mode } => {
                             self.pad_engine_mode = mode;
-                            if let Ok(mut m) = self.shared_pad_engine_mode.lock() {
+                            if let Ok(mut m) = self.shared_pad_engine_mode.try_lock() {
                                 *m = mode;
                             }
                         }
                         AudioEngineCommand::SetDrumPadNote { pad_index, note } => {
                             if pad_index < 8 {
                                 self.drum_pad_notes[pad_index] = note;
-                                if let Ok(mut notes) = self.shared_drum_pad_notes.lock() {
+                                if let Ok(mut notes) = self.shared_drum_pad_notes.try_lock() {
                                     notes[pad_index] = note;
                                 }
                             }
@@ -816,7 +1486,7 @@ impl AudioRenderState {
                                     *slot = Some(synth);
                                 }
                             }
-                            if let Ok(mut sf_guard) = self.shared_drum_soundfont.lock() {
+                            if let Ok(mut sf_guard) = self.shared_drum_soundfont.try_lock() {
                                 *sf_guard = Some(sound_font);
                             }
                             self.shared_drum_patch.store(patch_number, Ordering::SeqCst);
@@ -824,21 +1494,15 @@ impl AudioRenderState {
                         // --- FASE 4: COMANDOS DE KNOBS Y FX ---
                         AudioEngineCommand::SetKnobValue { knob_index, value } => {
                             self.fx_rack.set_knob_value(knob_index, value);
-                            if let Ok(mut fx) = self.shared_fx_rack.try_lock() {
-                                fx.set_knob_value(knob_index, value);
-                            }
+                            self.sync_shared_fx_rack();
                         }
                         AudioEngineCommand::SetKnobMapping { knob_index, target } => {
                             self.fx_rack.set_knob_mapping(knob_index, target);
-                            if let Ok(mut fx) = self.shared_fx_rack.try_lock() {
-                                fx.set_knob_mapping(knob_index, target);
-                            }
+                            self.sync_shared_fx_rack();
                         }
                         AudioEngineCommand::SetFxRouting(routing) => {
                             self.fx_routing = routing;
-                            if let Ok(mut r) = self.shared_fx_routing.try_lock() {
-                                *r = routing;
-                            }
+                            self.sync_shared_fx_routing();
                         }
                         // --- FASE 5: COMANDOS DEL SECUENCIADOR ---
                         AudioEngineCommand::SequencerPlay => {
@@ -1071,9 +1735,7 @@ impl AudioRenderState {
                                         FxRouting::Off => FxRouting::Keys,
                                     };
                                     self.fx_routing = new_routing;
-                                    if let Ok(mut r) = self.shared_fx_routing.try_lock() {
-                                        *r = new_routing;
-                                    }
+                                    self.sync_shared_fx_routing();
                                     self.send_ui_event(SequencerUiEvent::FxRoutingChanged(new_routing));
                                 }
                                 SequencerAction::FxRoutePads => {
@@ -1085,9 +1747,7 @@ impl AudioRenderState {
                                         FxRouting::Off => FxRouting::Pads,
                                     };
                                     self.fx_routing = new_routing;
-                                    if let Ok(mut r) = self.shared_fx_routing.try_lock() {
-                                        *r = new_routing;
-                                    }
+                                    self.sync_shared_fx_routing();
                                     self.send_ui_event(SequencerUiEvent::FxRoutingChanged(new_routing));
                                 }
                                 SequencerAction::AdvancePage | SequencerAction::CalibrateLatency | SequencerAction::ToggleWorkstationMode | SequencerAction::ToggleVisualMetronome => {
@@ -1124,6 +1784,7 @@ impl AudioRenderState {
                         }
                         AudioEngineCommand::SetMidiMute(muted) => {
                             self.is_midi_muted = muted;
+                            self.shared_midi_muted.store(muted, Ordering::SeqCst);
                         }
                         AudioEngineCommand::SetArpEnabled(enabled) => {
                             if enabled {
@@ -1510,7 +2171,7 @@ fn build_and_start_stream(
     supported_config: SupportedStreamConfig,
     command_consumer: Arc<Mutex<Option<Consumer<AudioEngineCommand>>>>,
     shared_soundfont: Arc<Mutex<Option<Arc<SoundFont>>>>,
-    shared_patch: Arc<AtomicI32>,
+    shared_bank_patch: Arc<AtomicU64>,
     shared_master_gain: Arc<Mutex<f32>>,
     shared_pad_samples: Arc<Mutex<[Option<Arc<PadSampleData>>; 8]>>,
     shared_pad_modes: Arc<Mutex<[PadPlaybackMode; 8]>>,
@@ -1524,6 +2185,9 @@ fn build_and_start_stream(
     shared_sequencer: Arc<Mutex<StepSequencer>>,
     ui_event_producer: Arc<Mutex<Option<Producer<SequencerUiEvent>>>>,
     shared_arpeggiator: Arc<Mutex<Arpeggiator>>,
+    shared_midi_fader_ccs: Arc<Mutex<[u8; 9]>>,
+    shared_midi_knob_ccs: Arc<Mutex<[u8; 8]>>,
+    shared_midi_muted: Arc<AtomicBool>,
     device_invalidated: Arc<AtomicBool>,
     selected_channel_pair: Arc<AtomicUsize>,
     requested_buffer_size: Option<u32>,
@@ -1561,14 +2225,13 @@ fn build_and_start_stream(
     let sample_rate = config.sample_rate.0;
     let channels = config.channels as usize;
 
-    let initial_gain = *shared_master_gain.lock().unwrap();
     let mut state = AudioRenderState::new(
         sample_rate as f32,
         channels,
         command_consumer,
-        shared_soundfont.clone(),
-        shared_patch.clone(),
-        shared_master_gain.clone(),
+        shared_soundfont,
+        shared_bank_patch,
+        shared_master_gain,
         shared_pad_samples,
         shared_pad_modes,
         shared_pad_gains,
@@ -1582,26 +2245,10 @@ fn build_and_start_stream(
         ui_event_producer,
         shared_arpeggiator,
         selected_channel_pair,
+        shared_midi_fader_ccs,
+        shared_midi_knob_ccs,
+        shared_midi_muted,
     );
-    state.master_gain = initial_gain;
-
-    // Sincronizar todos los módulos DSP al nuevo sample rate activo
-    state.fx_rack.update_sample_rate(sample_rate as f32);
-    state.sequencer.update_sample_rate(sample_rate as f32);
-    state.arpeggiator.update_sample_rate(sample_rate as f32);
-    state.pad_sampler.update_sample_rate(sample_rate as f32);
-
-    // Restaurar SoundFont melódico si ya había uno cargado
-    if let Ok(sf_guard) = shared_soundfont.lock() {
-        if let Some(sf) = sf_guard.as_ref() {
-            let settings = SynthesizerSettings::new(sample_rate as i32);
-            if let Ok(mut synth) = Synthesizer::new(sf, &settings) {
-                let patch = shared_patch.load(Ordering::SeqCst);
-                synth.process_midi_message(0, 0xC0, patch, 0);
-                state.synthesizer = Some(synth);
-            }
-        }
-    }
 
     let dev_inv = device_invalidated.clone();
     let err_fn = move |err: cpal::StreamError| {
@@ -1642,7 +2289,7 @@ fn start_asio_streaming(
     driver: Arc<asio_sys::Driver>,
     command_consumer: Arc<Mutex<Option<Consumer<AudioEngineCommand>>>>,
     shared_soundfont: Arc<Mutex<Option<Arc<SoundFont>>>>,
-    shared_patch: Arc<AtomicI32>,
+    shared_bank_patch: Arc<AtomicU64>,
     shared_master_gain: Arc<Mutex<f32>>,
     shared_pad_samples: Arc<Mutex<[Option<Arc<PadSampleData>>; 8]>>,
     shared_pad_modes: Arc<Mutex<[PadPlaybackMode; 8]>>,
@@ -1656,6 +2303,9 @@ fn start_asio_streaming(
     shared_sequencer: Arc<Mutex<StepSequencer>>,
     ui_event_producer: Arc<Mutex<Option<Producer<SequencerUiEvent>>>>,
     shared_arpeggiator: Arc<Mutex<Arpeggiator>>,
+    shared_midi_fader_ccs: Arc<Mutex<[u8; 9]>>,
+    shared_midi_knob_ccs: Arc<Mutex<[u8; 8]>>,
+    shared_midi_muted: Arc<AtomicBool>,
     selected_channel_pair: Arc<AtomicUsize>,
     requested_sample_rate: Option<u32>,
 ) -> Result<(ActiveBackend, u32, u32, usize), String> {
@@ -1683,14 +2333,13 @@ fn start_asio_streaming(
     let right_b0 = output_stream.buffer_infos[1].buffers[0] as usize;
     let right_b1 = output_stream.buffer_infos[1].buffers[1] as usize;
 
-    let initial_gain = *shared_master_gain.lock().unwrap();
     let mut state = AudioRenderState::new(
         sample_rate as f32,
         2,
         command_consumer,
-        shared_soundfont.clone(),
-        shared_patch.clone(),
-        shared_master_gain.clone(),
+        shared_soundfont,
+        shared_bank_patch,
+        shared_master_gain,
         shared_pad_samples,
         shared_pad_modes,
         shared_pad_gains,
@@ -1704,24 +2353,10 @@ fn start_asio_streaming(
         ui_event_producer,
         shared_arpeggiator,
         selected_channel_pair,
+        shared_midi_fader_ccs,
+        shared_midi_knob_ccs,
+        shared_midi_muted,
     );
-    state.master_gain = initial_gain;
-
-    state.fx_rack.update_sample_rate(sample_rate as f32);
-    state.sequencer.update_sample_rate(sample_rate as f32);
-    state.arpeggiator.update_sample_rate(sample_rate as f32);
-    state.pad_sampler.update_sample_rate(sample_rate as f32);
-
-    if let Ok(sf_guard) = shared_soundfont.lock() {
-        if let Some(sf) = sf_guard.as_ref() {
-            let settings = SynthesizerSettings::new(sample_rate as i32);
-            if let Ok(mut synth) = Synthesizer::new(sf, &settings) {
-                let patch = shared_patch.load(Ordering::SeqCst);
-                synth.process_midi_message(0, 0xC0, patch, 0);
-                state.synthesizer = Some(synth);
-            }
-        }
-    }
 
     let is_running = Arc::new(AtomicBool::new(true));
     let is_running_clone = is_running.clone();
@@ -1830,7 +2465,7 @@ fn build_and_start_asio_stream(
     existing_driver: Option<Arc<asio_sys::Driver>>,
     command_consumer: Arc<Mutex<Option<Consumer<AudioEngineCommand>>>>,
     shared_soundfont: Arc<Mutex<Option<Arc<SoundFont>>>>,
-    shared_patch: Arc<AtomicI32>,
+    shared_bank_patch: Arc<AtomicU64>,
     shared_master_gain: Arc<Mutex<f32>>,
     shared_pad_samples: Arc<Mutex<[Option<Arc<PadSampleData>>; 8]>>,
     shared_pad_modes: Arc<Mutex<[PadPlaybackMode; 8]>>,
@@ -1844,6 +2479,9 @@ fn build_and_start_asio_stream(
     shared_sequencer: Arc<Mutex<StepSequencer>>,
     ui_event_producer: Arc<Mutex<Option<Producer<SequencerUiEvent>>>>,
     shared_arpeggiator: Arc<Mutex<Arpeggiator>>,
+    shared_midi_fader_ccs: Arc<Mutex<[u8; 9]>>,
+    shared_midi_knob_ccs: Arc<Mutex<[u8; 8]>>,
+    shared_midi_muted: Arc<AtomicBool>,
     selected_channel_pair: Arc<AtomicUsize>,
     _requested_buffer_size: Option<u32>,
     requested_sample_rate: Option<u32>,
@@ -1863,7 +2501,7 @@ fn build_and_start_asio_stream(
         driver,
         command_consumer,
         shared_soundfont,
-        shared_patch,
+        shared_bank_patch,
         shared_master_gain,
         shared_pad_samples,
         shared_pad_modes,
@@ -1877,6 +2515,9 @@ fn build_and_start_asio_stream(
         shared_sequencer,
         ui_event_producer,
         shared_arpeggiator,
+        shared_midi_fader_ccs,
+        shared_midi_knob_ccs,
+        shared_midi_muted,
         selected_channel_pair,
         requested_sample_rate,
     )
@@ -1915,7 +2556,7 @@ impl AudioEngine {
             device_invalidated: Arc::new(AtomicBool::new(false)),
             command_consumer: Arc::new(Mutex::new(None)),
             shared_soundfont: Arc::new(Mutex::new(None)),
-            shared_patch: Arc::new(AtomicI32::new(0)),
+            shared_bank_patch: Arc::new(AtomicU64::new(pack_bank_patch(0, 0))),
             shared_master_gain: Arc::new(Mutex::new(100.0 / 127.0)),
             app_handle: Arc::new(Mutex::new(None)),
             watchdog_started: Arc::new(AtomicBool::new(false)),
@@ -1933,6 +2574,9 @@ impl AudioEngine {
             shared_fx_routing: Arc::new(Mutex::new(FxRouting::Off)),
             shared_sequencer: Arc::new(Mutex::new(StepSequencer::new(48000.0))),
             shared_arpeggiator: Arc::new(Mutex::new(Arpeggiator::new(48000.0))),
+            shared_midi_fader_ccs: Arc::new(Mutex::new([38, 39, 40, 41, 42, 43, 44, 45, 46])),
+            shared_midi_knob_ccs: Arc::new(Mutex::new([56, 57, 58, 59, 60, 61, 62, 63])),
+            shared_midi_muted: Arc::new(AtomicBool::new(false)),
             #[cfg(target_os = "windows")]
             standby_asio_driver: Arc::new(Mutex::new(None)),
         }
@@ -2243,7 +2887,7 @@ impl AudioEngine {
                 driver_to_use,
                 self.command_consumer.clone(),
                 self.shared_soundfont.clone(),
-                self.shared_patch.clone(),
+                self.shared_bank_patch.clone(),
                 self.shared_master_gain.clone(),
                 self.shared_pad_samples.clone(),
                 self.shared_pad_modes.clone(),
@@ -2257,6 +2901,9 @@ impl AudioEngine {
                 self.shared_sequencer.clone(),
                 self.ui_event_producer.clone(),
                 self.shared_arpeggiator.clone(),
+                self.shared_midi_fader_ccs.clone(),
+                self.shared_midi_knob_ccs.clone(),
+                self.shared_midi_muted.clone(),
                 self.selected_channel_pair.clone(),
                 buffer_size,
                 sample_rate,
@@ -2358,7 +3005,7 @@ impl AudioEngine {
             supported_config,
             self.command_consumer.clone(),
             self.shared_soundfont.clone(),
-            self.shared_patch.clone(),
+            self.shared_bank_patch.clone(),
             self.shared_master_gain.clone(),
             self.shared_pad_samples.clone(),
             self.shared_pad_modes.clone(),
@@ -2372,6 +3019,9 @@ impl AudioEngine {
             self.shared_sequencer.clone(),
             self.ui_event_producer.clone(),
             self.shared_arpeggiator.clone(),
+            self.shared_midi_fader_ccs.clone(),
+            self.shared_midi_knob_ccs.clone(),
+            self.shared_midi_muted.clone(),
             self.device_invalidated.clone(),
             self.selected_channel_pair.clone(),
             buffer_size,
@@ -2856,7 +3506,7 @@ impl AudioEngine {
             supported_config,
             self.command_consumer.clone(),
             self.shared_soundfont.clone(),
-            self.shared_patch.clone(),
+            self.shared_bank_patch.clone(),
             self.shared_master_gain.clone(),
             self.shared_pad_samples.clone(),
             self.shared_pad_modes.clone(),
@@ -2870,6 +3520,9 @@ impl AudioEngine {
             self.shared_sequencer.clone(),
             self.ui_event_producer.clone(),
             self.shared_arpeggiator.clone(),
+            self.shared_midi_fader_ccs.clone(),
+            self.shared_midi_knob_ccs.clone(),
+            self.shared_midi_muted.clone(),
             self.device_invalidated.clone(),
             self.selected_channel_pair.clone(),
             target_buf,
@@ -2909,7 +3562,7 @@ impl AudioEngine {
         let is_running = self.is_running.clone();
         let command_consumer = self.command_consumer.clone();
         let shared_soundfont = self.shared_soundfont.clone();
-        let shared_patch = self.shared_patch.clone();
+        let shared_bank_patch = self.shared_bank_patch.clone();
         let shared_master_gain = self.shared_master_gain.clone();
         let shared_pad_samples = self.shared_pad_samples.clone();
         let shared_pad_modes = self.shared_pad_modes.clone();
@@ -2922,6 +3575,9 @@ impl AudioEngine {
         let shared_fx_routing = self.shared_fx_routing.clone();
         let shared_sequencer = self.shared_sequencer.clone();
         let shared_arpeggiator = self.shared_arpeggiator.clone();
+        let shared_midi_fader_ccs = self.shared_midi_fader_ccs.clone();
+        let shared_midi_knob_ccs = self.shared_midi_knob_ccs.clone();
+        let shared_midi_muted = self.shared_midi_muted.clone();
         let ui_event_producer = self.ui_event_producer.clone();
         let app_handle = self.app_handle.clone();
 
@@ -2986,7 +3642,7 @@ impl AudioEngine {
                                     supported_config,
                                     command_consumer.clone(),
                                     shared_soundfont.clone(),
-                                    shared_patch.clone(),
+                                    shared_bank_patch.clone(),
                                     shared_master_gain.clone(),
                                     shared_pad_samples.clone(),
                                     shared_pad_modes.clone(),
@@ -3000,6 +3656,9 @@ impl AudioEngine {
                                     shared_sequencer.clone(),
                                     ui_event_producer.clone(),
                                     shared_arpeggiator.clone(),
+                                    shared_midi_fader_ccs.clone(),
+                                    shared_midi_knob_ccs.clone(),
+                                    shared_midi_muted.clone(),
                                     device_invalidated.clone(),
                                     selected_channel_pair.clone(),
                                     *target_buffer_size.lock().unwrap(),
@@ -3111,7 +3770,7 @@ mod tests {
             2,
             cons_arc,
             engine.shared_soundfont.clone(),
-            engine.shared_patch.clone(),
+            engine.shared_bank_patch.clone(),
             engine.shared_master_gain.clone(),
             engine.shared_pad_samples.clone(),
             engine.shared_pad_modes.clone(),
@@ -3126,6 +3785,9 @@ mod tests {
             engine.ui_event_producer.clone(),
             engine.shared_arpeggiator.clone(),
             engine.selected_channel_pair.clone(),
+            engine.shared_midi_fader_ccs.clone(),
+            engine.shared_midi_knob_ccs.clone(),
+            engine.shared_midi_muted.clone(),
         );
 
         // 1. Con el arpegiador apagado, el músico presiona y sostiene C4 (nota 60) -> se activa voz directa
@@ -3158,7 +3820,7 @@ mod tests {
             2,
             cons_arc,
             engine.shared_soundfont.clone(),
-            engine.shared_patch.clone(),
+            engine.shared_bank_patch.clone(),
             engine.shared_master_gain.clone(),
             engine.shared_pad_samples.clone(),
             engine.shared_pad_modes.clone(),
@@ -3173,6 +3835,9 @@ mod tests {
             engine.ui_event_producer.clone(),
             engine.shared_arpeggiator.clone(),
             engine.selected_channel_pair.clone(),
+            engine.shared_midi_fader_ccs.clone(),
+            engine.shared_midi_knob_ccs.clone(),
+            engine.shared_midi_muted.clone(),
         );
 
         // Cargar un sample sintético en los 8 pads para verificar reproducción real
@@ -3320,5 +3985,1069 @@ mod tests {
                 expected_pad_idx + 1
             );
         }
+    }
+
+    fn build_test_render_state_from_engine(
+        engine: &AudioEngine,
+        sample_rate_f: f32,
+        cons_arc: Arc<Mutex<Option<Consumer<AudioEngineCommand>>>>,
+    ) -> AudioRenderState {
+        AudioRenderState::new(
+            sample_rate_f,
+            2,
+            cons_arc,
+            engine.shared_soundfont.clone(),
+            engine.shared_bank_patch.clone(),
+            engine.shared_master_gain.clone(),
+            engine.shared_pad_samples.clone(),
+            engine.shared_pad_modes.clone(),
+            engine.shared_pad_gains.clone(),
+            engine.shared_pad_engine_mode.clone(),
+            engine.shared_drum_soundfont.clone(),
+            engine.shared_drum_patch.clone(),
+            engine.shared_drum_pad_notes.clone(),
+            engine.shared_fx_rack.clone(),
+            engine.shared_fx_routing.clone(),
+            engine.shared_sequencer.clone(),
+            engine.ui_event_producer.clone(),
+            engine.shared_arpeggiator.clone(),
+            engine.selected_channel_pair.clone(),
+            engine.shared_midi_fader_ccs.clone(),
+            engine.shared_midi_knob_ccs.clone(),
+            engine.shared_midi_muted.clone(),
+        )
+    }
+
+    #[test]
+    fn test_a06_soundfont_bank_and_preset_survive_rebuild_and_suspended_changes() {
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+
+        // Cargar un SoundFont real del proyecto (ej. Yamaha_RX7_Drums.sf2 o el primero disponible)
+        let sf = load_default_drum_soundfont().expect("Debe existir Yamaha_RX7_Drums.sf2 para prueba");
+
+        let mut state_1 = build_test_render_state_from_engine(&engine, 48000.0, cons_arc.clone());
+
+        // 1. Cargar SoundFont con banco 128 y preset 16 en vivo
+        prod.push(AudioEngineCommand::LoadSoundFont {
+            sound_font: sf.clone(),
+            patch_number: 16,
+            bank_number: 128,
+        })
+        .unwrap();
+        // Seleccionar un preset personalizado con banco distinto de cero (bank = 8, patch = 24)
+        prod.push(AudioEngineCommand::SelectPreset {
+            patch_number: 24,
+            bank_number: 8,
+        })
+        .unwrap();
+        state_1.process_commands();
+
+        assert_eq!(
+            unpack_bank_patch(engine.shared_bank_patch.load(Ordering::SeqCst)),
+            (8, 24)
+        );
+        assert!(engine.shared_soundfont.lock().unwrap().is_some());
+
+        // 2. Reconstruir AudioRenderState (simulando cambio de dispositivo o Sample Rate a 96000 Hz)
+        drop(state_1);
+        let state_2 = build_test_render_state_from_engine(&engine, 96000.0, cons_arc.clone());
+        assert!(
+            state_2.synthesizer.is_some(),
+            "El sintetizador melódico debe restaurarse automáticamente en AudioRenderState::new"
+        );
+        assert_eq!(
+            unpack_bank_patch(state_2.shared_bank_patch.load(Ordering::SeqCst)),
+            (8, 24)
+        );
+
+        // 3. Simular suspensión del motor (drop del stream activo) y cambio de preset mientras está suspendido
+        drop(state_2);
+        // Mientras está suspendido, el comando IPC actualiza el par atómico indivisible y encola SelectPreset
+        engine
+            .shared_bank_patch
+            .store(pack_bank_patch(16, 42), Ordering::SeqCst);
+        prod.push(AudioEngineCommand::SelectPreset {
+            patch_number: 42,
+            bank_number: 16,
+        })
+        .unwrap();
+
+        let mut state_3 = build_test_render_state_from_engine(&engine, 44100.0, cons_arc);
+        // Incluso antes del primer callback, AudioRenderState::new ya reconcilió la cola y nació con (16, 42)
+        assert_eq!(
+            unpack_bank_patch(state_3.shared_bank_patch.load(Ordering::SeqCst)),
+            (16, 42)
+        );
+        assert!(state_3.synthesizer.is_some());
+
+        // Y en el primer callback, conserva bank=16 y patch=42 sin revertir a un valor anterior
+        state_3.process_commands();
+        assert_eq!(
+            unpack_bank_patch(state_3.shared_bank_patch.load(Ordering::SeqCst)),
+            (16, 42)
+        );
+    }
+
+    #[test]
+    fn test_a06_arpeggiator_config_and_hold_survive_rebuild_without_hung_notes() {
+        use crate::audio::{ArpMode, ArpRate};
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+
+        let mut state_1 = build_test_render_state_from_engine(&engine, 48000.0, cons_arc.clone());
+
+        // 1. Configurar arpegiador completo con HOLD activado y tocar acorde C4 + E4
+        prod.push(AudioEngineCommand::SetArpEnabled(true)).unwrap();
+        prod.push(AudioEngineCommand::SetArpHold(true)).unwrap();
+        prod.push(AudioEngineCommand::SetArpMode(ArpMode::UpDown)).unwrap();
+        prod.push(AudioEngineCommand::SetArpRate(ArpRate::Eighth)).unwrap();
+        prod.push(AudioEngineCommand::SetArpOctaves(3)).unwrap();
+        prod.push(AudioEngineCommand::NoteOn { note: 60, velocity: 0.9 }).unwrap();
+        prod.push(AudioEngineCommand::NoteOn { note: 64, velocity: 0.8 }).unwrap();
+        state_1.process_commands();
+
+        // Avanzar muestras para que el arpegiador dispare una nota y tenga active_playing_note = Some(...)
+        let mut fired = false;
+        for _ in 0..20000 {
+            if state_1.arpeggiator.advance_sample(120.0).is_some() {
+                fired = true;
+                break;
+            }
+        }
+        assert!(fired, "El arpegiador debe haber disparado una nota antes del rebuild");
+        assert!(state_1.arpeggiator.active_playing_note.is_some());
+        state_1.sync_shared_arpeggiator();
+
+        // 2. Reconstruir AudioRenderState a un nuevo Sample Rate (96000 Hz)
+        drop(state_1);
+        let mut state_2 = build_test_render_state_from_engine(&engine, 96000.0, cons_arc.clone());
+
+        assert!(state_2.arpeggiator.enabled, "enabled debe sobrevivir al rebuild");
+        assert!(state_2.arpeggiator.hold, "hold debe sobrevivir al rebuild");
+        assert_eq!(state_2.arpeggiator.mode, ArpMode::UpDown, "mode debe sobrevivir al rebuild");
+        assert_eq!(state_2.arpeggiator.rate, ArpRate::Eighth, "rate debe sobrevivir al rebuild");
+        assert_eq!(state_2.arpeggiator.octaves, 3, "octaves debe sobrevivir al rebuild");
+        assert_eq!(state_2.arpeggiator.sample_rate_f, 96000.0, "sample_rate_f debe actualizarse");
+
+        // Verificar política de limpieza de notas transitorias y conservación de HOLD
+        assert_eq!(
+            state_2.arpeggiator.held_count, 0,
+            "Las teclas físicas transitorias (held_notes) deben limpiarse para evitar notas colgadas por NoteOff perdido"
+        );
+        assert!(
+            state_2.arpeggiator.active_playing_note.is_none(),
+            "active_playing_note debe limpiarse al reconstruir el stream"
+        );
+        assert_eq!(
+            state_2.arpeggiator.hold_count, 2,
+            "El acorde retenido en HOLD debe conservarse tras reconstruir el stream"
+        );
+        assert!(
+            state_2.arpeggiator.sequence_len > 0,
+            "La secuencia arpegiada en HOLD debe seguir lista para sonar"
+        );
+        assert!(
+            state_2.voices.iter().all(|v| !v.active),
+            "Ninguna voz del sintetizador fallback debe nacer colgada"
+        );
+
+        // 3. Verificar que si HOLD está desactivado, las notas físicas presionadas NO dejan el arpegiador sonando tras rebuild
+        prod.push(AudioEngineCommand::SetArpHold(false)).unwrap();
+        prod.push(AudioEngineCommand::NoteOn { note: 67, velocity: 0.8 }).unwrap();
+        state_2.process_commands();
+        assert_eq!(state_2.arpeggiator.held_count, 1);
+
+        drop(state_2);
+        let state_3 = build_test_render_state_from_engine(&engine, 44100.0, cons_arc);
+        assert!(state_3.arpeggiator.enabled);
+        assert!(!state_3.arpeggiator.hold);
+        assert_eq!(state_3.arpeggiator.held_count, 0);
+        assert_eq!(state_3.arpeggiator.sequence_len, 0);
+        assert!(state_3.arpeggiator.active_playing_note.is_none());
+    }
+
+    #[test]
+    fn test_a06_midi_learn_ccs_and_mute_survive_rebuild_and_pending_commands_stay_coherent() {
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+
+        let mut state_1 = build_test_render_state_from_engine(&engine, 48000.0, cons_arc.clone());
+
+        let custom_faders: [u8; 9] = [10, 11, 12, 13, 14, 15, 16, 17, 18];
+        let custom_knobs: [u8; 8] = [70, 71, 72, 73, 74, 75, 76, 77];
+
+        // 1. Aplicar mapeo MIDI Learn personalizado y activar MIDI Mute
+        prod.push(AudioEngineCommand::SetMidiLearnCcMappings {
+            faders: custom_faders,
+            knobs: custom_knobs,
+        })
+        .unwrap();
+        prod.push(AudioEngineCommand::SetMidiMute(true)).unwrap();
+        state_1.process_commands();
+
+        assert_eq!(state_1.midi_fader_ccs, custom_faders);
+        assert_eq!(state_1.midi_knob_ccs, custom_knobs);
+        assert!(state_1.is_midi_muted);
+
+        // 2. Reconstruir AudioRenderState y verificar que CCs personalizados y MIDI Mute sobreviven
+        drop(state_1);
+        let mut state_2 = build_test_render_state_from_engine(&engine, 96000.0, cons_arc.clone());
+        assert_eq!(
+            state_2.midi_fader_ccs, custom_faders,
+            "Los 9 CCs de faders aprendidos deben sobrevivir a la reconstrucción"
+        );
+        assert_eq!(
+            state_2.midi_knob_ccs, custom_knobs,
+            "Los 8 CCs de knobs aprendidos deben sobrevivir a la reconstrucción"
+        );
+        assert!(
+            state_2.is_midi_muted,
+            "El estado MIDI Mute debe permanecer activo tras la reconstrucción"
+        );
+
+        // Verificar que con MIDI Mute activo, NoteOn melódico está efectivamente silenciado
+        // mientras que los CCs personalizados de faders (CC 18 -> Master Volume) y pads (CC 10 -> Pad 1)
+        // siguen funcionando tras el rebuild
+        prod.push(AudioEngineCommand::NoteOn { note: 60, velocity: 1.0 }).unwrap();
+        prod.push(AudioEngineCommand::ControlChange {
+            controller: custom_faders[8], // CC 18 = Master Fader aprendido
+            value: 0.25,
+        })
+        .unwrap();
+        prod.push(AudioEngineCommand::ControlChange {
+            controller: custom_faders[0], // CC 10 = Fader Pad 1 aprendido
+            value: 0.75,
+        })
+        .unwrap();
+        state_2.process_commands();
+        assert!(
+            state_2.voices.iter().all(|v| !v.active),
+            "Con MIDI Mute activo tras el rebuild, NoteOn melódico no debe activar voces"
+        );
+        assert!(
+            (state_2.master_gain - 0.25).abs() < 1e-6,
+            "El CC personalizado del Master Fader (CC 18) debe funcionar tras el rebuild"
+        );
+        assert!(
+            (state_2.pad_gains[0] - 0.75).abs() < 1e-6,
+            "El CC personalizado del Fader 1 (CC 10) debe controlar pad_gains[0] tras el rebuild"
+        );
+
+        // 3. Simular múltiples comandos pendientes encolados en orden mientras el stream está detenido
+        // para verificar que comandos anteriores en la cola NO revierten la configuración más reciente
+        drop(state_2);
+
+        // El usuario desactiva MIDI Mute, cambia el preset dos veces (primero bank 1/patch 5, luego bank 3/patch 99)
+        // y mueve el fader maestro personalizado (CC 18 -> 0.5)
+        engine.shared_midi_muted.store(false, Ordering::SeqCst);
+        prod.push(AudioEngineCommand::SetMidiMute(false)).unwrap();
+
+        engine
+            .shared_bank_patch
+            .store(pack_bank_patch(1, 5), Ordering::SeqCst);
+        prod.push(AudioEngineCommand::SelectPreset {
+            patch_number: 5,
+            bank_number: 1,
+        })
+        .unwrap();
+
+        engine
+            .shared_bank_patch
+            .store(pack_bank_patch(3, 99), Ordering::SeqCst);
+        prod.push(AudioEngineCommand::SelectPreset {
+            patch_number: 99,
+            bank_number: 3,
+        })
+        .unwrap();
+
+        prod.push(AudioEngineCommand::ControlChange {
+            controller: custom_faders[8], // CC 18 = Master Fader aprendido
+            value: 0.5,
+        })
+        .unwrap();
+
+        let mut state_3 = build_test_render_state_from_engine(&engine, 48000.0, cons_arc);
+        state_3.process_commands();
+
+        assert!(!state_3.is_midi_muted);
+        assert_eq!(
+            unpack_bank_patch(state_3.shared_bank_patch.load(Ordering::SeqCst)),
+            (3, 99),
+            "El comando pendiente anterior (bank 1, patch 5) no debe revertir la última selección (bank 3, patch 99)"
+        );
+        assert!(
+            (state_3.master_gain - 0.5).abs() < 1e-6,
+            "El CC personalizado del Master Fader (CC 18) debe controlar master_gain tras el rebuild"
+        );
+    }
+
+    #[test]
+    fn test_a06_pending_set_arp_hold_after_rebuild_preserves_chord() {
+        // Caso exacto del requisito 1 y 7.1:
+        // - Acorde C4 (60) + E4 (64).
+        // - Activar HOLD.
+        // - Reconstruir el stream.
+        // - Procesar SetArpHold(true) pendiente (tanto en la cola previa al rebuild como después del rebuild).
+        // - Comprobar que el acorde C4 + E4 sigue retenido.
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+
+        let mut state_1 = build_test_render_state_from_engine(&engine, 48000.0, cons_arc.clone());
+
+        prod.push(AudioEngineCommand::SetArpEnabled(true)).unwrap();
+        prod.push(AudioEngineCommand::SetArpHold(true)).unwrap();
+        prod.push(AudioEngineCommand::NoteOn { note: 60, velocity: 0.9 }).unwrap();
+        prod.push(AudioEngineCommand::NoteOn { note: 64, velocity: 0.85 }).unwrap();
+        state_1.process_commands();
+
+        // El músico suelta las teclas físicas mientras HOLD está activo
+        prod.push(AudioEngineCommand::NoteOff { note: 60 }).unwrap();
+        prod.push(AudioEngineCommand::NoteOff { note: 64 }).unwrap();
+        state_1.process_commands();
+
+        assert_eq!(state_1.arpeggiator.held_count, 0);
+        assert_eq!(state_1.arpeggiator.hold_count, 2);
+        assert_eq!(state_1.arpeggiator.sequence_len, 2);
+
+        // Queda un SetArpHold(true) pendiente en la cola antes de reconstruir el stream
+        prod.push(AudioEngineCommand::SetArpHold(true)).unwrap();
+        drop(state_1);
+
+        // Reconstruir el stream
+        let mut state_2 = build_test_render_state_from_engine(&engine, 44100.0, cons_arc);
+        assert!(state_2.arpeggiator.hold);
+        assert_eq!(
+            state_2.arpeggiator.hold_count, 2,
+            "El acorde C4 + E4 debe sobrevivir a la reconciliación previa al rebuild con SetArpHold(true) pendiente"
+        );
+        assert_eq!(state_2.arpeggiator.sequence_len, 2);
+
+        // Y si llega otro SetArpHold(true) redundante después del rebuild (cuando held_count == 0),
+        // process_commands tampoco debe borrar el acorde retenido
+        prod.push(AudioEngineCommand::SetArpHold(true)).unwrap();
+        state_2.process_commands();
+
+        assert!(state_2.arpeggiator.hold);
+        assert_eq!(
+            state_2.arpeggiator.hold_count, 2,
+            "Un comando SetArpHold(true) procesado tras el rebuild cuando held_count == 0 no debe borrar el acorde C4 + E4"
+        );
+        assert_eq!(state_2.arpeggiator.sequence_len, 2);
+        assert_eq!(state_2.arpeggiator.sequence[0], 60);
+        assert_eq!(state_2.arpeggiator.sequence[1], 64);
+    }
+
+    #[test]
+    fn test_a06_concurrent_ipc_updates_preserve_order_and_full_queue_policy() {
+        // Casos 7.2 y 7.3 + R2:
+        // - Dos actualizaciones IPC concurrentes serializadas por el orden de locks (audio_engine -> audio_producer)
+        //   mantienen coherencia exacta entre shared_* y la cola SPSC.
+        // - Cuando la cola se llena (saturación con PushError::Full), la configuración más reciente en shared_*
+        //   prevalece y los comandos IPC antiguos (IpcPreApplied) previos a la saturación no sobrescriben el
+        //   estado al reconstruir, mientras que los eventos MIDI físicos legítimos en la misma cola llena sí se conservan.
+        let (prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine_arc = Arc::new(Mutex::new(AudioEngine::new()));
+        let prod_arc = Arc::new(Mutex::new(prod));
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+
+        // 1. Dos hilos concurrentes actualizando banco/preset bajo la misma política de locks que main.rs
+        let mut handles = Vec::new();
+        for (bank, patch) in [(2i32, 10i32), (7i32, 88i32)] {
+            let eng_clone = engine_arc.clone();
+            let prod_clone = prod_arc.clone();
+            handles.push(std::thread::spawn(move || {
+                let engine = eng_clone.lock().unwrap();
+                engine
+                    .shared_bank_patch
+                    .store(pack_bank_patch(bank, patch), Ordering::SeqCst);
+                let mut prod = prod_clone.lock().unwrap();
+                prod.push(AudioEngineCommand::IpcPreApplied(Box::new(
+                    AudioEngineCommand::SelectPreset {
+                        patch_number: patch,
+                        bank_number: bank,
+                    },
+                )))
+                .unwrap();
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // El valor final en shared_bank_patch debe coincidir exactamente con el último comando IPC
+        let expected_pair = {
+            let engine = engine_arc.lock().unwrap();
+            unpack_bank_patch(engine.shared_bank_patch.load(Ordering::SeqCst))
+        };
+        let state_after_concurrent = {
+            let engine = engine_arc.lock().unwrap();
+            build_test_render_state_from_engine(&engine, 48000.0, cons_arc.clone())
+        };
+        assert_eq!(
+            unpack_bank_patch(state_after_concurrent.shared_bank_patch.load(Ordering::SeqCst)),
+            expected_pair,
+            "La serialización audio_engine -> audio_producer debe impedir inversión entre shared_* y la cola"
+        );
+        drop(state_after_concurrent);
+
+        // 2. Política de cola llena: saturar los 64 slots con comandos IPC antiguos (bank=1, patch=1)
+        // y un comando MIDI físico legítimo (ControlChange CC 7 = 0.33) en el último slot.
+        {
+            let mut prod = prod_arc.lock().unwrap();
+            for _ in 0..63 {
+                prod.push(AudioEngineCommand::IpcPreApplied(Box::new(
+                    AudioEngineCommand::SelectPreset {
+                        patch_number: 1,
+                        bank_number: 1,
+                    },
+                )))
+                .unwrap();
+            }
+            prod.push(AudioEngineCommand::ControlChange {
+                controller: 7,
+                value: 0.33,
+            })
+            .unwrap();
+            assert!(prod.is_full(), "La cola SPSC debe estar llena (64/64)");
+        }
+
+        // Con la cola llena, entra una nueva selección IPC (bank=9, patch=120) y MIDI Mute = true:
+        // push() falla con PushError::Full, pero shared_* registra el estado más reciente.
+        {
+            let engine = engine_arc.lock().unwrap();
+            engine
+                .shared_bank_patch
+                .store(pack_bank_patch(9, 120), Ordering::SeqCst);
+            engine.shared_midi_muted.store(true, Ordering::SeqCst);
+            let mut prod = prod_arc.lock().unwrap();
+            assert!(
+                prod.push(AudioEngineCommand::IpcPreApplied(Box::new(
+                    AudioEngineCommand::SelectPreset {
+                        patch_number: 120,
+                        bank_number: 9,
+                    },
+                )))
+                .is_err()
+            );
+        }
+
+        // Al reconstruir el stream, reconcile_pending_commands_before_rebuild ignora los IpcPreApplied
+        // antiguos pre-saturación (bank=1, patch=1), preserva (9, 120) + mute=true de shared_*,
+        // y NO descarta el ControlChange físico legítimo (master_gain = 0.33) que estaba en la cola llena.
+        let mut state_after_full = {
+            let engine = engine_arc.lock().unwrap();
+            build_test_render_state_from_engine(&engine, 48000.0, cons_arc)
+        };
+        state_after_full.process_commands();
+        assert_eq!(
+            unpack_bank_patch(state_after_full.shared_bank_patch.load(Ordering::SeqCst)),
+            (9, 120),
+            "Los comandos IPC antiguos previos a una saturación de cola no deben sobrescribir la configuración más reciente en shared_*"
+        );
+        assert!(state_after_full.is_midi_muted);
+        assert!(
+            (state_after_full.master_gain - 0.33).abs() < 1e-6,
+            "Un comando MIDI físico legítimo dentro de una cola llena no debe ser descartado"
+        );
+    }
+
+    #[test]
+    fn test_a06_stale_transient_commands_discarded_on_rebuild_without_hung_voices() {
+        // Casos 7.6 y 7.7:
+        // - Comandos transitorios antiguos (NoteOn directo, PadTrigger sin grabación) pendientes en la cola del stream
+        //   anterior NO deben ejecutarse tardíamente ni dejar voces colgadas al reconstruir el stream,
+        //   mientras que los comandos de configuración en la misma cola sí se reconcilian.
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+
+        // Cargar un sample en Pad 1 para comprobar que PadTrigger antiguo no suena tras el rebuild
+        let dummy_sample = Arc::new(PadSampleData {
+            name: "StaleHit.wav".to_string(),
+            sample_rate: 48000,
+            data_l: vec![0.8f32; 128],
+            data_r: vec![0.8f32; 128],
+            length: 128,
+        });
+        engine.shared_pad_samples.lock().unwrap()[0] = Some(dummy_sample);
+
+        // Encolar eventos transitorios antiguos + un cambio de configuración legítimo antes del rebuild
+        prod.push(AudioEngineCommand::NoteOn {
+            note: 72,
+            velocity: 1.0,
+        })
+        .unwrap();
+        prod.push(AudioEngineCommand::PadTrigger {
+            pad_index: 0,
+            velocity: 1.0,
+        })
+        .unwrap();
+        prod.push(AudioEngineCommand::SetMasterGain(0.42)).unwrap();
+
+        let mut rebuilt_state = build_test_render_state_from_engine(&engine, 48000.0, cons_arc);
+        rebuilt_state.process_commands();
+
+        // 1. El cambio de configuración (MasterGain = 0.42) se conservó
+        assert!((rebuilt_state.master_gain - 0.42).abs() < 1e-6);
+        // 2. El NoteOn transitorio antiguo fue descartado -> 0 voces activas/colgadas
+        assert!(
+            rebuilt_state.voices.iter().all(|v| !v.active),
+            "Los NoteOn transitorios antiguos en la cola previa al rebuild deben descartarse sin dejar voces colgadas"
+        );
+        // 3. El PadTrigger transitorio antiguo fue descartado -> Pad 1 en silencio
+        let mut left = [0.0f32; 16];
+        let mut right = [0.0f32; 16];
+        rebuilt_state.pad_sampler.render_mix(&mut left, &mut right, 16);
+        let energy: f32 = left.iter().map(|s| s.abs()).sum();
+        assert_eq!(
+            energy, 0.0,
+            "Los PadTrigger transitorios antiguos en la cola previa al rebuild no deben dispararse tardíamente"
+        );
+    }
+
+    #[test]
+    fn test_a06_r1_sequencer_play_followed_by_toggle_play_and_non_idempotent_ipc_not_duplicated() {
+        // Casos 7.1 y 7.3 (R1):
+        // - SequencerPlay seguido de SequencerTogglePlay desde IPC durante suspensión conserva is_playing == false.
+        // - Operaciones no idempotentes desde IPC (ToggleRecord, ToggleBank, Undo, Clear, Requantize)
+        //   NO se ejecutan dos veces al reconstruir el stream.
+        use crate::audio::sequencer::{PatternBank, QuantizeMode};
+
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+
+        // 1. Simular invocaciones IPC mientras el motor está suspendido:
+        //    sequencer_play -> sequencer_toggle_play (debe terminar en pausa: is_playing == false)
+        {
+            let mut seq = engine.shared_sequencer.lock().unwrap();
+            seq.play();
+        }
+        prod.push(AudioEngineCommand::IpcPreApplied(Box::new(
+            AudioEngineCommand::SequencerPlay,
+        )))
+        .unwrap();
+
+        {
+            let mut seq = engine.shared_sequencer.lock().unwrap();
+            let playing = seq.toggle_play();
+            assert!(!playing, "TogglePlay después de Play debe dejar is_playing == false");
+        }
+        prod.push(AudioEngineCommand::IpcPreApplied(Box::new(
+            AudioEngineCommand::SequencerTogglePlay,
+        )))
+        .unwrap();
+
+        // 2. Simular operaciones no idempotentes desde IPC:
+        //    - ToggleRecord (false -> true)
+        //    - ToggleBank (A -> B)
+        //    - Dos ediciones con historial de Undo + un solo Undo (debe deshacer solo la segunda edición, NO las dos)
+        {
+            let mut seq = engine.shared_sequencer.lock().unwrap();
+            assert!(seq.toggle_recording());
+            assert_eq!(seq.toggle_bank(), PatternBank::B);
+            seq.set_step(0, 0, 127, true);
+            seq.set_step(0, 4, 127, true);
+            assert!(seq.undo()); // Deshace el paso 4, dejando el paso 0 activo en el Banco B
+            seq.set_quantize_mode(QuantizeMode::Sixteenth);
+            seq.requantize_pattern();
+        }
+        prod.push(AudioEngineCommand::IpcPreApplied(Box::new(
+            AudioEngineCommand::SequencerToggleRecord,
+        )))
+        .unwrap();
+        prod.push(AudioEngineCommand::IpcPreApplied(Box::new(
+            AudioEngineCommand::SequencerToggleBank,
+        )))
+        .unwrap();
+        prod.push(AudioEngineCommand::IpcPreApplied(Box::new(
+            AudioEngineCommand::SequencerSetStep {
+                pad_index: 0,
+                step_index: 0,
+                velocity: 127,
+                save_undo: true,
+            },
+        )))
+        .unwrap();
+        prod.push(AudioEngineCommand::IpcPreApplied(Box::new(
+            AudioEngineCommand::SequencerSetStep {
+                pad_index: 0,
+                step_index: 4,
+                velocity: 127,
+                save_undo: true,
+            },
+        )))
+        .unwrap();
+        prod.push(AudioEngineCommand::IpcPreApplied(Box::new(
+            AudioEngineCommand::SequencerUndo,
+        )))
+        .unwrap();
+        prod.push(AudioEngineCommand::IpcPreApplied(Box::new(
+            AudioEngineCommand::SequencerSetQuantizeMode(QuantizeMode::Sixteenth),
+        )))
+        .unwrap();
+        prod.push(AudioEngineCommand::IpcPreApplied(Box::new(
+            AudioEngineCommand::SequencerRequantize,
+        )))
+        .unwrap();
+
+        // Reconstruir AudioRenderState y ejecutar process_commands()
+        let mut rebuilt = build_test_render_state_from_engine(&engine, 48000.0, cons_arc);
+        rebuilt.process_commands();
+
+        assert!(
+            !rebuilt.sequencer.is_playing,
+            "Play seguido de TogglePlay durante suspensión debe conservar is_playing == false"
+        );
+        assert!(
+            rebuilt.sequencer.is_recording,
+            "ToggleRecord desde IPC no debe ejecutarse dos veces en el rebuild"
+        );
+        assert_eq!(
+            rebuilt.sequencer.current_bank,
+            PatternBank::B,
+            "ToggleBank desde IPC no debe ejecutarse dos veces (debe permanecer en Banco B)"
+        );
+        let active_pat = rebuilt.sequencer.get_active_pattern();
+        assert_eq!(
+            active_pat[0][0], 127,
+            "Undo desde IPC no debe ejecutarse dos veces: el primer paso debe seguir activo"
+        );
+        assert_eq!(
+            active_pat[0][4], 0,
+            "El segundo paso deshecho por Undo debe permanecer en 0"
+        );
+    }
+
+    #[test]
+    fn test_a06_r1_physical_midi_sequencer_execute_action_and_fx_routing_preserved_on_rebuild() {
+        // Caso 7.2 (R1):
+        // - SequencerExecuteAction proveniente de MIDI físico pendiente en la cola al reconstruir
+        //   (que solo existe en la cola y NO pasó por IPC) se reconcilia y aplica tanto a
+        //   shared_sequencer como a shared_fx_routing (FxRouteKeys / FxRoutePads).
+        use crate::audio::fx::FxRouting;
+        use crate::audio::sequencer::{PatternBank, SequencerAction};
+
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+
+        // Estado inicial de enrutamiento FX: Off (Keys=false, Pads=false)
+        assert_eq!(*engine.shared_fx_routing.lock().unwrap(), FxRouting::Off);
+
+        // El controlador MIDI físico envía acciones que solo entran a la cola SPSC:
+        // 1. TogglePlay -> activa reproducción
+        // 2. ToggleBank -> cambia a Banco B
+        // 3. FxRouteKeys -> activa Keys en el bus FX (Off -> Keys)
+        prod.push(AudioEngineCommand::SequencerExecuteAction(
+            SequencerAction::TogglePlay,
+        ))
+        .unwrap();
+        prod.push(AudioEngineCommand::SequencerExecuteAction(
+            SequencerAction::ToggleBank,
+        ))
+        .unwrap();
+        prod.push(AudioEngineCommand::SequencerExecuteAction(
+            SequencerAction::FxRouteKeys,
+        ))
+        .unwrap();
+
+        let rebuilt_1 = build_test_render_state_from_engine(&engine, 48000.0, cons_arc.clone());
+        assert!(
+            rebuilt_1.sequencer.is_playing,
+            "SequencerExecuteAction(TogglePlay) físico pendiente debe aplicarse al reconstruir"
+        );
+        assert_eq!(
+            rebuilt_1.sequencer.current_bank,
+            PatternBank::B,
+            "SequencerExecuteAction(ToggleBank) físico pendiente debe aplicarse al reconstruir"
+        );
+        assert_eq!(
+            rebuilt_1.fx_routing,
+            FxRouting::Keys,
+            "SequencerExecuteAction(FxRouteKeys) pendiente debe conmutar FxRouting::Off -> FxRouting::Keys"
+        );
+        drop(rebuilt_1);
+
+        // Ahora encolamos FxRoutePads pendiente antes de un segundo rebuild (Keys -> Both)
+        prod.push(AudioEngineCommand::SequencerExecuteAction(
+            SequencerAction::FxRoutePads,
+        ))
+        .unwrap();
+        let rebuilt_2 = build_test_render_state_from_engine(&engine, 48000.0, cons_arc);
+        assert_eq!(
+            rebuilt_2.fx_routing,
+            FxRouting::Both,
+            "SequencerExecuteAction(FxRoutePads) pendiente debe conmutar FxRouting::Keys -> FxRouting::Both"
+        );
+    }
+
+    #[test]
+    fn test_a06_r2_exact_capacity_queue_without_overflow_processes_all_commands() {
+        // Caso 7.4 (R2):
+        // - Cola exactamente llena (slots == capacity, 64/64) SIN que haya ocurrido ningún PushError::Full.
+        // - Ningún comando legítimo debe ser descartado por el hecho de que la cola haya alcanzado 100% de ocupación.
+        use crate::audio::sequencer::SequencerAction;
+
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+
+        // Llenar exactamente los 64 slots sin fallar ningún push:
+        // - 61 ajustes de BPM (+1.0 cada uno desde 120.0 -> 181.0)
+        // - 1 ControlChange (Master Volume CC 7 = 0.65)
+        // - 1 ControlChange (Fader Pad 1 CC 38 = 0.45)
+        // - 1 SequencerExecuteAction(TogglePlay)
+        for _ in 0..61 {
+            prod.push(AudioEngineCommand::SequencerAdjustBpm(1.0)).unwrap();
+        }
+        prod.push(AudioEngineCommand::ControlChange {
+            controller: 7,
+            value: 0.65,
+        })
+        .unwrap();
+        prod.push(AudioEngineCommand::ControlChange {
+            controller: 38,
+            value: 0.45,
+        })
+        .unwrap();
+        prod.push(AudioEngineCommand::SequencerExecuteAction(
+            SequencerAction::TogglePlay,
+        ))
+        .unwrap();
+
+        assert!(
+            prod.is_full(),
+            "La cola debe estar exactamente al 100% de su capacidad (64/64)"
+        );
+
+        let rebuilt = build_test_render_state_from_engine(&engine, 48000.0, cons_arc);
+        assert!(
+            (rebuilt.sequencer.bpm - 181.0).abs() < 1e-4,
+            "Los 61 comandos en la cola 100% llena deben haberse procesado en orden FIFO (120 + 61 = 181 BPM)"
+        );
+        assert!((rebuilt.master_gain - 0.65).abs() < 1e-6);
+        assert!((rebuilt.pad_gains[0] - 0.45).abs() < 1e-6);
+        assert!(rebuilt.sequencer.is_playing);
+    }
+
+    #[test]
+    fn test_a06_r3_cc_fallback_gm_lx49_and_custom_midi_learn_unified_between_reconcile_and_live() {
+        // Caso 7.6 (R3):
+        // - Verificar que la prioridad MIDI Learn > fallback GM/LX49+ y la prevención de aplicación
+        //   duplicada producen el mismo resultado exacto en reconcile_pending_commands_before_rebuild
+        //   y en process_commands.
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+
+        // Personalizar:
+        // - Knob 1 aprendido en CC 90 (ya NO usa su fallback de fábrica LX49+ CC 56)
+        // - Fader Pad 1 aprendido en CC 102 (ya NO usa su fallback de fábrica LX49+ CC 38)
+        // - Master Fader aprendido en CC 110 (además del fallback GM CC 7 / LX49+ CC 46)
+        // - Los demás knobs (2..8 -> 57..=63) y faders (2..8 -> 39..=45) conservan sus valores por defecto
+        let mut custom_faders: [u8; 9] = [38, 39, 40, 41, 42, 43, 44, 45, 46];
+        custom_faders[0] = 102; // Pad 1 aprendido en CC 102
+        custom_faders[8] = 110; // Master aprendido en CC 110
+
+        let mut custom_knobs: [u8; 8] = [56, 57, 58, 59, 60, 61, 62, 63];
+        custom_knobs[0] = 90; // Knob 1 aprendido en CC 90
+
+        *engine.shared_midi_fader_ccs.lock().unwrap() = custom_faders;
+        *engine.shared_midi_knob_ccs.lock().unwrap() = custom_knobs;
+
+        // Encolar antes del rebuild (se procesará en reconcile_pending_commands_before_rebuild):
+        // 1. CC 56 (antiguo CC de fábrica LX49+ para Knob 1): como Knob 1 fue reasignado a CC 90, CC 56 NO debe mover Knob 1
+        prod.push(AudioEngineCommand::ControlChange {
+            controller: 56,
+            value: 0.99,
+        })
+        .unwrap();
+        // 2. CC 90 (aprendido para Knob 1): sí debe mover Knob 1 a 0.37
+        prod.push(AudioEngineCommand::ControlChange {
+            controller: 90,
+            value: 0.37,
+        })
+        .unwrap();
+        // 3. CC 71 (fallback GM Resonance para Knob 2, que sigue en su default CC 57): sí debe mover Knob 2 a 0.61
+        prod.push(AudioEngineCommand::ControlChange {
+            controller: 71,
+            value: 0.61,
+        })
+        .unwrap();
+        // 4. CC 7 (fallback GM Master Volume): debe actualizar master_gain a 0.55 aunque Master tenga CC 110 aprendido
+        prod.push(AudioEngineCommand::ControlChange {
+            controller: 7,
+            value: 0.55,
+        })
+        .unwrap();
+        // 5. CC 38 (antiguo CC de fábrica LX49+ para Pad 1): ignorado porque Pad 1 tiene CC 102 aprendido
+        prod.push(AudioEngineCommand::ControlChange {
+            controller: 38,
+            value: 0.12,
+        })
+        .unwrap();
+        // 6. CC 102 (aprendido para Pad 1): debe mover pad_gains[0] a 0.82
+        prod.push(AudioEngineCommand::ControlChange {
+            controller: 102,
+            value: 0.82,
+        })
+        .unwrap();
+
+        let mut state = build_test_render_state_from_engine(&engine, 48000.0, cons_arc);
+        let knobs_after_reconcile = state.fx_rack.get_mappings_info();
+        assert!(
+            (knobs_after_reconcile[0].value - 0.37).abs() < 1e-6,
+            "En reconciliación: Knob 1 debe responder a su CC aprendido (90) e ignorar su antiguo fallback LX49+ (CC 56)"
+        );
+        assert!(
+            (knobs_after_reconcile[1].value - 0.61).abs() < 1e-6,
+            "En reconciliación: Knob 2 con mapeo default (57) debe responder también al fallback GM CC 71"
+        );
+        assert!(
+            (state.master_gain - 0.55).abs() < 1e-6,
+            "En reconciliación: CC 7 (GM Master Volume) debe actualizar master_gain"
+        );
+        assert!(
+            (state.pad_gains[0] - 0.82).abs() < 1e-6,
+            "En reconciliación: CC 102 aprendido debe actualizar pad_gains[0] e ignorar CC 38 antiguo"
+        );
+
+        // Ahora enviar los mismos tipos de CC en vivo (se procesarán en process_commands) y verificar idéntica semántica:
+        prod.push(AudioEngineCommand::ControlChange {
+            controller: 56, // Ignorado porque Knob 1 tiene CC 90
+            value: 0.11,
+        })
+        .unwrap();
+        prod.push(AudioEngineCommand::ControlChange {
+            controller: 5, // Fallback GM Portamento Time -> Knob 3 (sigue en default CC 58)
+            value: 0.44,
+        })
+        .unwrap();
+        prod.push(AudioEngineCommand::ControlChange {
+            controller: 110, // Master aprendido
+            value: 0.73,
+        })
+        .unwrap();
+        state.process_commands();
+
+        let knobs_after_live = state.fx_rack.get_mappings_info();
+        assert!((knobs_after_live[0].value - 0.37).abs() < 1e-6);
+        assert!((knobs_after_live[2].value - 0.44).abs() < 1e-6);
+        assert!((state.master_gain - 0.73).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_a06_r4_deferred_dirty_shared_sync_recovers_on_next_callback_without_new_commands() {
+        // Caso 7.7 (R4):
+        // - Fallo forzado de try_lock() en los espejos shared_* durante process_commands().
+        // - El estado local de AudioRenderState se actualiza inmediatamente, marcando dirty_shared_* = true.
+        // - Al liberarse el lock externo, el siguiente callback (process_commands sin nuevos comandos)
+        //   sincroniza automáticamente todos los espejos shared_* pendientes y limpia las banderas dirty.
+        use crate::audio::fx::FxRouting;
+        use crate::audio::sequencer::SequencerAction;
+
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+
+        let mut state = build_test_render_state_from_engine(&engine, 48000.0, cons_arc.clone());
+
+        // Activar Arp + HOLD primero para poder probar la sincronización diferida de una nota en HOLD
+        prod.push(AudioEngineCommand::SetArpEnabled(true)).unwrap();
+        prod.push(AudioEngineCommand::SetArpHold(true)).unwrap();
+        state.process_commands();
+
+        // Retener los MutexGuards de los 6 espejos compartidos para forzar el fallo de try_lock() en el hilo de audio
+        let guard_master = engine.shared_master_gain.lock().unwrap();
+        let guard_pads = engine.shared_pad_gains.lock().unwrap();
+        let guard_fx = engine.shared_fx_rack.lock().unwrap();
+        let guard_routing = engine.shared_fx_routing.lock().unwrap();
+        let guard_seq = engine.shared_sequencer.lock().unwrap();
+        let guard_arp = engine.shared_arpeggiator.lock().unwrap();
+
+        // Enviar comandos desde el hilo MIDI físico que actualizan estado local y requieren sincronizar espejos
+        prod.push(AudioEngineCommand::ControlChange {
+            controller: 7, // Master gain -> 0.28
+            value: 0.28,
+        })
+        .unwrap();
+        prod.push(AudioEngineCommand::ControlChange {
+            controller: 38, // Pad 1 gain (LX49+ Fader 1) -> 0.64
+            value: 0.64,
+        })
+        .unwrap();
+        prod.push(AudioEngineCommand::ControlChange {
+            controller: 56, // Knob 1 value (LX49+ Knob 1) -> 0.77
+            value: 0.77,
+        })
+        .unwrap();
+        prod.push(AudioEngineCommand::SequencerExecuteAction(
+            SequencerAction::FxRouteKeys, // Off -> Keys
+        ))
+        .unwrap();
+        prod.push(AudioEngineCommand::SequencerExecuteAction(
+            SequencerAction::TogglePlay, // is_playing -> true
+        ))
+        .unwrap();
+        prod.push(AudioEngineCommand::NoteOn {
+            note: 60,
+            velocity: 0.9,
+        })
+        .unwrap();
+
+        // Procesar comandos mientras los locks están ocupados -> try_lock() falla sin bloquear
+        state.process_commands();
+
+        // El estado local de AudioRenderState ya está actualizado y las 6 banderas dirty están activas
+        assert!((state.master_gain - 0.28).abs() < 1e-6);
+        assert!((state.pad_gains[0] - 0.64).abs() < 1e-6);
+        assert_eq!(state.fx_routing, FxRouting::Keys);
+        assert!(state.sequencer.is_playing);
+        assert_eq!(state.arpeggiator.hold_count, 1);
+
+        assert!(state.dirty_shared_master_gain);
+        assert!(state.dirty_shared_pad_gains);
+        assert!(state.dirty_shared_fx_rack);
+        assert!(state.dirty_shared_fx_routing);
+        assert!(state.dirty_shared_sequencer);
+        assert!(state.dirty_shared_arpeggiator);
+
+        // Soltar los locks externos
+        drop(guard_master);
+        drop(guard_pads);
+        drop(guard_fx);
+        drop(guard_routing);
+        drop(guard_seq);
+        drop(guard_arp);
+
+        // Siguiente callback de audio SIN ningún comando nuevo en la cola
+        state.process_commands();
+
+        // Todas las banderas dirty deben haberse limpiado y los espejos shared_* deben reflejar el estado real
+        assert!(!state.dirty_shared_master_gain);
+        assert!(!state.dirty_shared_pad_gains);
+        assert!(!state.dirty_shared_fx_rack);
+        assert!(!state.dirty_shared_fx_routing);
+        assert!(!state.dirty_shared_sequencer);
+        assert!(!state.dirty_shared_arpeggiator);
+
+        assert!((*engine.shared_master_gain.lock().unwrap() - 0.28).abs() < 1e-6);
+        assert!((engine.shared_pad_gains.lock().unwrap()[0] - 0.64).abs() < 1e-6);
+        assert!(
+            (engine.shared_fx_rack.lock().unwrap().get_mappings_info()[0].value - 0.77).abs() < 1e-6
+        );
+        assert_eq!(*engine.shared_fx_routing.lock().unwrap(), FxRouting::Keys);
+        assert!(engine.shared_sequencer.lock().unwrap().is_playing);
+        assert_eq!(engine.shared_arpeggiator.lock().unwrap().hold_count, 1);
+    }
+
+    #[test]
+    fn test_a06_r4_r5_last_hold_note_and_last_recorded_pad_step_and_pad_config_survive_rebuild() {
+        // Casos 7.8 y 7.9 (R4 + R5):
+        // - Última nota agregada a un acorde HOLD y último golpe grabado en vivo (PadTrigger con REC+PLAY)
+        //   justo antes de reconstruir el stream sobreviven al rebuild sin disparar samples fantasma.
+        // - Persistencia de sample de pad, modo de reproducción (Gate/OneShot) y ganancia clampeada (0.0..=1.0).
+        use crate::audio::sampler::PadPlaybackMode;
+
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+
+        // 1. Configurar Pad 2 (índice 1) con sample, modo Gate y ganancia en shared_pad_*
+        let pad2_sample = Arc::new(PadSampleData {
+            name: "LoopBass.wav".to_string(),
+            sample_rate: 48000,
+            data_l: vec![0.4f32; 64],
+            data_r: vec![0.4f32; 64],
+            length: 64,
+        });
+        engine.shared_pad_samples.lock().unwrap()[1] = Some(pad2_sample);
+        engine.shared_pad_modes.lock().unwrap()[1] = PadPlaybackMode::Gate;
+        engine.shared_pad_gains.lock().unwrap()[1] = 1.5f32.clamp(0.0, 1.0);
+
+        // Y encolar un cambio de ganancia fuera de rango (2.5 -> debe clampearse a 1.0) y modo Gate para Pad 3 (índice 2)
+        prod.push(AudioEngineCommand::SetPadMode {
+            pad_index: 2,
+            mode: PadPlaybackMode::Gate,
+        })
+        .unwrap();
+        prod.push(AudioEngineCommand::SetPadGain {
+            pad_index: 2,
+            gain: 2.5,
+        })
+        .unwrap();
+
+        // 2. Activar Arpegiador con HOLD y tocar C4 (60) en vivo; activar Sequencer PLAY + REC en vivo
+        let mut state_1 = build_test_render_state_from_engine(&engine, 48000.0, cons_arc.clone());
+        prod.push(AudioEngineCommand::SetArpEnabled(true)).unwrap();
+        prod.push(AudioEngineCommand::SetArpHold(true)).unwrap();
+        prod.push(AudioEngineCommand::NoteOn {
+            note: 60,
+            velocity: 0.9,
+        })
+        .unwrap();
+        prod.push(AudioEngineCommand::SequencerPlay).unwrap();
+        prod.push(AudioEngineCommand::SequencerSetRecord(true)).unwrap();
+        state_1.process_commands();
+
+        // 3. Justo antes del rebuild (en la cola SPSC, aún no procesado por state_1):
+        //    - El músico toca G4 (67) para añadirlo al acorde en HOLD
+        //    - El músico golpea el Pad 2 (pad_index: 1) mientras REC + PLAY están activos
+        prod.push(AudioEngineCommand::NoteOn {
+            note: 67,
+            velocity: 0.85,
+        })
+        .unwrap();
+        prod.push(AudioEngineCommand::PadTrigger {
+            pad_index: 1,
+            velocity: 1.0,
+        })
+        .unwrap();
+
+        drop(state_1);
+
+        // 4. Reconstruir el stream a 96000 Hz
+        let mut state_2 = build_test_render_state_from_engine(&engine, 96000.0, cons_arc);
+
+        // Verificar que la última nota HOLD (G4 = 67) se reconcilió y forma parte del acorde C4 + G4
+        assert_eq!(state_2.arpeggiator.hold_count, 2);
+        assert_eq!(state_2.arpeggiator.sequence[0], 60);
+        assert_eq!(state_2.arpeggiator.sequence[1], 67);
+
+        // Verificar que el último golpe de Pad 2 durante REC+PLAY quedó grabado en el paso 0 del secuenciador
+        assert_eq!(
+            state_2.sequencer.get_active_pattern()[1][0],
+            127,
+            "El último PadTrigger encolado con REC+PLAY antes del rebuild debe registrarse en el patrón"
+        );
+
+        // Y que ese PadTrigger NO disparó audio fantasma al nacer el nuevo stream
+        let mut left = [0.0f32; 16];
+        let mut right = [0.0f32; 16];
+        state_2.pad_sampler.render_mix(&mut left, &mut right, 16);
+        let energy: f32 = left.iter().map(|s| s.abs()).sum();
+        assert_eq!(
+            energy, 0.0,
+            "El PadTrigger reconciliado en REC+PLAY no debe sonar de forma tardía al abrir el nuevo stream"
+        );
+
+        // Verificar persistencia de samples, modos de reproducción y ganancias clampeadas en los pads
+        let slot_infos = engine.get_pad_slots_info();
+        assert_eq!(slot_infos[1].sample_name.as_deref(), Some("LoopBass.wav"));
+        assert_eq!(slot_infos[1].mode, PadPlaybackMode::Gate);
+        assert!((slot_infos[1].gain - 1.0).abs() < 1e-6);
+
+        assert_eq!(slot_infos[2].mode, PadPlaybackMode::Gate);
+        assert!(
+            (slot_infos[2].gain - 1.0).abs() < 1e-6,
+            "La ganancia de pad debe clampearse en el rango 0.0..=1.0"
+        );
+        assert!((state_2.pad_gains[2] - 1.0).abs() < 1e-6);
     }
 }
