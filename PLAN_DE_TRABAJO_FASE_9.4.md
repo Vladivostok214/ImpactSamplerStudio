@@ -97,14 +97,14 @@ flowchart LR
 
 ---
 
-### Paso 3 (Bloque 3): Blindaje de Estado del Motor de Audio, Remuestreo Dinámico y MIDI ⏳ [PENDIENTE]
+### Paso 3 (Bloque 3): Blindaje de Estado del Motor de Audio, Remuestreo Dinámico y MIDI ⏳ [EN PROGRESO]
 
 * **Objetivo:** Asegurar que la reconstrucción del stream de audio (al abrir/cerrar ajustes o reconectar hardware) preserve el 100% del estado de la sesión, que los samples WAV mantengan su afinación a cualquier Sample Rate y que las desconexiones MIDI sean limpias.
 * **Subpasos Técnicos:**
-  1. **Subpaso 3.1 — Restauración Completa de Estado al Reconstruir Stream de Audio (`A06`, `A16` — `src-tauri/src/audio/engine.rs:418-473, 1510-1517, 1631-1637`):**
-     * Guardar en `AudioEngine` el banco SF2 activo (`current_sf_bank: Arc<Mutex<i32>>`), los mapeos de MIDI Learn activos y sincronizar `shared_arpeggiator` cuando cambian los parámetros del arpegiador.
-     * Al inicializar `AudioRenderState::new` y reconstruir el sintetizador en CPAL/ASIO, restaurar el `Arpeggiator` desde `shared_arpeggiator`, los CCs de MIDI Learn configurados y el par `(bank, preset)` real del SoundFont activo (en lugar de forzar `bank = 0`).
-     * Limpiar `device_invalidated` al aplicar manualmente una configuración de audio exitosa y asegurar que `spawn_watchdog` se inicie siempre aunque el arranque inicial no encuentre un DAC disponible (`A16`).
+  1. **Subpaso 3.1 — Restauración Completa de Estado y Coordinación del Watchdog al Reconstruir Stream de Audio (`A06`, `A16` — `src-tauri/src/audio/engine.rs`) ✅ [COMPLETADO]:**
+     * **Persistencia de Estado de Runtime (`A06`):** Preservación integral del banco y preset SF2 activo (`current_sf_bank` / `shared_bank_patch`), del arpegiador con notas retenidas en `HOLD` (`shared_arpeggiator`), de los modos y muestras de pads (`shared_pad_*`), y de las asignaciones de MIDI Learn y Mute (`shared_midi_*`), implementando una política FIFO de reconciliación determinista de comandos no aplicados previa al rebuild (`reconcile_pending_commands_before_rebuild`) inmune a colas saturadas y sin disparar notas fantasma ni colgadas.
+     * **Coordinación Robusta del Watchdog y Exclusión Mutua (`A16`):** Serialización estricta de destrucciones y reconstrucciones de stream mediante `rebuild_lock` fuera del hilo de renderizado; filtrado atómico de errores tardíos de streams anteriores mediante generación monotónica (`active_stream_generation` y `report_stream_error_for_generation`); respeto absoluto de la suspensión deliberada del usuario (`user_suspended`); e inicio resiliente garantizado del watchdog con instancia única (`watchdog_spawn_count`) aun cuando el motor inicie sin DAC conectado.
+     * **Validación Automatizada:** 17 pruebas unitarias específicas de A06 y A16 (totalizando 47 tests aprobados en `cargo test`) sin advertencias de compilador.
   2. **Subpaso 3.2 — Envío de `AllNotesOff` en Desconexión o Cambio de Puerto MIDI (`A04` — `src-tauri/src/midi/mod.rs:93-97, 128-136, 362-376` y `src/hooks/useMidiStream.ts`):**
      * Cuando el watchdog MIDI detecta desconexión física del controlador o el usuario cambia/desconecta el puerto MIDI, encolar `AudioEngineCommand::AllNotesOff` hacia el motor de audio y limpiar el mapa de notas/pads activos en `useMidiStream.ts` para evitar notas colgadas.
   3. **Subpaso 3.3 — Preservación de Afinación y Duración de Samples WAV al Cambiar Sample Rate (`A05` — `src-tauri/src/audio/sampler.rs` y `src-tauri/src/audio/engine.rs`):**

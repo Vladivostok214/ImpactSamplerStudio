@@ -199,6 +199,20 @@ unsafe impl Sync for StreamHolder {}
 
 pub struct AudioEngine {
     stream: Arc<Mutex<StreamHolder>>,
+    /// Mutex de coordinación fuera del callback de audio (A16): serializa la destrucción del stream,
+    /// la construcción de `AudioRenderState`, la reconciliación de `command_consumer` y el reemplazo
+    /// de `stream_holder` entre `start`, `apply_audio_config`, `suspend_audio_engine` y `spawn_watchdog`.
+    /// Nunca se adquiere en el hilo de renderizado de audio.
+    pub rebuild_lock: Arc<Mutex<()>>,
+    /// Generación monotónica del stream activo (A16): cada nuevo stream incrementa este contador;
+    /// `err_fn` de CPAL captura su `stream_gen` de creación y solo marca `device_invalidated = true`
+    /// si `active_stream_generation == stream_gen` y `!user_suspended`, ignorando errores tardíos
+    /// de streams anteriores ya descartados o reemplazados.
+    pub active_stream_generation: Arc<AtomicU64>,
+    /// Indica si el motor fue suspendido deliberadamente por el usuario (`suspend_audio_engine` /
+    /// panel de control ASIO) para liberar el DAC (A16). Mientras sea `true`, el watchdog no
+    /// reconstruye ni reactiva el stream automáticamente.
+    pub user_suspended: Arc<AtomicBool>,
     pub current_host: Arc<Mutex<String>>,
     pub target_host: Arc<Mutex<Option<String>>>,
     pub current_device_name: Arc<Mutex<String>>,
@@ -218,6 +232,9 @@ pub struct AudioEngine {
     pub shared_master_gain: Arc<Mutex<f32>>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
     watchdog_started: Arc<AtomicBool>,
+    /// Contador de hilos `audio-watchdog` efectivamente creados (A16 — verificable en tests para
+    /// garantizar ausencia de watchdogs duplicados).
+    pub watchdog_spawn_count: Arc<AtomicUsize>,
     ui_event_thread_started: Arc<AtomicBool>,
     ui_event_producer: Arc<Mutex<Option<Producer<SequencerUiEvent>>>>,
     ui_event_consumer: Arc<Mutex<Option<Consumer<SequencerUiEvent>>>>,
@@ -2166,6 +2183,29 @@ impl AudioRenderState {
     }
 }
 
+/// Evalúa y aplica (de forma atómica respecto a la generación y estado de suspensión) una señal de error
+/// procedente del callback de error de un stream CPAL (A16):
+/// - Si `stream_gen` coincide con `active_stream_generation` actual y el motor **no** está suspendido
+///   deliberadamente (`!user_suspended`), marca `device_invalidated = true` y retorna `true`.
+/// - Si `stream_gen != active_stream_generation` (error tardío de un stream anterior ya destruido o
+///   reemplazado) o si `user_suspended == true`, ignora el evento y retorna `false`.
+#[inline]
+pub fn report_stream_error_for_generation(
+    stream_gen: u64,
+    active_stream_generation: &AtomicU64,
+    user_suspended: &AtomicBool,
+    device_invalidated: &AtomicBool,
+) -> bool {
+    if !user_suspended.load(Ordering::SeqCst)
+        && active_stream_generation.load(Ordering::SeqCst) == stream_gen
+    {
+        device_invalidated.store(true, Ordering::SeqCst);
+        true
+    } else {
+        false
+    }
+}
+
 fn build_and_start_stream(
     device: &cpal::Device,
     supported_config: SupportedStreamConfig,
@@ -2189,6 +2229,9 @@ fn build_and_start_stream(
     shared_midi_knob_ccs: Arc<Mutex<[u8; 8]>>,
     shared_midi_muted: Arc<AtomicBool>,
     device_invalidated: Arc<AtomicBool>,
+    active_stream_generation: Arc<AtomicU64>,
+    user_suspended: Arc<AtomicBool>,
+    stream_gen: u64,
     selected_channel_pair: Arc<AtomicUsize>,
     requested_buffer_size: Option<u32>,
     requested_sample_rate: Option<u32>,
@@ -2251,9 +2294,20 @@ fn build_and_start_stream(
     );
 
     let dev_inv = device_invalidated.clone();
+    let active_gen = active_stream_generation.clone();
+    let suspended_flag = user_suspended.clone();
     let err_fn = move |err: cpal::StreamError| {
-        eprintln!("[Audio Watchdog] Error en cpal stream: {}", err);
-        dev_inv.store(true, Ordering::SeqCst);
+        if report_stream_error_for_generation(stream_gen, &active_gen, &suspended_flag, &dev_inv) {
+            eprintln!(
+                "[Audio Watchdog] Error en cpal stream (gen {}): {}",
+                stream_gen, err
+            );
+        } else {
+            eprintln!(
+                "[Audio Watchdog] Ignorando error tardío/suspendido de cpal stream (gen {}): {}",
+                stream_gen, err
+            );
+        }
     };
 
     let stream = match sample_format {
@@ -2542,6 +2596,9 @@ impl AudioEngine {
 
         Self {
             stream: Arc::new(Mutex::new(StreamHolder(None))),
+            rebuild_lock: Arc::new(Mutex::new(())),
+            active_stream_generation: Arc::new(AtomicU64::new(0)),
+            user_suspended: Arc::new(AtomicBool::new(false)),
             current_host: Arc::new(Mutex::new(default_host)),
             target_host: Arc::new(Mutex::new(None)),
             current_device_name: Arc::new(Mutex::new("No iniciado".to_string())),
@@ -2560,6 +2617,7 @@ impl AudioEngine {
             shared_master_gain: Arc::new(Mutex::new(100.0 / 127.0)),
             app_handle: Arc::new(Mutex::new(None)),
             watchdog_started: Arc::new(AtomicBool::new(false)),
+            watchdog_spawn_count: Arc::new(AtomicUsize::new(0)),
             ui_event_thread_started: Arc::new(AtomicBool::new(false)),
             ui_event_producer: Arc::new(Mutex::new(Some(ui_prod))),
             ui_event_consumer: Arc::new(Mutex::new(Some(ui_cons))),
@@ -2827,246 +2885,101 @@ impl AudioEngine {
         println!("[Audio Engine] Par de canales estéreo asignado a: {}", pair);
     }
 
-    pub fn apply_audio_config(
+    pub fn apply_audio_config_with<F>(
         &self,
         host_name: Option<String>,
         device_name: Option<String>,
         channel_pair: usize,
         buffer_size: Option<u32>,
         sample_rate: Option<u32>,
-    ) -> Result<crate::state::AudioStatusInfo, String> {
+        persist_prefs: bool,
+        stream_builder: F,
+    ) -> Result<crate::state::AudioStatusInfo, String>
+    where
+        F: FnOnce(u64, &str, Option<String>, Option<u32>, Option<u32>) -> Result<(Option<ActiveBackend>, String, String, u32, u32, usize), String>,
+    {
+        // Garantizar que el watchdog siempre esté activo cuando se configure audio (A16)
+        self.spawn_watchdog();
+
+        // Exclusión mutua explícita frente a spawn_watchdog y otras reconfiguraciones (A16)
+        let _rebuild_guard = self.rebuild_lock.lock().unwrap();
+
         let chosen_host = host_name
             .or_else(|| self.target_host.lock().unwrap().clone())
             .unwrap_or_else(|| self.current_host.lock().unwrap().clone());
 
-        // 1. Guardar preferencias de hardware y canal
+        // 1. Guardar preferencias de hardware y canal y levantar suspensión deliberada
         *self.target_host.lock().unwrap() = Some(chosen_host.clone());
         *self.target_device_name.lock().unwrap() = device_name.clone();
         *self.target_buffer_size.lock().unwrap() = buffer_size;
         *self.target_sample_rate.lock().unwrap() = sample_rate;
         self.selected_channel_pair.store(channel_pair, Ordering::Relaxed);
+        self.user_suspended.store(false, Ordering::SeqCst);
 
-        // 2. Detener stream activo para liberar recursos del DAC
+        // 2. Incrementar generación ANTES de destruir el stream antiguo para que cualquier error
+        //    tardío disparado durante el Drop o cierre del backend anterior sea descartado (A16).
+        let next_gen = self
+            .active_stream_generation
+            .fetch_add(1, Ordering::SeqCst)
+            + 1;
+
+        // 3. Detener stream activo para liberar recursos del DAC
         {
             let mut s_guard = self.stream.lock().unwrap();
             *s_guard = StreamHolder(None);
         }
         self.is_running.store(false, Ordering::SeqCst);
 
-        // 3. Modo ASIO nativo en Windows
-        #[cfg(target_os = "windows")]
-        if chosen_host == "ASIO" {
-            let asio = asio_sys::Asio::new();
-            let target_name = match device_name {
-                Some(ref name) if !name.is_empty() => name.clone(),
-                _ => {
-                    let names = asio.driver_names();
-                    names.into_iter().next().ok_or_else(|| "No se encontró ningún controlador ASIO instalado en el sistema".to_string())?
-                }
-            };
+        // Limpiar cualquier invalidación previa antes de abrir el nuevo stream de generación `next_gen`:
+        // si el nuevo stream falla inmediatamente al crearse o iniciar, su propio callback `err_fn`
+        // (con `stream_gen == next_gen`) volverá a activar `device_invalidated`.
+        self.device_invalidated.store(false, Ordering::SeqCst);
 
-            // Reutilizar el driver en standby si es del mismo dispositivo, o liberarlo si es diferente
-            let driver_to_use = {
-                let mut standby = self.standby_asio_driver.lock().unwrap();
-                if let Some(ref d) = *standby {
-                    if d.name() == target_name {
-                        Some(d.clone())
-                    } else {
-                        let old = standby.take();
-                        drop(old);
-                        std::thread::sleep(std::time::Duration::from_millis(20));
-                        None
+        let (backend_opt, dev_name, driver_str, effective_sr, effective_buf, channels) =
+            match stream_builder(next_gen, &chosen_host, device_name.clone(), buffer_size, sample_rate) {
+                Ok(res) => res,
+                Err(e) => {
+                    if chosen_host != "ASIO" {
+                        self.device_invalidated.store(true, Ordering::SeqCst);
                     }
-                } else {
-                    None
+                    return Err(e);
                 }
             };
 
-            let (active_backend, effective_sr, effective_buf, channels) = build_and_start_asio_stream(
-                &target_name,
-                driver_to_use,
-                self.command_consumer.clone(),
-                self.shared_soundfont.clone(),
-                self.shared_bank_patch.clone(),
-                self.shared_master_gain.clone(),
-                self.shared_pad_samples.clone(),
-                self.shared_pad_modes.clone(),
-                self.shared_pad_gains.clone(),
-                self.shared_pad_engine_mode.clone(),
-                self.shared_drum_soundfont.clone(),
-                self.shared_drum_patch.clone(),
-                self.shared_drum_pad_notes.clone(),
-                self.shared_fx_rack.clone(),
-                self.shared_fx_routing.clone(),
-                self.shared_sequencer.clone(),
-                self.ui_event_producer.clone(),
-                self.shared_arpeggiator.clone(),
-                self.shared_midi_fader_ccs.clone(),
-                self.shared_midi_knob_ccs.clone(),
-                self.shared_midi_muted.clone(),
-                self.selected_channel_pair.clone(),
-                buffer_size,
-                sample_rate,
-            )?;
+        *self.current_host.lock().unwrap() = chosen_host.clone();
+        *self.current_device_name.lock().unwrap() = dev_name.clone();
+        *self.sample_rate.lock().unwrap() = effective_sr;
+        *self.buffer_size.lock().unwrap() = effective_buf;
+        *self.channels.lock().unwrap() = channels;
+        self.device_invalidated.store(false, Ordering::SeqCst);
+        self.is_running.store(true, Ordering::SeqCst);
+        *self.stream.lock().unwrap() = StreamHolder(backend_opt);
 
-            let driver_to_standby = match &active_backend {
-                ActiveBackend::Asio { driver, .. } => Some(driver.clone()),
-                _ => None,
-            };
-            if let Some(d) = driver_to_standby {
-                *self.standby_asio_driver.lock().unwrap() = Some(d);
-            }
+        println!(
+            "[Audio Engine Apply OK] Conectado exitosamente vía {} a '{}' ({} Hz, {} canales, par: {}, buffer: {})",
+            chosen_host, dev_name, effective_sr, channels, channel_pair, effective_buf
+        );
 
-            *self.current_host.lock().unwrap() = "ASIO".to_string();
-            *self.current_device_name.lock().unwrap() = target_name.clone();
-            *self.sample_rate.lock().unwrap() = effective_sr;
-            *self.buffer_size.lock().unwrap() = effective_buf;
-            *self.channels.lock().unwrap() = channels;
-            self.is_running.store(true, Ordering::SeqCst);
-            *self.stream.lock().unwrap() = StreamHolder(Some(active_backend));
+        let status = crate::state::AudioStatusInfo {
+            host: chosen_host.clone(),
+            device_name: dev_name.clone(),
+            driver: driver_str,
+            channels,
+            sample_rate: effective_sr,
+            buffer_size: effective_buf,
+            is_running: true,
+        };
 
-            println!(
-                "[Audio Engine Apply OK] Conectado exitosamente vía ASIO a '{}' ({} Hz, buffer: {}, canales: {})",
-                target_name, effective_sr, effective_buf, channels
-            );
-
-            let status = crate::state::AudioStatusInfo {
-                host: "ASIO".to_string(),
-                device_name: target_name.clone(),
-                driver: "ASIO".to_string(),
-                channels,
-                sample_rate: effective_sr,
-                buffer_size: effective_buf,
-                is_running: true,
-            };
-
+        if persist_prefs {
             let saved_prefs = SavedAudioPreferences {
-                host: "ASIO".to_string(),
-                device_name: Some(target_name),
+                host: chosen_host,
+                device_name: Some(dev_name),
                 channel_pair,
                 buffer_size: Some(effective_buf),
                 sample_rate: Some(effective_sr),
             };
             save_audio_preferences(&saved_prefs);
-
-            if let Ok(handle_guard) = self.app_handle.lock() {
-                if let Some(handle) = handle_guard.as_ref() {
-                    let _ = handle.emit("audio-status-changed", &status);
-                }
-            }
-
-            return Ok(status);
         }
-
-        // 4. Modo CPAL (WASAPI en Windows, CoreAudio en macOS, ALSA en Linux)
-        #[cfg(target_os = "windows")]
-        {
-            let mut standby = self.standby_asio_driver.lock().unwrap();
-            if let Some(old) = standby.take() {
-                drop(old);
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-        }
-        let host = cpal::default_host();
-        let mut resolved = None;
-        if let Some(target) = &device_name {
-            let target_lower = target.trim().to_lowercase();
-            if let Ok(dev_iter) = host.output_devices() {
-                for dev in dev_iter {
-                    if let Ok(name) = dev.name() {
-                        if name.trim().to_lowercase() == target_lower || name.to_lowercase().contains(&target_lower) {
-                            resolved = Some((dev, name));
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        let (device, dev_name) = match resolved {
-            Some(pair) => pair,
-            None => {
-                let default_dev = host
-                    .default_output_device()
-                    .ok_or_else(|| "No se encontró ningún dispositivo de salida de audio".to_string())?;
-                let def_name = default_dev
-                    .name()
-                    .unwrap_or_else(|_| "Dispositivo Predeterminado".to_string());
-                (default_dev, def_name)
-            }
-        };
-
-        let supported_config = device
-            .default_output_config()
-            .map_err(|e| format!("Error al obtener configuración de audio para '{}': {}", dev_name, e))?;
-
-        let (stream, effective_sr, channels) = build_and_start_stream(
-            &device,
-            supported_config,
-            self.command_consumer.clone(),
-            self.shared_soundfont.clone(),
-            self.shared_bank_patch.clone(),
-            self.shared_master_gain.clone(),
-            self.shared_pad_samples.clone(),
-            self.shared_pad_modes.clone(),
-            self.shared_pad_gains.clone(),
-            self.shared_pad_engine_mode.clone(),
-            self.shared_drum_soundfont.clone(),
-            self.shared_drum_patch.clone(),
-            self.shared_drum_pad_notes.clone(),
-            self.shared_fx_rack.clone(),
-            self.shared_fx_routing.clone(),
-            self.shared_sequencer.clone(),
-            self.ui_event_producer.clone(),
-            self.shared_arpeggiator.clone(),
-            self.shared_midi_fader_ccs.clone(),
-            self.shared_midi_knob_ccs.clone(),
-            self.shared_midi_muted.clone(),
-            self.device_invalidated.clone(),
-            self.selected_channel_pair.clone(),
-            buffer_size,
-            sample_rate,
-        )?;
-
-        *self.current_host.lock().unwrap() = chosen_host.clone();
-        *self.current_device_name.lock().unwrap() = dev_name.clone();
-        *self.sample_rate.lock().unwrap() = effective_sr;
-        if let Some(buf) = buffer_size {
-            *self.buffer_size.lock().unwrap() = buf;
-        }
-        *self.channels.lock().unwrap() = channels;
-        self.is_running.store(true, Ordering::SeqCst);
-        *self.stream.lock().unwrap() = StreamHolder(Some(ActiveBackend::Cpal(stream)));
-
-        println!(
-            "[Audio Engine Apply OK] Conectado exitosamente vía {} a '{}' ({} Hz, {} canales, par: {}, buffer: {:?})",
-            chosen_host, dev_name, effective_sr, channels, channel_pair, buffer_size
-        );
-
-        let driver_name = format!("{:?}", host.id()).to_uppercase();
-        let status = crate::state::AudioStatusInfo {
-            host: chosen_host.clone(),
-            device_name: dev_name.clone(),
-            driver: match driver_name.as_str() {
-                "WASAPI" => "WASAPI".to_string(),
-                "COREAUDIO" => "CoreAudio".to_string(),
-                "ALSA" => "ALSA".to_string(),
-                _ => driver_name,
-            },
-            channels,
-            sample_rate: effective_sr,
-            buffer_size: *self.buffer_size.lock().unwrap(),
-            is_running: true,
-        };
-
-        let saved_prefs = SavedAudioPreferences {
-            host: chosen_host,
-            device_name: Some(dev_name),
-            channel_pair,
-            buffer_size: Some(*self.buffer_size.lock().unwrap()),
-            sample_rate: Some(effective_sr),
-        };
-        save_audio_preferences(&saved_prefs);
 
         if let Ok(handle_guard) = self.app_handle.lock() {
             if let Some(handle) = handle_guard.as_ref() {
@@ -3075,6 +2988,195 @@ impl AudioEngine {
         }
 
         Ok(status)
+    }
+
+    pub fn apply_audio_config(
+        &self,
+        host_name: Option<String>,
+        device_name: Option<String>,
+        channel_pair: usize,
+        buffer_size: Option<u32>,
+        sample_rate: Option<u32>,
+    ) -> Result<crate::state::AudioStatusInfo, String> {
+        let default_buf = *self.buffer_size.lock().unwrap();
+        self.apply_audio_config_with(
+            host_name,
+            device_name,
+            channel_pair,
+            buffer_size,
+            sample_rate,
+            true,
+            |next_gen, chosen_host, device_name, buffer_size, sample_rate| {
+                // Modo ASIO nativo en Windows
+                #[cfg(target_os = "windows")]
+                if chosen_host == "ASIO" {
+                    let asio = asio_sys::Asio::new();
+                    let target_name = match device_name {
+                        Some(ref name) if !name.is_empty() => name.clone(),
+                        _ => {
+                            let names = asio.driver_names();
+                            names.into_iter().next().ok_or_else(|| {
+                                "No se encontró ningún controlador ASIO instalado en el sistema".to_string()
+                            })?
+                        }
+                    };
+
+                    let driver_to_use = {
+                        let mut standby = self.standby_asio_driver.lock().unwrap();
+                        if let Some(ref d) = *standby {
+                            if d.name() == target_name {
+                                Some(d.clone())
+                            } else {
+                                let old = standby.take();
+                                drop(old);
+                                std::thread::sleep(std::time::Duration::from_millis(20));
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    };
+
+                    let (active_backend, effective_sr, effective_buf, channels) = build_and_start_asio_stream(
+                        &target_name,
+                        driver_to_use,
+                        self.command_consumer.clone(),
+                        self.shared_soundfont.clone(),
+                        self.shared_bank_patch.clone(),
+                        self.shared_master_gain.clone(),
+                        self.shared_pad_samples.clone(),
+                        self.shared_pad_modes.clone(),
+                        self.shared_pad_gains.clone(),
+                        self.shared_pad_engine_mode.clone(),
+                        self.shared_drum_soundfont.clone(),
+                        self.shared_drum_patch.clone(),
+                        self.shared_drum_pad_notes.clone(),
+                        self.shared_fx_rack.clone(),
+                        self.shared_fx_routing.clone(),
+                        self.shared_sequencer.clone(),
+                        self.ui_event_producer.clone(),
+                        self.shared_arpeggiator.clone(),
+                        self.shared_midi_fader_ccs.clone(),
+                        self.shared_midi_knob_ccs.clone(),
+                        self.shared_midi_muted.clone(),
+                        self.selected_channel_pair.clone(),
+                        buffer_size,
+                        sample_rate,
+                    )?;
+
+                    let driver_to_standby = match &active_backend {
+                        ActiveBackend::Asio { driver, .. } => Some(driver.clone()),
+                        _ => None,
+                    };
+                    if let Some(d) = driver_to_standby {
+                        *self.standby_asio_driver.lock().unwrap() = Some(d);
+                    }
+
+                    return Ok((
+                        Some(active_backend),
+                        target_name,
+                        "ASIO".to_string(),
+                        effective_sr,
+                        effective_buf,
+                        channels,
+                    ));
+                }
+
+                // Modo CPAL (WASAPI en Windows, CoreAudio en macOS, ALSA en Linux)
+                #[cfg(target_os = "windows")]
+                {
+                    let mut standby = self.standby_asio_driver.lock().unwrap();
+                    if let Some(old) = standby.take() {
+                        drop(old);
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                }
+                let _ = chosen_host;
+                let host = cpal::default_host();
+                let mut resolved = None;
+                if let Some(target) = &device_name {
+                    let target_lower = target.trim().to_lowercase();
+                    if let Ok(dev_iter) = host.output_devices() {
+                        for dev in dev_iter {
+                            if let Ok(name) = dev.name() {
+                                if name.trim().to_lowercase() == target_lower
+                                    || name.to_lowercase().contains(&target_lower)
+                                {
+                                    resolved = Some((dev, name));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let (device, dev_name) = match resolved {
+                    Some(pair) => pair,
+                    None => {
+                        let default_dev = host
+                            .default_output_device()
+                            .ok_or_else(|| "No se encontró ningún dispositivo de salida de audio".to_string())?;
+                        let def_name = default_dev
+                            .name()
+                            .unwrap_or_else(|_| "Dispositivo Predeterminado".to_string());
+                        (default_dev, def_name)
+                    }
+                };
+
+                let supported_config = device.default_output_config().map_err(|e| {
+                    format!("Error al obtener configuración de audio para '{}': {}", dev_name, e)
+                })?;
+
+                let (stream, effective_sr, channels) = build_and_start_stream(
+                    &device,
+                    supported_config,
+                    self.command_consumer.clone(),
+                    self.shared_soundfont.clone(),
+                    self.shared_bank_patch.clone(),
+                    self.shared_master_gain.clone(),
+                    self.shared_pad_samples.clone(),
+                    self.shared_pad_modes.clone(),
+                    self.shared_pad_gains.clone(),
+                    self.shared_pad_engine_mode.clone(),
+                    self.shared_drum_soundfont.clone(),
+                    self.shared_drum_patch.clone(),
+                    self.shared_drum_pad_notes.clone(),
+                    self.shared_fx_rack.clone(),
+                    self.shared_fx_routing.clone(),
+                    self.shared_sequencer.clone(),
+                    self.ui_event_producer.clone(),
+                    self.shared_arpeggiator.clone(),
+                    self.shared_midi_fader_ccs.clone(),
+                    self.shared_midi_knob_ccs.clone(),
+                    self.shared_midi_muted.clone(),
+                    self.device_invalidated.clone(),
+                    self.active_stream_generation.clone(),
+                    self.user_suspended.clone(),
+                    next_gen,
+                    self.selected_channel_pair.clone(),
+                    buffer_size,
+                    sample_rate,
+                )?;
+
+                let driver_name = format!("{:?}", host.id()).to_uppercase();
+                let driver_str = match driver_name.as_str() {
+                    "WASAPI" => "WASAPI".to_string(),
+                    "COREAUDIO" => "CoreAudio".to_string(),
+                    "ALSA" => "ALSA".to_string(),
+                    _ => driver_name,
+                };
+                let effective_buf = buffer_size.unwrap_or(default_buf);
+
+                Ok((
+                    Some(ActiveBackend::Cpal(stream)),
+                    dev_name,
+                    driver_str,
+                    effective_sr,
+                    effective_buf,
+                    channels,
+                ))
+            },
+        )
     }
 
     pub fn set_buffer_size(&self, buffer_size: u32) -> Result<crate::state::AudioStatusInfo, String> {
@@ -3099,6 +3201,13 @@ impl AudioEngine {
     }
 
     pub fn suspend_audio_engine(&self) -> Result<crate::state::AudioStatusInfo, String> {
+        let _rebuild_guard = self.rebuild_lock.lock().unwrap();
+        // Activar suspensión deliberada e invalidar la generación anterior ANTES de liberar el stream
+        // para que ningún error tardío del backend ni el watchdog reconstruyan el stream mientras se configura.
+        self.user_suspended.store(true, Ordering::SeqCst);
+        self.device_invalidated.store(false, Ordering::SeqCst);
+        self.active_stream_generation.fetch_add(1, Ordering::SeqCst);
+
         #[cfg(target_os = "windows")]
         let is_asio = self.current_host.lock().unwrap().as_str() == "ASIO";
         #[cfg(target_os = "windows")]
@@ -3142,6 +3251,7 @@ impl AudioEngine {
     }
 
     pub fn resume_audio_engine(&self) -> Result<crate::state::AudioStatusInfo, String> {
+        self.user_suspended.store(false, Ordering::SeqCst);
         if self.is_running.load(Ordering::SeqCst) {
             let current_host = self.current_host.lock().unwrap().clone();
             return Ok(crate::state::AudioStatusInfo {
@@ -3156,12 +3266,24 @@ impl AudioEngine {
         }
 
         let host = self.current_host.lock().unwrap().clone();
-        let dev = self.current_device_name.lock().unwrap().clone();
+        let dev = self
+            .target_device_name
+            .lock()
+            .unwrap()
+            .clone()
+            .or_else(|| {
+                let cur = self.current_device_name.lock().unwrap().clone();
+                if cur == "No iniciado" || cur == "Reconectando audio..." {
+                    None
+                } else {
+                    Some(cur)
+                }
+            });
         let pair = self.selected_channel_pair.load(Ordering::Relaxed);
         let buf = *self.buffer_size.lock().unwrap();
         let sr = *self.sample_rate.lock().unwrap();
 
-        self.apply_audio_config(Some(host), Some(dev), pair, Some(buf), Some(sr))
+        self.apply_audio_config(Some(host), dev, pair, Some(buf), Some(sr))
     }
 
     pub fn get_device_details(&self, host_name: &str, device_name: &str) -> Result<crate::state::AudioDeviceDetails, String> {
@@ -3326,6 +3448,7 @@ impl AudioEngine {
 
     #[cfg(target_os = "windows")]
     pub fn open_asio_control_panel(&self, target_device_name: Option<String>) -> Result<crate::state::AudioStatusInfo, String> {
+        let _rebuild_guard = self.rebuild_lock.lock().unwrap();
         let is_asio = self.current_host.lock().unwrap().as_str() == "ASIO";
         if !is_asio {
             return Err("El modo ASIO no está activo actualmente".to_string());
@@ -3335,7 +3458,10 @@ impl AudioEngine {
             .filter(|n| !n.trim().is_empty())
             .unwrap_or_else(|| self.current_device_name.lock().unwrap().clone());
 
-        // 1. Asegurar que el stream esté detenido y buffers liberados
+        // 1. Asegurar que el stream esté detenido, buffers liberados y motor marcado en suspensión deliberada
+        self.user_suspended.store(true, Ordering::SeqCst);
+        self.device_invalidated.store(false, Ordering::SeqCst);
+        self.active_stream_generation.fetch_add(1, Ordering::SeqCst);
         {
             let mut s_guard = self.stream.lock().unwrap();
             *s_guard = StreamHolder(None);
@@ -3431,77 +3557,118 @@ impl AudioEngine {
         &mut self,
         consumer: Consumer<AudioEngineCommand>,
     ) -> Result<(), String> {
-        *self.command_consumer.lock().unwrap() = Some(consumer);
+        self.start_internal(consumer, false)
+    }
 
-        // 1. Intentar restaurar configuración preferida del usuario guardada en disco
-        if let Some(prefs) = load_saved_audio_preferences() {
-            #[cfg(target_os = "windows")]
-            if prefs.host.eq_ignore_ascii_case("ASIO") {
-                let asio = asio_sys::Asio::new();
-                let names = asio.driver_names();
-                let target_name = prefs.device_name.as_deref().unwrap_or("");
-                let is_connected = !target_name.is_empty() && names.iter().any(|n| n.eq_ignore_ascii_case(target_name));
-                if is_connected {
-                    println!("[Audio Engine] Iniciando directamente con controlador ASIO preferido '{}'...", target_name);
+    fn start_internal(
+        &mut self,
+        consumer: Consumer<AudioEngineCommand>,
+        force_no_initial_device: bool,
+    ) -> Result<(), String> {
+        *self.command_consumer.lock().unwrap() = Some(consumer);
+        self.user_suspended.store(false, Ordering::SeqCst);
+
+        // Garantizar inicio resiliente del watchdog ANTES de cualquier retorno temprano por error
+        // de hardware (A16): incluso si al arrancar no hay ningún dispositivo de salida conectado,
+        // el watchdog queda activo (una única instancia) para reconectar en cuanto aparezca uno.
+        self.spawn_watchdog();
+
+        if !force_no_initial_device {
+            // 1. Intentar restaurar configuración preferida del usuario guardada en disco
+            if let Some(prefs) = load_saved_audio_preferences() {
+                #[cfg(target_os = "windows")]
+                if prefs.host.eq_ignore_ascii_case("ASIO") {
+                    let asio = asio_sys::Asio::new();
+                    let names = asio.driver_names();
+                    let target_name = prefs.device_name.as_deref().unwrap_or("");
+                    let is_connected = !target_name.is_empty() && names.iter().any(|n| n.eq_ignore_ascii_case(target_name));
+                    if is_connected {
+                        println!("[Audio Engine] Iniciando directamente con controlador ASIO preferido '{}'...", target_name);
+                        match self.apply_audio_config(
+                            Some("ASIO".to_string()),
+                            prefs.device_name.clone(),
+                            prefs.channel_pair,
+                            prefs.buffer_size,
+                            prefs.sample_rate,
+                        ) {
+                            Ok(_) => {
+                                return Ok(());
+                            }
+                            Err(e) => {
+                                println!("[Audio Engine] Falló inicio con ASIO preferido ({}). Recurriendo a fallback WASAPI.", e);
+                            }
+                        }
+                    } else {
+                        println!("[Audio Engine] Controlador ASIO '{}' no detectado en el sistema. Recurriendo a fallback WASAPI.", target_name);
+                    }
+                }
+
+                if !prefs.host.eq_ignore_ascii_case("ASIO") {
+                    println!("[Audio Engine] Iniciando con host preferido '{}'...", prefs.host);
                     match self.apply_audio_config(
-                        Some("ASIO".to_string()),
+                        Some(prefs.host.clone()),
                         prefs.device_name.clone(),
                         prefs.channel_pair,
                         prefs.buffer_size,
                         prefs.sample_rate,
                     ) {
                         Ok(_) => {
-                            self.spawn_watchdog();
                             return Ok(());
                         }
                         Err(e) => {
-                            println!("[Audio Engine] Falló inicio con ASIO preferido ({}). Recurriendo a fallback WASAPI.", e);
+                            println!("[Audio Engine] Falló inicio con host '{}' ({}). Recurriendo a fallback WASAPI.", prefs.host, e);
                         }
-                    }
-                } else {
-                    println!("[Audio Engine] Controlador ASIO '{}' no detectado en el sistema. Recurriendo a fallback WASAPI.", target_name);
-                }
-            }
-
-            if !prefs.host.eq_ignore_ascii_case("ASIO") {
-                println!("[Audio Engine] Iniciando con host preferido '{}'...", prefs.host);
-                match self.apply_audio_config(
-                    Some(prefs.host.clone()),
-                    prefs.device_name.clone(),
-                    prefs.channel_pair,
-                    prefs.buffer_size,
-                    prefs.sample_rate,
-                ) {
-                    Ok(_) => {
-                        self.spawn_watchdog();
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        println!("[Audio Engine] Falló inicio con host '{}' ({}). Recurriendo a fallback WASAPI.", prefs.host, e);
                     }
                 }
             }
         }
 
-        // 2. Fallback por defecto: WASAPI predeterminado del sistema operativo
+        // 2. Fallback por defecto: host predeterminado del sistema operativo bajo rebuild_lock
+        let _rebuild_guard = self.rebuild_lock.lock().unwrap();
+        let next_gen = self
+            .active_stream_generation
+            .fetch_add(1, Ordering::SeqCst)
+            + 1;
+
+        if force_no_initial_device {
+            self.is_running.store(false, Ordering::SeqCst);
+            self.device_invalidated.store(true, Ordering::SeqCst);
+            *self.current_device_name.lock().unwrap() = "Reconectando audio...".to_string();
+            return Err("No se encontró ningún dispositivo de salida de audio".to_string());
+        }
+
         let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or_else(|| "No se encontró ningún dispositivo de salida de audio".to_string())?;
+        let device = match host.default_output_device() {
+            Some(d) => d,
+            None => {
+                self.is_running.store(false, Ordering::SeqCst);
+                self.device_invalidated.store(true, Ordering::SeqCst);
+                *self.current_device_name.lock().unwrap() = "Reconectando audio...".to_string();
+                return Err("No se encontró ningún dispositivo de salida de audio".to_string());
+            }
+        };
 
         let dev_name = device
             .name()
             .unwrap_or_else(|_| "Dispositivo Predeterminado".to_string());
         *self.current_device_name.lock().unwrap() = dev_name.clone();
 
-        let supported_config = device
-            .default_output_config()
-            .map_err(|e| format!("Error al obtener configuración de audio: {}", e))?;
+        let supported_config = match device.default_output_config() {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                self.is_running.store(false, Ordering::SeqCst);
+                self.device_invalidated.store(true, Ordering::SeqCst);
+                *self.current_device_name.lock().unwrap() = "Reconectando audio...".to_string();
+                return Err(format!("Error al obtener configuración de audio: {}", e));
+            }
+        };
 
         let target_buf = *self.target_buffer_size.lock().unwrap();
         let target_sr = *self.target_sample_rate.lock().unwrap();
 
-        let (stream, sample_rate, channels) = build_and_start_stream(
+        self.device_invalidated.store(false, Ordering::SeqCst);
+
+        let (stream, sample_rate, channels) = match build_and_start_stream(
             &device,
             supported_config,
             self.command_consumer.clone(),
@@ -3524,10 +3691,21 @@ impl AudioEngine {
             self.shared_midi_knob_ccs.clone(),
             self.shared_midi_muted.clone(),
             self.device_invalidated.clone(),
+            self.active_stream_generation.clone(),
+            self.user_suspended.clone(),
+            next_gen,
             self.selected_channel_pair.clone(),
             target_buf,
             target_sr,
-        )?;
+        ) {
+            Ok(res) => res,
+            Err(e) => {
+                self.is_running.store(false, Ordering::SeqCst);
+                self.device_invalidated.store(true, Ordering::SeqCst);
+                *self.current_device_name.lock().unwrap() = "Reconectando audio...".to_string();
+                return Err(e);
+            }
+        };
 
         *self.sample_rate.lock().unwrap() = sample_rate;
         *self.channels.lock().unwrap() = channels;
@@ -3539,16 +3717,104 @@ impl AudioEngine {
             dev_name, sample_rate, channels
         );
 
-        self.spawn_watchdog();
-
         Ok(())
+    }
+
+    /// Ejecuta un paso atómico de evaluación y recuperación del watchdog bajo `rebuild_lock` (A16):
+    /// - Si `user_suspended == true`, aborta inmediatamente sin tocar el stream ni reactivar el audio,
+    ///   limpiando cualquier señal `device_invalidated` residual.
+    /// - Si `device_invalidated == false` y `is_running == true`, no realiza ninguna acción.
+    /// - Si `current_host == "ASIO"`, limpia `device_invalidated` sin reconstruir por CPAL.
+    /// - Si el motor requiere recuperación (`device_invalidated == true` o `!is_running` sin suspensión
+    ///   deliberada), destruye el stream inválido (si aún existía), incrementa `active_stream_generation`
+    ///   e intenta construir un nuevo stream a través de `stream_builder` (o CPAL real en producción).
+    #[allow(dead_code)]
+    pub fn watchdog_recovery_step_with<F>(&self, stream_builder: F) -> bool
+    where
+        F: FnOnce(u64, Option<String>, Option<u32>, Option<u32>) -> Result<(Option<ActiveBackend>, String, u32, usize), String>,
+    {
+        let _rebuild_guard = self.rebuild_lock.lock().unwrap();
+
+        // 1. Respetar suspensión deliberada del usuario (Estilo REAPER / panel ASIO)
+        if self.user_suspended.load(Ordering::SeqCst) {
+            self.device_invalidated.store(false, Ordering::SeqCst);
+            return false;
+        }
+
+        let invalidated = self.device_invalidated.load(Ordering::SeqCst);
+        let running = self.is_running.load(Ordering::SeqCst);
+        if !invalidated && running {
+            return false;
+        }
+
+        let host_str = self.current_host.lock().unwrap().clone();
+        if host_str == "ASIO" {
+            self.device_invalidated.store(false, Ordering::SeqCst);
+            return false;
+        }
+
+        // 2. Incrementar generación antes de soltar el stream previo para anular callbacks de error tardíos
+        let next_gen = self
+            .active_stream_generation
+            .fetch_add(1, Ordering::SeqCst)
+            + 1;
+
+        if self.stream.lock().unwrap().0.take().is_some() || running {
+            self.is_running.store(false, Ordering::SeqCst);
+            *self.current_device_name.lock().unwrap() = "Reconectando audio...".to_string();
+            if let Some(handle) = self.app_handle.lock().unwrap().as_ref() {
+                let _ = handle.emit("audio-status-changed", ());
+            }
+            println!("[Audio Watchdog] Dispositivo invalidado. Buscando endpoint de audio...");
+        } else {
+            self.device_invalidated.store(true, Ordering::SeqCst);
+        }
+
+        let target_dev = self.target_device_name.lock().unwrap().clone();
+        let target_buf = *self.target_buffer_size.lock().unwrap();
+        let target_sr = *self.target_sample_rate.lock().unwrap();
+
+        // Limpiar flag antes de invocar el constructor de stream para que un fallo inmediato del
+        // nuevo stream (con `stream_gen == next_gen`) pueda volver a señalar `device_invalidated = true`.
+        self.device_invalidated.store(false, Ordering::SeqCst);
+
+        match stream_builder(next_gen, target_dev, target_buf, target_sr) {
+            Ok((backend_opt, dev_name, new_sample_rate, new_channels)) => {
+                *self.stream.lock().unwrap() = StreamHolder(backend_opt);
+                *self.sample_rate.lock().unwrap() = new_sample_rate;
+                *self.channels.lock().unwrap() = new_channels;
+                *self.current_device_name.lock().unwrap() = dev_name.clone();
+                self.is_running.store(true, Ordering::SeqCst);
+
+                println!(
+                    "[Audio Watchdog OK] Reconexión exitosa a '{}' ({} Hz, {} canales). Estado preservado.",
+                    dev_name, new_sample_rate, new_channels
+                );
+
+                if let Some(handle) = self.app_handle.lock().unwrap().as_ref() {
+                    let _ = handle.emit("audio-status-changed", ());
+                }
+                true
+            }
+            Err(e) => {
+                self.device_invalidated.store(true, Ordering::SeqCst);
+                self.is_running.store(false, Ordering::SeqCst);
+                *self.current_device_name.lock().unwrap() = "Reconectando audio...".to_string();
+                eprintln!("[Audio Watchdog] Esperando a que el dispositivo esté listo: {}", e);
+                false
+            }
+        }
     }
 
     fn spawn_watchdog(&self) {
         if self.watchdog_started.swap(true, Ordering::SeqCst) {
             return;
         }
+        self.watchdog_spawn_count.fetch_add(1, Ordering::SeqCst);
 
+        let rebuild_lock = self.rebuild_lock.clone();
+        let active_stream_generation = self.active_stream_generation.clone();
+        let user_suspended = self.user_suspended.clone();
         let current_host = self.current_host.clone();
         let stream_holder = self.stream.clone();
         let device_invalidated = self.device_invalidated.clone();
@@ -3587,107 +3853,138 @@ impl AudioEngine {
                 loop {
                     std::thread::sleep(std::time::Duration::from_millis(500));
 
-                    if device_invalidated.load(Ordering::SeqCst) {
-                        let host_str = current_host.lock().unwrap().clone();
-                        if host_str == "ASIO" {
-                            device_invalidated.store(false, Ordering::SeqCst);
-                            continue;
-                        }
+                    // Verificar rápidamente sin bloquear si no hay trabajo o si el usuario suspendió el motor
+                    if user_suspended.load(Ordering::SeqCst) {
+                        continue;
+                    }
+                    if !device_invalidated.load(Ordering::SeqCst) && is_running.load(Ordering::SeqCst) {
+                        continue;
+                    }
 
-                        stream_holder.lock().unwrap().0.take();
+                    // Adquirir rebuild_lock solo durante un intento puntual de recuperación y liberarlo
+                    // antes del siguiente sleep(500ms) para no bloquear apply_audio_config ni suspend_audio_engine.
+                    let _rebuild_guard = rebuild_lock.lock().unwrap();
+
+                    if user_suspended.load(Ordering::SeqCst) {
+                        device_invalidated.store(false, Ordering::SeqCst);
+                        continue;
+                    }
+                    let invalidated = device_invalidated.load(Ordering::SeqCst);
+                    let running = is_running.load(Ordering::SeqCst);
+                    if !invalidated && running {
+                        continue;
+                    }
+
+                    let host_str = current_host.lock().unwrap().clone();
+                    if host_str == "ASIO" {
+                        device_invalidated.store(false, Ordering::SeqCst);
+                        continue;
+                    }
+
+                    let next_gen = active_stream_generation.fetch_add(1, Ordering::SeqCst) + 1;
+
+                    if stream_holder.lock().unwrap().0.take().is_some() || running {
                         is_running.store(false, Ordering::SeqCst);
                         *current_device_name.lock().unwrap() = "Reconectando audio...".to_string();
-
                         if let Some(handle) = app_handle.lock().unwrap().as_ref() {
                             let _ = handle.emit("audio-status-changed", ());
                         }
-
                         println!("[Audio Watchdog] Dispositivo invalidado. Buscando endpoint de audio...");
+                    }
 
-                        while device_invalidated.load(Ordering::SeqCst) {
-                            std::thread::sleep(std::time::Duration::from_millis(500));
-
-                            let host = cpal::default_host();
-                            let target_opt = target_device_name.lock().unwrap().clone();
-                            let mut chosen = None;
-                            if let Some(target) = &target_opt {
-                                let target_lower = target.trim().to_lowercase();
-                                if let Ok(dev_iter) = host.output_devices() {
-                                    for dev in dev_iter {
-                                        if let Ok(name) = dev.name() {
-                                            if name.trim().to_lowercase() == target_lower || name.to_lowercase().contains(&target_lower) {
-                                                chosen = Some((dev, name));
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            let (device, dev_name) = match chosen {
-                                Some(pair) => pair,
-                                None => {
-                                    if let Some(default_dev) = host.default_output_device() {
-                                        let def_name = default_dev.name().unwrap_or_else(|_| "Dispositivo Predeterminado".to_string());
-                                        (default_dev, def_name)
-                                    } else {
-                                        continue;
-                                    }
-                                }
-                            };
-
-                            if let Ok(supported_config) = device.default_output_config() {
-                                match build_and_start_stream(
-                                    &device,
-                                    supported_config,
-                                    command_consumer.clone(),
-                                    shared_soundfont.clone(),
-                                    shared_bank_patch.clone(),
-                                    shared_master_gain.clone(),
-                                    shared_pad_samples.clone(),
-                                    shared_pad_modes.clone(),
-                                    shared_pad_gains.clone(),
-                                    shared_pad_engine_mode.clone(),
-                                    shared_drum_soundfont.clone(),
-                                    shared_drum_patch.clone(),
-                                    shared_drum_pad_notes.clone(),
-                                    shared_fx_rack.clone(),
-                                    shared_fx_routing.clone(),
-                                    shared_sequencer.clone(),
-                                    ui_event_producer.clone(),
-                                    shared_arpeggiator.clone(),
-                                    shared_midi_fader_ccs.clone(),
-                                    shared_midi_knob_ccs.clone(),
-                                    shared_midi_muted.clone(),
-                                    device_invalidated.clone(),
-                                    selected_channel_pair.clone(),
-                                    *target_buffer_size.lock().unwrap(),
-                                    *target_sample_rate.lock().unwrap(),
-                                ) {
-                                    Ok((new_stream, new_sample_rate, new_channels)) => {
-                                        *stream_holder.lock().unwrap() = StreamHolder(Some(ActiveBackend::Cpal(new_stream)));
-                                        *sample_rate.lock().unwrap() = new_sample_rate;
-                                        *channels_holder.lock().unwrap() = new_channels;
-                                        *current_device_name.lock().unwrap() = dev_name.clone();
-                                        is_running.store(true, Ordering::SeqCst);
-                                        device_invalidated.store(false, Ordering::SeqCst);
-
-                                        println!(
-                                            "[Audio Watchdog OK] Reconexión exitosa a '{}' ({} Hz, {} canales). Estado preservado.",
-                                            dev_name, new_sample_rate, new_channels
-                                        );
-
-                                        if let Some(handle) = app_handle.lock().unwrap().as_ref() {
-                                            let _ = handle.emit("audio-status-changed", ());
-                                        }
+                    let host = cpal::default_host();
+                    let target_opt = target_device_name.lock().unwrap().clone();
+                    let mut chosen = None;
+                    if let Some(target) = &target_opt {
+                        let target_lower = target.trim().to_lowercase();
+                        if let Ok(dev_iter) = host.output_devices() {
+                            for dev in dev_iter {
+                                if let Ok(name) = dev.name() {
+                                    if name.trim().to_lowercase() == target_lower
+                                        || name.to_lowercase().contains(&target_lower)
+                                    {
+                                        chosen = Some((dev, name));
                                         break;
-                                    }
-                                    Err(e) => {
-                                        eprintln!("[Audio Watchdog] Esperando a que el dispositivo esté listo: {}", e);
                                     }
                                 }
                             }
                         }
+                    }
+
+                    let (device, dev_name) = match chosen {
+                        Some(pair) => pair,
+                        None => {
+                            if let Some(default_dev) = host.default_output_device() {
+                                let def_name = default_dev
+                                    .name()
+                                    .unwrap_or_else(|_| "Dispositivo Predeterminado".to_string());
+                                (default_dev, def_name)
+                            } else {
+                                device_invalidated.store(true, Ordering::SeqCst);
+                                continue;
+                            }
+                        }
+                    };
+
+                    if let Ok(supported_config) = device.default_output_config() {
+                        device_invalidated.store(false, Ordering::SeqCst);
+                        match build_and_start_stream(
+                            &device,
+                            supported_config,
+                            command_consumer.clone(),
+                            shared_soundfont.clone(),
+                            shared_bank_patch.clone(),
+                            shared_master_gain.clone(),
+                            shared_pad_samples.clone(),
+                            shared_pad_modes.clone(),
+                            shared_pad_gains.clone(),
+                            shared_pad_engine_mode.clone(),
+                            shared_drum_soundfont.clone(),
+                            shared_drum_patch.clone(),
+                            shared_drum_pad_notes.clone(),
+                            shared_fx_rack.clone(),
+                            shared_fx_routing.clone(),
+                            shared_sequencer.clone(),
+                            ui_event_producer.clone(),
+                            shared_arpeggiator.clone(),
+                            shared_midi_fader_ccs.clone(),
+                            shared_midi_knob_ccs.clone(),
+                            shared_midi_muted.clone(),
+                            device_invalidated.clone(),
+                            active_stream_generation.clone(),
+                            user_suspended.clone(),
+                            next_gen,
+                            selected_channel_pair.clone(),
+                            *target_buffer_size.lock().unwrap(),
+                            *target_sample_rate.lock().unwrap(),
+                        ) {
+                            Ok((new_stream, new_sample_rate, new_channels)) => {
+                                *stream_holder.lock().unwrap() =
+                                    StreamHolder(Some(ActiveBackend::Cpal(new_stream)));
+                                *sample_rate.lock().unwrap() = new_sample_rate;
+                                *channels_holder.lock().unwrap() = new_channels;
+                                *current_device_name.lock().unwrap() = dev_name.clone();
+                                is_running.store(true, Ordering::SeqCst);
+
+                                println!(
+                                    "[Audio Watchdog OK] Reconexión exitosa a '{}' ({} Hz, {} canales). Estado preservado.",
+                                    dev_name, new_sample_rate, new_channels
+                                );
+
+                                if let Some(handle) = app_handle.lock().unwrap().as_ref() {
+                                    let _ = handle.emit("audio-status-changed", ());
+                                }
+                            }
+                            Err(e) => {
+                                device_invalidated.store(true, Ordering::SeqCst);
+                                eprintln!(
+                                    "[Audio Watchdog] Esperando a que el dispositivo esté listo: {}",
+                                    e
+                                );
+                            }
+                        }
+                    } else {
+                        device_invalidated.store(true, Ordering::SeqCst);
                     }
                 }
             })
@@ -5049,5 +5346,348 @@ mod tests {
             "La ganancia de pad debe clampearse en el rango 0.0..=1.0"
         );
         assert!((state_2.pad_gains[2] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_a16_start_without_output_device_spawns_single_watchdog_and_remains_operational() {
+        let (_prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let mut engine = AudioEngine::new();
+
+        // Arrancar con force_no_initial_device = true
+        let res = engine.start_internal(cons, true);
+        assert!(res.is_err(), "start_internal con force_no_initial_device debe retornar Err");
+        assert!(!engine.is_running.load(Ordering::SeqCst));
+        assert!(engine.device_invalidated.load(Ordering::SeqCst));
+        assert_eq!(
+            engine.watchdog_spawn_count.load(Ordering::SeqCst),
+            1,
+            "El watchdog debe haberse iniciado exactamente una vez a pesar de no haber dispositivo de salida"
+        );
+        assert_eq!(*engine.current_device_name.lock().unwrap(), "Reconectando audio...");
+
+        // Llamadas adicionales a spawn_watchdog no deben duplicar el hilo
+        engine.spawn_watchdog();
+        assert_eq!(engine.watchdog_spawn_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_a16_subsequent_device_appearance_recovers_audio() {
+        let (_prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let mut engine = AudioEngine::new();
+
+        // Inicia sin dispositivo
+        let _ = engine.start_internal(cons, true);
+        assert!(!engine.is_running.load(Ordering::SeqCst));
+        assert!(engine.device_invalidated.load(Ordering::SeqCst));
+        let initial_gen = engine.active_stream_generation.load(Ordering::SeqCst);
+
+        // Simulamos la aparición de un dispositivo en el paso del watchdog
+        let recovered = engine.watchdog_recovery_step_with(|stream_gen, _dev, _buf, _sr| {
+            assert!(stream_gen > initial_gen, "La recuperación debe generar una nueva generación monotónica");
+            Ok((None, "Realtek High Definition Audio".to_string(), 48000, 2))
+        });
+
+        assert!(recovered, "El watchdog debe retornar true ante una reconexión exitosa");
+        assert!(engine.is_running.load(Ordering::SeqCst));
+        assert!(!engine.device_invalidated.load(Ordering::SeqCst));
+        assert_eq!(*engine.current_device_name.lock().unwrap(), "Realtek High Definition Audio");
+        assert_eq!(*engine.sample_rate.lock().unwrap(), 48000);
+        assert_eq!(*engine.channels.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_a16_automatic_invalidation_and_watchdog_recovery() {
+        let engine = AudioEngine::new();
+        let initial_gen = engine.active_stream_generation.load(Ordering::SeqCst);
+        engine.is_running.store(true, Ordering::SeqCst);
+        engine.device_invalidated.store(false, Ordering::SeqCst);
+
+        // Ocurre un fallo en el callback del stream activo de generación `initial_gen`
+        let reported = report_stream_error_for_generation(
+            initial_gen,
+            &engine.active_stream_generation,
+            &engine.user_suspended,
+            &engine.device_invalidated,
+        );
+        assert!(reported, "El error del stream activo actual debe ser reportado");
+        assert!(engine.device_invalidated.load(Ordering::SeqCst));
+
+        // El watchdog detecta la invalidación y ejecuta la recuperación
+        let recovered = engine.watchdog_recovery_step_with(|stream_gen, _dev, _buf, _sr| {
+            assert!(stream_gen > initial_gen);
+            Ok((None, "USB Audio Interface".to_string(), 44100, 2))
+        });
+
+        assert!(recovered);
+        assert!(engine.is_running.load(Ordering::SeqCst));
+        assert!(!engine.device_invalidated.load(Ordering::SeqCst));
+        assert_eq!(*engine.current_device_name.lock().unwrap(), "USB Audio Interface");
+    }
+
+    #[test]
+    fn test_a16_manual_reconfiguration_with_pending_invalidation_prevents_destruction() {
+        let engine = AudioEngine::new();
+        let old_gen = engine.active_stream_generation.load(Ordering::SeqCst);
+        // El dispositivo anterior se invalidó
+        engine.device_invalidated.store(true, Ordering::SeqCst);
+        engine.is_running.store(false, Ordering::SeqCst);
+
+        // El usuario configura manualmente un nuevo dispositivo (ej. ALSA/WASAPI/CoreAudio)
+        let res = engine.apply_audio_config_with(
+            Some("ALSA".to_string()),
+            Some("hw:0,0".to_string()),
+            0,
+            Some(256),
+            Some(96000),
+            false,
+            |stream_gen, host, dev, buf, sr| {
+                assert!(stream_gen > old_gen);
+                Ok((
+                    None,
+                    dev.unwrap_or_else(|| "hw:0,0".to_string()),
+                    host.to_string(),
+                    sr.unwrap_or(96000),
+                    buf.unwrap_or(256),
+                    2,
+                ))
+            },
+        );
+        assert!(res.is_ok());
+        let current_gen = engine.active_stream_generation.load(Ordering::SeqCst);
+        assert!(current_gen > old_gen);
+        assert!(engine.is_running.load(Ordering::SeqCst));
+        assert!(!engine.device_invalidated.load(Ordering::SeqCst));
+
+        // Un error tardío del stream anterior descartado llega después de la reconfiguración
+        let stale_reported = report_stream_error_for_generation(
+            old_gen,
+            &engine.active_stream_generation,
+            &engine.user_suspended,
+            &engine.device_invalidated,
+        );
+        assert!(!stale_reported, "El error tardío del stream viejo debe ser ignorado");
+        assert!(
+            !engine.device_invalidated.load(Ordering::SeqCst),
+            "El error tardío no debe invalidar el nuevo stream manual exitoso"
+        );
+
+        // El watchdog verifica el estado y no debe destruir el stream activo
+        let recovered = engine.watchdog_recovery_step_with(|_, _, _, _| {
+            panic!("El watchdog no debe intentar reconstruir un stream válido y en ejecución");
+        });
+        assert!(!recovered);
+        assert!(engine.is_running.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_a16_deliberate_suspension_prevents_watchdog_rebuild_and_reactivation() {
+        let engine = AudioEngine::new();
+        engine.is_running.store(true, Ordering::SeqCst);
+        engine.device_invalidated.store(false, Ordering::SeqCst);
+
+        // El usuario suspende deliberadamente el motor (ej. para abrir panel ASIO o cambiar DAC)
+        let suspend_res = engine.suspend_audio_engine();
+        assert!(suspend_res.is_ok());
+        assert!(engine.user_suspended.load(Ordering::SeqCst));
+        assert!(!engine.is_running.load(Ordering::SeqCst));
+
+        // Si ocurre una señal residual de invalidación o el watchdog evalúa el motor
+        engine.device_invalidated.store(true, Ordering::SeqCst);
+        let recovered = engine.watchdog_recovery_step_with(|_, _, _, _| {
+            panic!("El watchdog NUNCA debe ejecutar stream_builder mientras user_suspended esté activo");
+        });
+
+        assert!(!recovered, "El watchdog debe abortar inmediatamente ante suspensión deliberada");
+        assert!(!engine.is_running.load(Ordering::SeqCst), "El audio debe permanecer detenido");
+        assert!(
+            !engine.device_invalidated.load(Ordering::SeqCst),
+            "La señal residual de invalidación debe ser limpiada sin reactivar el stream"
+        );
+    }
+
+    #[test]
+    fn test_a16_stale_error_from_previous_stream_ignored() {
+        let active_gen = AtomicU64::new(10);
+        let user_suspended = AtomicBool::new(false);
+        let device_invalidated = AtomicBool::new(false);
+
+        // 1. Error de generación obsoleta (gen 9 < active 10) -> ignorado
+        let res1 = report_stream_error_for_generation(9, &active_gen, &user_suspended, &device_invalidated);
+        assert!(!res1);
+        assert!(!device_invalidated.load(Ordering::SeqCst));
+
+        // 2. Error de generación futura inconsistente (gen 11 != active 10) -> ignorado
+        let res2 = report_stream_error_for_generation(11, &active_gen, &user_suspended, &device_invalidated);
+        assert!(!res2);
+        assert!(!device_invalidated.load(Ordering::SeqCst));
+
+        // 3. Error de generación activa (gen 10 == active 10) pero motor suspendido por el usuario -> ignorado
+        user_suspended.store(true, Ordering::SeqCst);
+        let res3 = report_stream_error_for_generation(10, &active_gen, &user_suspended, &device_invalidated);
+        assert!(!res3);
+        assert!(!device_invalidated.load(Ordering::SeqCst));
+
+        // 4. Error de generación activa (gen 10 == active 10) sin suspensión -> reportado
+        user_suspended.store(false, Ordering::SeqCst);
+        let res4 = report_stream_error_for_generation(10, &active_gen, &user_suspended, &device_invalidated);
+        assert!(res4);
+        assert!(device_invalidated.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_a16_concurrent_reconstruction_mutual_exclusion() {
+        let engine = Arc::new(AudioEngine::new());
+        let in_rebuild_count = Arc::new(AtomicUsize::new(0));
+
+        let t1 = {
+            let eng = engine.clone();
+            let counter = in_rebuild_count.clone();
+            std::thread::spawn(move || {
+                eng.apply_audio_config_with(
+                    Some("WASAPI".to_string()),
+                    Some("Dev1".to_string()),
+                    0,
+                    Some(256),
+                    Some(48000),
+                    false,
+                    |_gen, _host, dev, _buf, _sr| {
+                        let cur = counter.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(cur, 0, "Violación de exclusión mutua: dos reconstrucciones simultáneas");
+                        std::thread::sleep(std::time::Duration::from_millis(30));
+                        counter.fetch_sub(1, Ordering::SeqCst);
+                        Ok((None, dev.unwrap(), "WASAPI".to_string(), 48000, 256, 2))
+                    },
+                )
+            })
+        };
+
+        let t2 = {
+            let eng = engine.clone();
+            let counter = in_rebuild_count.clone();
+            std::thread::spawn(move || {
+                eng.apply_audio_config_with(
+                    Some("WASAPI".to_string()),
+                    Some("Dev2".to_string()),
+                    0,
+                    Some(512),
+                    Some(96000),
+                    false,
+                    |_gen, _host, dev, _buf, _sr| {
+                        let cur = counter.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(cur, 0, "Violación de exclusión mutua: dos reconstrucciones simultáneas");
+                        std::thread::sleep(std::time::Duration::from_millis(30));
+                        counter.fetch_sub(1, Ordering::SeqCst);
+                        Ok((None, dev.unwrap(), "WASAPI".to_string(), 96000, 512, 2))
+                    },
+                )
+            })
+        };
+
+        let res1 = t1.join().unwrap();
+        let res2 = t2.join().unwrap();
+        assert!(res1.is_ok());
+        assert!(res2.is_ok());
+        assert!(engine.is_running.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_a16_no_duplicate_watchdogs() {
+        let engine = Arc::new(AudioEngine::new());
+        let mut handles = Vec::new();
+
+        for _ in 0..8 {
+            let eng = engine.clone();
+            handles.push(std::thread::spawn(move || {
+                eng.spawn_watchdog();
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(
+            engine.watchdog_spawn_count.load(Ordering::SeqCst),
+            1,
+            "Múltiples llamadas concurrentes a spawn_watchdog deben instanciar un único hilo watchdog"
+        );
+    }
+
+    #[test]
+    fn test_a16_a06_state_preservation_across_watchdog_recovery() {
+        use crate::audio::sampler::PadPlaybackMode;
+
+        let (_prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+
+        // 1. Configurar estado runtime complejo (A06):
+        // - Banco SF2 4, Preset 32
+        engine.shared_bank_patch.store(pack_bank_patch(4, 32), Ordering::SeqCst);
+        // - Pad 0 con sample, modo Gate y ganancia 0.65
+        let pad_sample = Arc::new(PadSampleData {
+            name: "WatchdogKick.wav".to_string(),
+            sample_rate: 48000,
+            data_l: vec![0.5f32; 32],
+            data_r: vec![0.5f32; 32],
+            length: 32,
+        });
+        engine.shared_pad_samples.lock().unwrap()[0] = Some(pad_sample);
+        engine.shared_pad_modes.lock().unwrap()[0] = PadPlaybackMode::Gate;
+        engine.shared_pad_gains.lock().unwrap()[0] = 0.65;
+        // - Arpegiador configurado con HOLD y notas [60, 64, 67]
+        {
+            let mut arp = engine.shared_arpeggiator.lock().unwrap();
+            arp.enabled = true;
+            arp.hold = true;
+            arp.hold_count = 3;
+            arp.sequence[0] = 60;
+            arp.sequence[1] = 64;
+            arp.sequence[2] = 67;
+        }
+        // - Mapeo MIDI Learn para Fader 0 en CC 21 y Knob 0 en CC 73
+        engine.shared_midi_fader_ccs.lock().unwrap()[0] = 21;
+        engine.shared_midi_knob_ccs.lock().unwrap()[0] = 73;
+        engine.shared_midi_muted.store(true, Ordering::SeqCst);
+
+        // 2. Simular fallo de stream y recuperación vía watchdog
+        let initial_gen = engine.active_stream_generation.load(Ordering::SeqCst);
+        engine.device_invalidated.store(true, Ordering::SeqCst);
+        engine.is_running.store(false, Ordering::SeqCst);
+
+        let recovered = engine.watchdog_recovery_step_with(|stream_gen, _dev, _buf, _sr| {
+            assert!(stream_gen > initial_gen);
+            Ok((None, "Recovered Audio Interface".to_string(), 96000, 2))
+        });
+        assert!(recovered);
+
+        // 3. Reconstruir AudioRenderState tras la recuperación
+        let state = build_test_render_state_from_engine(&engine, 96000.0, cons_arc);
+
+        // Verificar preservación íntegra de A06
+        assert_eq!(
+            unpack_bank_patch(state.shared_bank_patch.load(Ordering::SeqCst)),
+            (4, 32),
+            "El banco y preset SF2 deben preservarse tras la recuperación del watchdog"
+        );
+        assert_eq!(state.arpeggiator.hold_count, 3);
+        assert_eq!(state.arpeggiator.sequence[0], 60);
+        assert_eq!(state.arpeggiator.sequence[1], 64);
+        assert_eq!(state.arpeggiator.sequence[2], 67);
+
+        assert_eq!(
+            state.pad_sampler.slots[0]
+                .sample
+                .as_ref()
+                .map(|s| s.name.as_str()),
+            Some("WatchdogKick.wav")
+        );
+        assert_eq!(state.pad_sampler.slots[0].mode, PadPlaybackMode::Gate);
+        assert!((state.pad_sampler.slots[0].gain - 0.65).abs() < 1e-6);
+        assert!((state.pad_gains[0] - 0.65).abs() < 1e-6);
+
+        assert_eq!(state.midi_fader_ccs[0], 21);
+        assert_eq!(state.midi_knob_ccs[0], 73);
+        assert!(state.is_midi_muted);
     }
 }
