@@ -377,20 +377,54 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
   const patternRef = useRef<number[][]>(pattern);
   patternRef.current = pattern;
 
+  // Registro exclusivo de pads disparados por ratón/puntero para no cortar pads MIDI/QWERTY
+  const mouseActivePadsRef = useRef<Set<number>>(new Set());
+  const mouseActivePadNotesRef = useRef<Map<number, number>>(new Map());
+  const onReleasePadWithNoteRef = useRef(onReleasePadWithNote);
+  onReleasePadWithNoteRef.current = onReleasePadWithNote;
+
+  const releaseMousePad = (padNum: number, fallbackNote?: number) => {
+    if (mouseActivePadsRef.current.has(padNum)) {
+      const note = mouseActivePadNotesRef.current.get(padNum) ?? fallbackNote ?? 36;
+      mouseActivePadsRef.current.delete(padNum);
+      mouseActivePadNotesRef.current.delete(padNum);
+      if (onReleasePadWithNoteRef.current) {
+        onReleasePadWithNoteRef.current(padNum, note);
+      }
+    }
+  };
+
   useEffect(() => {
+    const releaseAllMousePads = () => {
+      if (mouseActivePadsRef.current.size === 0) return;
+      const padsToRelease = Array.from(mouseActivePadsRef.current);
+      for (const padNum of padsToRelease) {
+        const note = mouseActivePadNotesRef.current.get(padNum) ?? 36;
+        mouseActivePadsRef.current.delete(padNum);
+        mouseActivePadNotesRef.current.delete(padNum);
+        if (onReleasePadWithNoteRef.current) {
+          onReleasePadWithNoteRef.current(padNum, note);
+        }
+      }
+    };
+
     const endStepDrag = () => {
       if (stepDragRef.current.active) {
         stepDragRef.current.active = false;
         stepDragRef.current.lastKey = "";
       }
+      releaseAllMousePads();
     };
+    window.addEventListener("mouseup", releaseAllMousePads);
     window.addEventListener("pointerup", endStepDrag);
     window.addEventListener("pointercancel", endStepDrag);
     window.addEventListener("blur", endStepDrag);
     return () => {
+      window.removeEventListener("mouseup", releaseAllMousePads);
       window.removeEventListener("pointerup", endStepDrag);
       window.removeEventListener("pointercancel", endStepDrag);
       window.removeEventListener("blur", endStepDrag);
+      releaseAllMousePads();
     };
   }, []);
 
@@ -1045,6 +1079,8 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                         return;
                       }
                       if (onSelectPad) onSelectPad(padIdx);
+                      mouseActivePadsRef.current.add(padNum);
+                      mouseActivePadNotesRef.current.set(padNum, midiNote);
                       if (onTriggerPadWithNote) {
                         onTriggerPadWithNote(padNum, midiNote);
                       } else if (onTriggerPad) {
@@ -1053,14 +1089,12 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
                     }
                   }}
                   onMouseUp={(e) => {
-                    if (e.button === 0 && onReleasePadWithNote) {
-                      onReleasePadWithNote(padNum, midiNote);
+                    if (e.button === 0) {
+                      releaseMousePad(padNum, midiNote);
                     }
                   }}
                   onMouseLeave={() => {
-                    if (isHit && onReleasePadWithNote) {
-                      onReleasePadWithNote(padNum, midiNote);
-                    }
+                    releaseMousePad(padNum, midiNote);
                   }}
                   onContextMenu={(e) => {
                     e.preventDefault();

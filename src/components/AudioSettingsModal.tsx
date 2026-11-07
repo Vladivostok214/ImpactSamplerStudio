@@ -187,8 +187,10 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
   const [activeDeviceChannels, setActiveDeviceChannels] = useState<number>(2);
   const [activeDeviceSampleRates, setActiveDeviceSampleRates] = useState<number[]>([44100, 48000]);
   const [lastSelectedDeviceByHost, setLastSelectedDeviceByHost] = useState<Record<string, string>>({});
+  const probeRequestIdRef = useRef<number>(0);
 
   const probeDevice = async (host: string, devName: string) => {
+    const reqId = ++probeRequestIdRef.current;
     if (!devName) {
       setIsDeviceAvailable(false);
       return;
@@ -198,6 +200,7 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
         host,
         deviceName: devName,
       });
+      if (reqId !== probeRequestIdRef.current) return;
       if (details) {
         setIsDeviceAvailable(details.isAvailable);
         setActiveDeviceChannels(details.channels > 0 ? details.channels : 2);
@@ -221,6 +224,7 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
         }
       }
     } catch (e) {
+      if (reqId !== probeRequestIdRef.current) return;
       console.warn("No se pudieron consultar detalles del dispositivo:", e);
       setIsDeviceAvailable(false);
     }
@@ -235,78 +239,95 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
   const [calibOffsetResult, setCalibOffsetResult] = useState<number | null>(null);
 
   useEffect(() => {
-    if (isOpen) {
-      onRefreshMidi();
-      setApplyError(null);
-      // Detener y liberar el dispositivo de audio al abrir las opciones (estilo REAPER)
-      invoke<AudioStatusInfo>("suspend_audio_engine").catch(console.error);
-
-      Promise.all([
-        invoke<string[]>("list_audio_hosts"),
-        invoke<AudioStatusInfo>("get_audio_status"),
-      ])
-        .then(async ([hosts, status]) => {
-          const supportedHosts = hosts && hosts.length > 0 ? hosts : ["ALSA"];
-          setAvailableHosts(supportedHosts);
-
-          const rawHost = status?.host || status?.driver || supportedHosts[0];
-          let activeHost = rawHost;
-          const matched = supportedHosts.find((h) => h.toUpperCase() === rawHost.toUpperCase());
-          if (matched) {
-            activeHost = matched;
-          } else if (rawHost.toUpperCase().includes("ASIO") && supportedHosts.includes("ASIO")) {
-            activeHost = "ASIO";
-          } else {
-            activeHost = supportedHosts[0];
-          }
-          setSelectedHost(activeHost);
-
-          if (status?.bufferSize || status?.buffer_size) {
-            setBufferSize(status.bufferSize || status.buffer_size || 256);
-          }
-          if (status?.sampleRate || status?.sample_rate) {
-            setSampleRate(status.sampleRate || status.sample_rate || 48000);
-          }
-
-          // Leer par de canales guardado en localStorage si existe
-          try {
-            const savedPrefs = JSON.parse(localStorage.getItem("impact_sampler_audio_preferences") || "{}");
-            if (typeof savedPrefs.channelPair === "number") {
-              setSelectedChannelPair(savedPrefs.channelPair);
-            }
-          } catch (_) {}
-
-          try {
-            const devs = await invoke<AudioDeviceInfo[]>("list_audio_devices", { host: activeHost });
-            setAudioDevices(devs);
-            const activeDeviceName = status?.deviceName || status?.device_name;
-            const activeDev = devs.find(
-              (d) =>
-                activeDeviceName &&
-                (d.name.trim().toLowerCase() === activeDeviceName.trim().toLowerCase() ||
-                 d.name.toLowerCase().includes(activeDeviceName.toLowerCase()) ||
-                 activeDeviceName.toLowerCase().includes(d.name.toLowerCase()))
-            );
-            const defaultDev = devs.find((d) => d.isDefault || (d as any).is_default);
-            const resolvedDev = activeDev || defaultDev || (devs.length > 0 ? devs[0] : null);
-            if (resolvedDev) {
-              setSelectedDevice(resolvedDev.id);
-              setLastSelectedDeviceByHost((prev) => ({ ...prev, [activeHost]: resolvedDev.id }));
-              probeDevice(activeHost, resolvedDev.name);
-            } else {
-              setSelectedDevice("");
-              setIsDeviceAvailable(false);
-            }
-          } catch (e) {
-            console.error("Error al obtener lista de dispositivos:", e);
-          }
-        })
-        .catch(console.error);
+    if (!isOpen) {
+      probeRequestIdRef.current += 1;
+      return;
     }
+
+    let isCancelled = false;
+    const reqId = ++probeRequestIdRef.current;
+
+    onRefreshMidi();
+    setApplyError(null);
+    // Detener y liberar el dispositivo de audio al abrir las opciones (estilo REAPER)
+    invoke<AudioStatusInfo>("suspend_audio_engine").catch(console.error);
+
+    Promise.all([
+      invoke<string[]>("list_audio_hosts"),
+      invoke<AudioStatusInfo>("get_audio_status"),
+    ])
+      .then(async ([hosts, status]) => {
+        if (isCancelled || reqId !== probeRequestIdRef.current) return;
+        const supportedHosts = hosts && hosts.length > 0 ? hosts : ["ALSA"];
+        setAvailableHosts(supportedHosts);
+
+        const rawHost = status?.host || status?.driver || supportedHosts[0];
+        let activeHost = rawHost;
+        const matched = supportedHosts.find((h) => h.toUpperCase() === rawHost.toUpperCase());
+        if (matched) {
+          activeHost = matched;
+        } else if (rawHost.toUpperCase().includes("ASIO") && supportedHosts.includes("ASIO")) {
+          activeHost = "ASIO";
+        } else {
+          activeHost = supportedHosts[0];
+        }
+        setSelectedHost(activeHost);
+
+        if (status?.bufferSize || status?.buffer_size) {
+          setBufferSize(status.bufferSize || status.buffer_size || 256);
+        }
+        if (status?.sampleRate || status?.sample_rate) {
+          setSampleRate(status.sampleRate || status.sample_rate || 48000);
+        }
+
+        // Leer par de canales guardado en localStorage si existe
+        try {
+          const savedPrefs = JSON.parse(localStorage.getItem("impact_sampler_audio_preferences") || "{}");
+          if (typeof savedPrefs.channelPair === "number") {
+            setSelectedChannelPair(savedPrefs.channelPair);
+          }
+        } catch (_) {}
+
+        try {
+          const devs = await invoke<AudioDeviceInfo[]>("list_audio_devices", { host: activeHost });
+          if (isCancelled || reqId !== probeRequestIdRef.current) return;
+          setAudioDevices(devs);
+          const activeDeviceName = status?.deviceName || status?.device_name;
+          const activeDev = devs.find(
+            (d) =>
+              activeDeviceName &&
+              (d.name.trim().toLowerCase() === activeDeviceName.trim().toLowerCase() ||
+               d.name.toLowerCase().includes(activeDeviceName.toLowerCase()) ||
+               activeDeviceName.toLowerCase().includes(d.name.toLowerCase()))
+          );
+          const defaultDev = devs.find((d) => d.isDefault || (d as any).is_default);
+          const resolvedDev = activeDev || defaultDev || (devs.length > 0 ? devs[0] : null);
+          if (resolvedDev) {
+            setSelectedDevice(resolvedDev.id);
+            setLastSelectedDeviceByHost((prev) => ({ ...prev, [activeHost]: resolvedDev.id }));
+            probeDevice(activeHost, resolvedDev.name);
+          } else {
+            setSelectedDevice("");
+            setIsDeviceAvailable(false);
+          }
+        } catch (e) {
+          if (isCancelled || reqId !== probeRequestIdRef.current) return;
+          console.error("Error al obtener lista de dispositivos:", e);
+        }
+      })
+      .catch(console.error);
+
+    return () => {
+      isCancelled = true;
+      probeRequestIdRef.current += 1;
+    };
   }, [isOpen]);
 
   useEffect(() => {
-    const unlistenPromise = listen<AudioStatusInfo>("audio-status-changed", (event) => {
+    let isMounted = true;
+    let unlisten: (() => void) | undefined;
+    listen<AudioStatusInfo>("audio-status-changed", (event) => {
+      if (!isMounted) return;
       const st = event.payload;
       if (!st) return;
       const h = st.host || st.driver;
@@ -321,16 +342,22 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
       if (b) setBufferSize(b);
       const s = st.sampleRate || st.sample_rate;
       if (s) setSampleRate(s);
+    }).then((fn) => {
+      if (isMounted) unlisten = fn;
+      else fn();
     });
     return () => {
-      unlistenPromise.then((fn) => fn());
+      isMounted = false;
+      if (unlisten) unlisten();
     };
   }, []);
 
   const handleHostChange = async (newHost: string) => {
+    const reqId = ++probeRequestIdRef.current;
     setSelectedHost(newHost);
     try {
       const devs = await invoke<AudioDeviceInfo[]>("list_audio_devices", { host: newHost });
+      if (reqId !== probeRequestIdRef.current) return;
       setAudioDevices(devs);
 
       // 1. Priorizar el dispositivo recordado recientemente para este host en la sesión
@@ -361,6 +388,7 @@ export const AudioSettingsModal: React.FC<AudioSettingsModalProps> = ({
         setIsDeviceAvailable(false);
       }
     } catch (e) {
+      if (reqId !== probeRequestIdRef.current) return;
       console.error("Error al cambiar host de audio:", e);
     }
   };

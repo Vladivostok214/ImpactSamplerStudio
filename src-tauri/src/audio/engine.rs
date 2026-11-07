@@ -7,7 +7,7 @@ use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
 use tauri::{AppHandle, Emitter};
 
 use super::arpeggiator::{Arpeggiator, ArpOutputEvent, ArpStateInfo};
-use super::fx::{AudioFxRack, FxRouting, KnobMappingInfo, KnobTarget};
+use super::fx::{AudioFxRack, FxRouting, KnobMappingInfo};
 use super::sampler::{PadEngineMode, PadPlaybackMode, PadSampleData, PadSampler, PadSlotInfo};
 use super::sequencer::{SequencerAction, SequencerStateInfo, SequencerStepEvent, StepSequencer};
 use super::{AudioDeviceInfo, AudioEngineCommand, SequencerUiEvent};
@@ -1969,20 +1969,6 @@ impl AudioEngine {
             guard.get_mappings_info()
         } else {
             Vec::new()
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn set_knob_mapping(&self, knob_idx: usize, target: KnobTarget) {
-        if let Ok(mut guard) = self.shared_fx_rack.lock() {
-            guard.set_knob_mapping(knob_idx, target);
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn set_knob_value(&self, knob_idx: usize, value: f32) {
-        if let Ok(mut guard) = self.shared_fx_rack.lock() {
-            guard.set_knob_value(knob_idx, value);
         }
     }
 

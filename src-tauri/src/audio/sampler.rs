@@ -286,14 +286,6 @@ impl PadSampler {
         }
     }
 
-    pub fn get_gain(&self, pad_index: usize) -> f32 {
-        if pad_index < 8 {
-            self.slots[pad_index].gain
-        } else {
-            64.0 / 127.0
-        }
-    }
-
     pub fn render_mix(&mut self, out_l: &mut [f32], out_r: &mut [f32], num_frames: usize) {
         for slot in self.slots.iter_mut() {
             if !slot.voice.active {

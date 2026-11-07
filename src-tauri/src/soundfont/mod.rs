@@ -502,8 +502,25 @@ pub fn import_soundfont_file(source_path: &Path) -> Result<SoundFontInfo, String
 }
 
 pub fn delete_user_soundfont(filename: &str) -> Result<(), String> {
+    let path = Path::new(filename);
+    let safe_name = match path.file_name().and_then(|s| s.to_str()) {
+        Some(name)
+            if !name.is_empty()
+                && name == filename
+                && !filename.contains("..")
+                && !filename.contains('/')
+                && !filename.contains('\\')
+                && path.components().count() == 1 =>
+        {
+            name
+        }
+        _ => {
+            return Err("Nombre de archivo SoundFont inválido.".to_string());
+        }
+    };
+
     let user_dir = get_user_soundfonts_dir();
-    let target = user_dir.join(filename);
+    let target = user_dir.join(safe_name);
     if target.exists() {
         std::fs::remove_file(&target)
             .map_err(|e| format!("Error eliminando SoundFont: {}", e))?;

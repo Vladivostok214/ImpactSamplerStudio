@@ -120,13 +120,19 @@ export default function App() {
     getCurrentWebviewWindow().show().catch(() => {});
 
     // 3 segundos exactos para apreciar el logotipo de IMPACT SAMPLER
+    let fadeOutTimer: ReturnType<typeof setTimeout> | undefined;
     const timer = setTimeout(() => {
       setBootFadeOut(true);
-      setTimeout(() => {
+      fadeOutTimer = setTimeout(() => {
         setIsBooting(false);
       }, 700);
     }, 3000);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      if (fadeOutTimer !== undefined) {
+        clearTimeout(fadeOutTimer);
+      }
+    };
   }, []);
 
   const [currentBeat, setCurrentBeat] = useState<{ beat: number; maxBeats: number }>({
@@ -270,6 +276,7 @@ export default function App() {
       .then((state) => setSequencerState(state))
       .catch(console.error);
 
+    let isMounted = true;
     let unlistenStep: (() => void) | undefined;
     let unlistenState: (() => void) | undefined;
     let unlistenPattern: (() => void) | undefined;
@@ -279,6 +286,7 @@ export default function App() {
     let unlistenFxRouting: (() => void) | undefined;
 
     listen<SequencerStepEvent>("sequencer-step", (event) => {
+      if (!isMounted) return;
       setSequencerState((prev) => ({
         ...prev,
         currentStep: event.payload.step,
@@ -288,47 +296,60 @@ export default function App() {
         maxBeats: event.payload.maxBeats,
       });
     }).then((un) => {
-      unlistenStep = un;
+      if (isMounted) unlistenStep = un;
+      else un();
     });
 
     listen<SequencerStateInfo>("sequencer-state-changed", (event) => {
+      if (!isMounted) return;
       setSequencerState(event.payload);
     }).then((un) => {
-      unlistenState = un;
+      if (isMounted) unlistenState = un;
+      else un();
     });
 
     listen<number[][]>("sequencer-pattern-updated", (event) => {
+      if (!isMounted) return;
       setSequencerState((prev) => ({
         ...prev,
         pattern: event.payload,
       }));
     }).then((un) => {
-      unlistenPattern = un;
+      if (isMounted) unlistenPattern = un;
+      else un();
     });
 
     listen("toggle-visual-metronome", () => {
+      if (!isMounted) return;
       setIsVisualMetronomeVisible((prev) => !prev);
     }).then((un) => {
-      unlistenToggleVisualMetronome = un;
+      if (isMounted) unlistenToggleVisualMetronome = un;
+      else un();
     });
 
     listen("sequencer-advance-page", () => {
+      if (!isMounted) return;
       // Disparar evento personalizado de avance de página
       window.dispatchEvent(new CustomEvent("midi-advance-page"));
     }).then((un) => {
-      unlistenAdvancePage = un;
+      if (isMounted) unlistenAdvancePage = un;
+      else un();
     });
 
     listen("toggle-workstation-mode", () => {
+      if (!isMounted) return;
       setWorkstationMode((prev) => (prev === "keys" ? "seq" : "keys"));
     }).then((un) => {
-      unlistenToggleWorkstation = un;
+      if (isMounted) unlistenToggleWorkstation = un;
+      else un();
     });
 
     listen<FxRouting>("fx-routing-changed", (event) => {
+      if (!isMounted) return;
       setFxRouting(event.payload);
     }).then((un) => {
-      unlistenFxRouting = un;
+      if (isMounted) unlistenFxRouting = un;
+      else un();
     });
 
     // Atajo de teclado: Barra espaciadora para Play/Pause
@@ -337,6 +358,7 @@ export default function App() {
         e.code === "Space" &&
         !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)
       ) {
+        if (e.repeat) return;
         e.preventDefault();
         invoke("sequencer_toggle_play").catch(console.error);
       }
@@ -344,6 +366,7 @@ export default function App() {
     window.addEventListener("keydown", handleKeyDown);
 
     return () => {
+      isMounted = false;
       if (unlistenStep) unlistenStep();
       if (unlistenState) unlistenState();
       if (unlistenPattern) unlistenPattern();

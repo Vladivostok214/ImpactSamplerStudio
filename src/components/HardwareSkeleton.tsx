@@ -140,6 +140,35 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
   const [openOledMenu, setOpenOledMenu] = useState<"inst" | "patch" | null>(null);
   const oledBarRef = useRef<HTMLDivElement>(null);
 
+  // Registro exclusivo de notas disparadas por ratón/puntero para no cortar notas MIDI/QWERTY
+  const mouseActiveNotesRef = useRef<Set<number>>(new Set());
+  const onReleaseNoteRef = useRef(onReleaseNote);
+  onReleaseNoteRef.current = onReleaseNote;
+
+  const triggerMouseNote = (note: number, velocity: number) => {
+    mouseActiveNotesRef.current.add(note);
+    onTriggerNote(note, velocity);
+  };
+
+  const releaseMouseNote = (note: number) => {
+    if (mouseActiveNotesRef.current.has(note)) {
+      mouseActiveNotesRef.current.delete(note);
+      onReleaseNoteRef.current(note);
+    }
+  };
+
+  const releaseAllMouseNotes = () => {
+    if (mouseActiveNotesRef.current.size === 0) return;
+    const notesToRelease = Array.from(mouseActiveNotesRef.current);
+    mouseActiveNotesRef.current.clear();
+    for (const note of notesToRelease) {
+      onReleaseNoteRef.current(note);
+    }
+  };
+
+  // Registro de gestos activos en controles (faders, knobs, ruedas) para cleanup en desmontaje
+  const activeGestureCleanupRef = useRef<Set<() => void>>(new Set());
+
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       setKnobContextMenu(null);
@@ -155,9 +184,22 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
     };
     window.addEventListener("mousedown", handleClickOutside);
     window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("mouseup", releaseAllMouseNotes);
+    window.addEventListener("pointerup", releaseAllMouseNotes);
+    window.addEventListener("pointercancel", releaseAllMouseNotes);
+    window.addEventListener("blur", releaseAllMouseNotes);
     return () => {
       window.removeEventListener("mousedown", handleClickOutside);
       window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("mouseup", releaseAllMouseNotes);
+      window.removeEventListener("pointerup", releaseAllMouseNotes);
+      window.removeEventListener("pointercancel", releaseAllMouseNotes);
+      window.removeEventListener("blur", releaseAllMouseNotes);
+      releaseAllMouseNotes();
+      for (const cleanup of Array.from(activeGestureCleanupRef.current)) {
+        cleanup();
+      }
+      activeGestureCleanupRef.current.clear();
     };
   }, []);
 
@@ -230,11 +272,44 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
 
 
 
+  const bindPointerDrag = (
+    el: HTMLDivElement,
+    pointerId: number,
+    onPointerMove: (ev: PointerEvent) => void,
+    onEndExtra?: () => void
+  ) => {
+    try {
+      el.setPointerCapture(pointerId);
+    } catch (_) {}
+
+    let ended = false;
+    const endGesture = () => {
+      if (ended) return;
+      ended = true;
+      try {
+        if (el.hasPointerCapture(pointerId)) {
+          el.releasePointerCapture(pointerId);
+        }
+      } catch (_) {}
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", endGesture);
+      window.removeEventListener("pointercancel", endGesture);
+      window.removeEventListener("blur", endGesture);
+      activeGestureCleanupRef.current.delete(endGesture);
+      if (onEndExtra) onEndExtra();
+    };
+
+    activeGestureCleanupRef.current.add(endGesture);
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", endGesture);
+    window.addEventListener("pointercancel", endGesture);
+    window.addEventListener("blur", endGesture);
+  };
+
   // Drag handlers para Faders
   const handleFaderPointerDown = (index: number, e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
     const el = e.currentTarget;
-    el.setPointerCapture(e.pointerId);
 
     const updateFromPointer = (ev: PointerEvent | React.PointerEvent) => {
       const rect = el.getBoundingClientRect();
@@ -245,16 +320,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
     };
 
     updateFromPointer(e);
-
-    const onPointerMove = (ev: PointerEvent) => updateFromPointer(ev);
-    const onPointerUp = (ev: PointerEvent) => {
-      el.releasePointerCapture(ev.pointerId);
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-    };
-
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
+    bindPointerDrag(el, e.pointerId, (ev) => updateFromPointer(ev));
   };
 
   // Drag handlers para Knobs (arrastre vertical estilo DAW)
@@ -263,29 +329,18 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
     const startY = e.clientY;
     const startVal = knobs[index];
     const el = e.currentTarget;
-    el.setPointerCapture(e.pointerId);
 
-    const onPointerMove = (ev: PointerEvent) => {
+    bindPointerDrag(el, e.pointerId, (ev) => {
       const deltaY = startY - ev.clientY; // Arriba suma, abajo resta
       const deltaVal = Math.round((deltaY / 100) * 127);
       const newVal = Math.min(Math.max(startVal + deltaVal, 0), 127);
       onChangeKnob(index, newVal);
-    };
-
-    const onPointerUp = (ev: PointerEvent) => {
-      el.releasePointerCapture(ev.pointerId);
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-    };
-
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
+    });
   };
 
   // Drag handlers para Pitch Wheel (con resorte de retorno automático al centro 0)
   const handlePitchWheelPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
-    el.setPointerCapture(e.pointerId);
 
     const updatePitch = (ev: PointerEvent | React.PointerEvent) => {
       const rect = el.getBoundingClientRect();
@@ -296,24 +351,20 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
     };
 
     updatePitch(e);
-
-    const onPointerMove = (ev: PointerEvent) => updatePitch(ev);
-    const onPointerUp = (ev: PointerEvent) => {
-      el.releasePointerCapture(ev.pointerId);
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-      // Retorno con resorte a 0
-      onChangePitchBend(0);
-    };
-
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
+    bindPointerDrag(
+      el,
+      e.pointerId,
+      (ev) => updatePitch(ev),
+      () => {
+        // Retorno con resorte a 0
+        onChangePitchBend(0);
+      }
+    );
   };
 
   // Drag handlers para Mod Wheel
   const handleModWheelPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
-    el.setPointerCapture(e.pointerId);
 
     const updateMod = (ev: PointerEvent | React.PointerEvent) => {
       const rect = el.getBoundingClientRect();
@@ -323,16 +374,7 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
     };
 
     updateMod(e);
-
-    const onPointerMove = (ev: PointerEvent) => updateMod(ev);
-    const onPointerUp = (ev: PointerEvent) => {
-      el.releasePointerCapture(ev.pointerId);
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-    };
-
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
+    bindPointerDrag(el, e.pointerId, (ev) => updateMod(ev));
   };
 
   return (
@@ -897,10 +939,8 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
             <div
               className="relative flex-1 h-44 flex overflow-x-auto overflow-y-hidden select-none bg-black"
               onMouseLeave={() => {
-                // Silenciar cualquier nota colgada si el cursor sale del riel
-                for (const k of keys) {
-                  if (k.isActive) onReleaseNote(k.note);
-                }
+                // Silenciar exclusivamente notas disparadas por ratón si el cursor sale del riel
+                releaseAllMouseNotes();
               }}
             >
               {keys.map((k) => {
@@ -916,20 +956,20 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                       onMouseDown={(e) => {
                         if (k.isOutOfRange) return;
                         e.stopPropagation();
-                        onTriggerNote(k.note, 110);
+                        triggerMouseNote(k.note, 110);
                       }}
                       onMouseUp={(e) => {
                         if (k.isOutOfRange) return;
                         e.stopPropagation();
-                        onReleaseNote(k.note);
+                        releaseMouseNote(k.note);
                       }}
                       onMouseEnter={(e) => {
                         if (k.isOutOfRange) return;
-                        if (e.buttons === 1) onTriggerNote(k.note, 110);
+                        if (e.buttons === 1) triggerMouseNote(k.note, 110);
                       }}
                       onMouseLeave={(e) => {
                         if (k.isOutOfRange) return;
-                        if (e.buttons === 1) onReleaseNote(k.note);
+                        if (e.buttons === 1) releaseMouseNote(k.note);
                       }}
                       className={`w-[22px] h-[106px] -mx-[11px] z-20 rounded-b-[2px] transition-colors duration-75 relative ${
                         k.isOutOfRange
@@ -959,19 +999,19 @@ export const HardwareSkeleton: React.FC<HardwareSkeletonProps> = ({
                     key={k.note}
                     onMouseDown={() => {
                       if (k.isOutOfRange) return;
-                      onTriggerNote(k.note, 100);
+                      triggerMouseNote(k.note, 100);
                     }}
                     onMouseUp={() => {
                       if (k.isOutOfRange) return;
-                      onReleaseNote(k.note);
+                      releaseMouseNote(k.note);
                     }}
                     onMouseEnter={(e) => {
                       if (k.isOutOfRange) return;
-                      if (e.buttons === 1) onTriggerNote(k.note, 100);
+                      if (e.buttons === 1) triggerMouseNote(k.note, 100);
                     }}
                     onMouseLeave={(e) => {
                       if (k.isOutOfRange) return;
-                      if (e.buttons === 1) onReleaseNote(k.note);
+                      if (e.buttons === 1) releaseMouseNote(k.note);
                     }}
                     className={`flex-1 min-w-[20px] h-full rounded-b-[4px] transition-colors duration-75 relative z-10 ${
                       k.isOutOfRange
