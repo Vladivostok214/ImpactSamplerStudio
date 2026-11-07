@@ -184,7 +184,31 @@ export function useMidiStream() {
           const note = ev.note;
           const idx = target.index;
           setMidiLearnMapping((prev) => {
-            const next = { ...prev, pads: { ...prev.pads, [idx]: note } };
+            const nextPads: Record<number, number> = { ...DEFAULT_MIDI_LEARN_MAPPING.pads, ...(prev.pads || {}) };
+            // Evitar asignaciones duplicadas: si otro pad tenía esta misma nota, restaurarlo a su nota por defecto
+            // salvo cuando su nota por defecto colisione con `note`, en cuyo caso se le asigna una nota libre del set GM.
+            for (let pIdx = 0; pIdx < 8; pIdx++) {
+              if (pIdx !== idx && nextPads[pIdx] === note) {
+                const defaultNote = DEFAULT_MIDI_LEARN_MAPPING.pads[pIdx];
+                if (defaultNote !== note) {
+                  nextPads[pIdx] = defaultNote;
+                } else {
+                  const oldTargetNote = nextPads[idx];
+                  if (oldTargetNote !== undefined && oldTargetNote !== note) {
+                    nextPads[pIdx] = oldTargetNote;
+                  }
+                }
+              }
+            }
+            nextPads[idx] = note;
+            // Si esta misma nota estaba vinculada previamente a una acción de UI ("note"), desvincularla
+            const nextActions = { ...(prev.actions || {}) };
+            for (const [k, v] of Object.entries(nextActions)) {
+              if (v && v.messageType === "note" && v.number === note) {
+                delete nextActions[k];
+              }
+            }
+            const next = { ...prev, pads: nextPads, actions: nextActions };
             saveMidiMapping(next);
             syncMappingsToRust(next);
             return next;
@@ -269,11 +293,12 @@ export function useMidiStream() {
           return next;
         });
 
-        // Buscar si la nota entrante corresponde a un pad mapeado
-        let mappedPadNum = ev.padIndex;
+        // Buscar si la nota entrante corresponde a un pad mapeado (unificado con el backend Rust)
+        let mappedPadNum: number | null = ev.padIndex ?? null;
         if (!mappedPadNum) {
           for (let pIdx = 0; pIdx < 8; pIdx++) {
-            if (mapping.pads[pIdx] === ev.note) {
+            const padNote = mapping.pads[pIdx] ?? DEFAULT_MIDI_LEARN_MAPPING.pads[pIdx];
+            if (padNote === ev.note) {
               mappedPadNum = pIdx + 1;
               break;
             }
@@ -283,7 +308,7 @@ export function useMidiStream() {
         if (mappedPadNum) {
           setActivePads((prev) => {
             const next = new Map(prev);
-            next.set(mappedPadNum, ev.velocity);
+            next.set(mappedPadNum!, ev.velocity);
             return next;
           });
         }
@@ -301,10 +326,11 @@ export function useMidiStream() {
           return next;
         });
 
-        let mappedPadNum = ev.padIndex;
+        let mappedPadNum: number | null = ev.padIndex ?? null;
         if (!mappedPadNum) {
           for (let pIdx = 0; pIdx < 8; pIdx++) {
-            if (mapping.pads[pIdx] === ev.note) {
+            const padNote = mapping.pads[pIdx] ?? DEFAULT_MIDI_LEARN_MAPPING.pads[pIdx];
+            if (padNote === ev.note) {
               mappedPadNum = pIdx + 1;
               break;
             }
@@ -314,7 +340,7 @@ export function useMidiStream() {
         if (mappedPadNum) {
           setActivePads((prev) => {
             const next = new Map(prev);
-            next.delete(mappedPadNum);
+            next.delete(mappedPadNum!);
             return next;
           });
         }

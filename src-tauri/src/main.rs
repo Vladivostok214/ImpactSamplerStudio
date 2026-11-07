@@ -618,14 +618,13 @@ fn set_midi_learn_mappings(
 ) -> Result<(), String> {
     if let Ok(mut prod) = state.audio_producer.lock() {
         let _ = prod.push(AudioEngineCommand::SetMidiLearnCcMappings { faders, knobs });
-        for (i, &note) in pads.iter().enumerate() {
-            let _ = prod.push(AudioEngineCommand::SetDrumPadNote { pad_index: i, note });
-        }
     }
-    let engine = state.audio_engine.lock().unwrap();
-    if let Ok(mut pad_notes) = engine.shared_drum_pad_notes.lock() {
-        *pad_notes = pads;
+    let mut input_pad_notes = [0u8; 8];
+    for (i, &note) in pads.iter().enumerate() {
+        input_pad_notes[i] = note.clamp(0, 127) as u8;
     }
+    let midi_mgr = state.midi_manager.lock().unwrap();
+    midi_mgr.set_pad_note_mappings(input_pad_notes);
     Ok(())
 }
 
@@ -1084,13 +1083,19 @@ fn sequencer_set_latency_compensation(
 }
 
 #[tauri::command]
-fn sequencer_undo(state: State<'_, AppState>) -> Result<bool, String> {
+fn sequencer_undo(app_handle: AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
     if let Ok(mut prod) = state.audio_producer.lock() {
         let _ = prod.push(AudioEngineCommand::SequencerUndo);
     }
     let engine = state.audio_engine.lock().unwrap();
+    let is_running = engine.is_running.load(std::sync::atomic::Ordering::SeqCst);
     let undone = if let Ok(mut seq) = engine.shared_sequencer.lock() {
-        seq.undo()
+        let res = seq.undo();
+        if res && !is_running {
+            let _ = app_handle.emit("sequencer-state-changed", seq.get_state_info());
+            let _ = app_handle.emit("sequencer-pattern-updated", seq.get_active_pattern());
+        }
+        res
     } else {
         false
     };

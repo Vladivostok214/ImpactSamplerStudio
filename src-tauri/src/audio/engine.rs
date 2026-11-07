@@ -495,6 +495,68 @@ impl AudioRenderState {
         }
     }
 
+    fn trigger_melodic_voice_on(
+        synthesizer: &mut Option<Synthesizer>,
+        voices: &mut [Voice; 16],
+        sample_rate_f: f32,
+        note: u8,
+        velocity_7bit: u8,
+    ) {
+        if let Some(synth) = synthesizer {
+            synth.note_on(0, note as i32, velocity_7bit as i32);
+        } else {
+            let mut slot_idx = 0;
+            for (i, v) in voices.iter().enumerate() {
+                if !v.active {
+                    slot_idx = i;
+                    break;
+                }
+            }
+
+            let target_voice = &mut voices[slot_idx];
+            target_voice.note = note;
+            target_voice.velocity = (velocity_7bit as f32 / 127.0).clamp(0.0, 1.0);
+            target_voice.active = true;
+            target_voice.release = false;
+            target_voice.phase = 0.0;
+            target_voice.envelope = 0.0;
+
+            let freq = 440.0 * 2.0f32.powf((note as f32 - 69.0) / 12.0);
+            target_voice.phase_inc = freq / sample_rate_f;
+        }
+    }
+
+    fn release_melodic_voice_on(
+        synthesizer: &mut Option<Synthesizer>,
+        voices: &mut [Voice; 16],
+        note: u8,
+    ) {
+        if let Some(synth) = synthesizer {
+            synth.note_off(0, note as i32);
+        } else {
+            for v in voices.iter_mut() {
+                if v.active && v.note == note {
+                    v.release = true;
+                }
+            }
+        }
+    }
+
+    fn release_all_melodic_voices_on(
+        synthesizer: &mut Option<Synthesizer>,
+        voices: &mut [Voice; 16],
+    ) {
+        if let Some(synth) = synthesizer {
+            synth.note_off_all(false);
+        } else {
+            for v in voices.iter_mut() {
+                if v.active {
+                    v.release = true;
+                }
+            }
+        }
+    }
+
     fn process_commands(&mut self) {
         if let Ok(mut cons_guard) = self.command_consumer.try_lock() {
             if let Some(consumer) = cons_guard.as_mut() {
@@ -531,32 +593,18 @@ impl AudioRenderState {
                         }
                         AudioEngineCommand::NoteOn { note, velocity } => {
                             if !self.is_midi_muted {
+                                let vel_7bit = (velocity * 127.0).round().clamp(1.0, 127.0) as u8;
                                 if self.arpeggiator.enabled {
-                                    let vel_7bit = (velocity * 127.0).round().clamp(1.0, 127.0) as u8;
                                     self.arpeggiator.handle_note_on(note, vel_7bit);
                                     self.sync_shared_arpeggiator();
-                                } else if let Some(synth) = &mut self.synthesizer {
-                                    let vel_7bit = (velocity * 127.0).round().clamp(1.0, 127.0) as i32;
-                                    synth.note_on(0, note as i32, vel_7bit);
                                 } else {
-                                    let mut slot_idx = 0;
-                                    for (i, v) in self.voices.iter().enumerate() {
-                                        if !v.active {
-                                            slot_idx = i;
-                                            break;
-                                        }
-                                    }
-
-                                    let target_voice = &mut self.voices[slot_idx];
-                                    target_voice.note = note;
-                                    target_voice.velocity = velocity;
-                                    target_voice.active = true;
-                                    target_voice.release = false;
-                                    target_voice.phase = 0.0;
-                                    target_voice.envelope = 0.0;
-
-                                    let freq = 440.0 * 2.0f32.powf((note as f32 - 69.0) / 12.0);
-                                    target_voice.phase_inc = freq / self.sample_rate_f;
+                                    Self::trigger_melodic_voice_on(
+                                        &mut self.synthesizer,
+                                        &mut self.voices,
+                                        self.sample_rate_f,
+                                        note,
+                                        vel_7bit,
+                                    );
                                 }
                             }
                         }
@@ -564,14 +612,12 @@ impl AudioRenderState {
                             if self.arpeggiator.enabled {
                                 self.arpeggiator.handle_note_off(note);
                                 self.sync_shared_arpeggiator();
-                            } else if let Some(synth) = &mut self.synthesizer {
-                                synth.note_off(0, note as i32);
                             } else {
-                                for v in self.voices.iter_mut() {
-                                    if v.active && v.note == note {
-                                        v.release = true;
-                                    }
-                                }
+                                Self::release_melodic_voice_on(
+                                    &mut self.synthesizer,
+                                    &mut self.voices,
+                                    note,
+                                );
                             }
                         }
                         AudioEngineCommand::SetMasterGain(gain) => {
@@ -1007,6 +1053,7 @@ impl AudioRenderState {
                                 SequencerAction::Undo => {
                                     if self.sequencer.undo() {
                                         self.sync_shared_sequencer();
+                                        self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
                                         self.send_ui_event(SequencerUiEvent::PatternUpdated(self.sequencer.get_active_pattern()));
                                     }
                                 }
@@ -1071,6 +1118,7 @@ impl AudioRenderState {
                         AudioEngineCommand::SequencerUndo => {
                             if self.sequencer.undo() {
                                 self.sync_shared_sequencer();
+                                self.send_ui_event(SequencerUiEvent::StateChanged(self.sequencer.get_state_info()));
                                 self.send_ui_event(SequencerUiEvent::PatternUpdated(self.sequencer.get_active_pattern()));
                             }
                         }
@@ -1078,10 +1126,20 @@ impl AudioRenderState {
                             self.is_midi_muted = muted;
                         }
                         AudioEngineCommand::SetArpEnabled(enabled) => {
+                            if enabled {
+                                // Cortar cualquier voz melódica directa previa antes de activar el arpegiador
+                                // para evitar que un NoteOff posterior (enrutado al Arp) deje la voz directa colgada (A07)
+                                Self::release_all_melodic_voices_on(
+                                    &mut self.synthesizer,
+                                    &mut self.voices,
+                                );
+                            }
                             if let Some(killed_note) = self.arpeggiator.set_enabled(enabled) {
-                                if let Some(synth) = &mut self.synthesizer {
-                                    synth.note_off(0, killed_note as i32);
-                                }
+                                Self::release_melodic_voice_on(
+                                    &mut self.synthesizer,
+                                    &mut self.voices,
+                                    killed_note,
+                                );
                             }
                             self.sync_shared_arpeggiator();
                         }
@@ -1163,14 +1221,40 @@ impl AudioRenderState {
             let bpm = self.sequencer.bpm;
             for _ in 0..num_frames {
                 if let Some(event) = self.arpeggiator.advance_sample(bpm) {
-                    if let Some(synth) = &mut self.synthesizer {
-                        match event {
-                            ArpOutputEvent::NoteTrigger { note, velocity } => {
-                                synth.note_on(0, note as i32, velocity as i32);
-                            }
-                            ArpOutputEvent::NoteRelease { note } => {
-                                synth.note_off(0, note as i32);
-                            }
+                    match event {
+                        ArpOutputEvent::NoteTrigger { note, velocity } => {
+                            Self::trigger_melodic_voice_on(
+                                &mut self.synthesizer,
+                                &mut self.voices,
+                                self.sample_rate_f,
+                                note,
+                                velocity,
+                            );
+                        }
+                        ArpOutputEvent::NoteRelease { note } => {
+                            Self::release_melodic_voice_on(
+                                &mut self.synthesizer,
+                                &mut self.voices,
+                                note,
+                            );
+                        }
+                        ArpOutputEvent::NoteReplace {
+                            release_note,
+                            trigger_note,
+                            velocity,
+                        } => {
+                            Self::release_melodic_voice_on(
+                                &mut self.synthesizer,
+                                &mut self.voices,
+                                release_note,
+                            );
+                            Self::trigger_melodic_voice_on(
+                                &mut self.synthesizer,
+                                &mut self.voices,
+                                self.sample_rate_f,
+                                trigger_note,
+                                velocity,
+                            );
                         }
                     }
                 }
@@ -3014,5 +3098,227 @@ mod tests {
         }
         assert_eq!(sample_cmds_count, 8, "Deben haberse emitido 8 comandos LoadPadSample");
         assert!(drum_sf_cmd_received, "Debe haberse emitido LoadDrumKitSoundFont para Yamaha RX7");
+    }
+
+    #[test]
+    fn test_arp_enable_releases_direct_voices_in_engine() {
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+
+        let mut render_state = AudioRenderState::new(
+            48000.0,
+            2,
+            cons_arc,
+            engine.shared_soundfont.clone(),
+            engine.shared_patch.clone(),
+            engine.shared_master_gain.clone(),
+            engine.shared_pad_samples.clone(),
+            engine.shared_pad_modes.clone(),
+            engine.shared_pad_gains.clone(),
+            engine.shared_pad_engine_mode.clone(),
+            engine.shared_drum_soundfont.clone(),
+            engine.shared_drum_patch.clone(),
+            engine.shared_drum_pad_notes.clone(),
+            engine.shared_fx_rack.clone(),
+            engine.shared_fx_routing.clone(),
+            engine.shared_sequencer.clone(),
+            engine.ui_event_producer.clone(),
+            engine.shared_arpeggiator.clone(),
+            engine.selected_channel_pair.clone(),
+        );
+
+        // 1. Con el arpegiador apagado, el músico presiona y sostiene C4 (nota 60) -> se activa voz directa
+        prod.push(AudioEngineCommand::NoteOn { note: 60, velocity: 0.8 }).unwrap();
+        render_state.process_commands();
+        assert!(render_state.voices.iter().any(|v| v.active && v.note == 60 && !v.release));
+
+        // 2. Sin soltar C4, el músico activa el arpegiador -> la voz directa anterior debe entrar en release
+        prod.push(AudioEngineCommand::SetArpEnabled(true)).unwrap();
+        render_state.process_commands();
+        assert!(
+            render_state.voices.iter().all(|v| !v.active || v.release),
+            "Activar el arpegiador debe liberar las voces directas sostenidas previamente"
+        );
+    }
+
+    #[test]
+    fn test_a11_end_to_end_midi_pads_live_monitoring_rec_play_full_level_and_sf2_independence() {
+        use crate::midi::parser::DEFAULT_PAD_INPUT_NOTES;
+        use crate::midi::MidiManager;
+
+        let mgr = MidiManager::new();
+        let (prod, cons) = RingBuffer::<AudioEngineCommand>::new(128);
+        let prod_mutex = Mutex::new(prod);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+
+        let mut render_state = AudioRenderState::new(
+            48000.0,
+            2,
+            cons_arc,
+            engine.shared_soundfont.clone(),
+            engine.shared_patch.clone(),
+            engine.shared_master_gain.clone(),
+            engine.shared_pad_samples.clone(),
+            engine.shared_pad_modes.clone(),
+            engine.shared_pad_gains.clone(),
+            engine.shared_pad_engine_mode.clone(),
+            engine.shared_drum_soundfont.clone(),
+            engine.shared_drum_patch.clone(),
+            engine.shared_drum_pad_notes.clone(),
+            engine.shared_fx_rack.clone(),
+            engine.shared_fx_routing.clone(),
+            engine.shared_sequencer.clone(),
+            engine.ui_event_producer.clone(),
+            engine.shared_arpeggiator.clone(),
+            engine.selected_channel_pair.clone(),
+        );
+
+        // Cargar un sample sintético en los 8 pads para verificar reproducción real
+        let dummy_sample = Arc::new(PadSampleData {
+            name: "TestHit.wav".to_string(),
+            sample_rate: 48000,
+            data_l: vec![0.5f32; 256],
+            data_r: vec![0.5f32; 256],
+            length: 256,
+        });
+        for i in 0..8 {
+            render_state.pad_sampler.load_sample(i, dummy_sample.clone());
+        }
+
+        // 1. Reproducción en vivo con REC desactivado para los 8 pads por defecto [36, 38, 42, 46, 39, 45, 48, 49]
+        // y velocities 1, 30, 50, 90 y 127 -> Full Level (127) sin grabar en el patrón
+        for (pad_idx, &note) in DEFAULT_PAD_INPUT_NOTES.iter().enumerate() {
+            for &vel in &[1u8, 30, 50, 90, 127] {
+                MidiManager::process_midi_bytes(
+                    "TestPort",
+                    &[0x99, note, vel], // Canal 10
+                    &mgr.pad_note_map,
+                    &mgr.active_note_pads,
+                    &mgr.action_cc_map,
+                    &mgr.action_note_map,
+                    &prod_mutex,
+                    |_| {},
+                );
+                render_state.process_commands();
+
+                // Verificar que el sample se disparó en vivo pero NO se grabó en el secuenciador (REC apagado)
+                let mut left = [0.0f32; 16];
+                let mut right = [0.0f32; 16];
+                render_state.pad_sampler.render_mix(&mut left, &mut right, 16);
+                let energy: f32 = left.iter().map(|s| s.abs()).sum();
+                assert!(
+                    energy > 0.0,
+                    "Pad {} con nota {} y velocity {} debe sonar en vivo",
+                    pad_idx + 1,
+                    note,
+                    vel
+                );
+                assert_eq!(
+                    render_state.sequencer.get_active_pattern()[pad_idx][0],
+                    0,
+                    "Con REC desactivado no debe grabarse en el patrón"
+                );
+            }
+        }
+
+        // 2. Independencia entre nota MIDI física de entrada y nota MIDI de salida para DrumKit SF2:
+        // Cambiamos la nota SF2 del Pad 4 (índice 3) a 55 (Splash), y asignamos por MIDI Learn la nota de entrada 62 al Pad 4.
+        {
+            let mut prod_guard = prod_mutex.lock().unwrap();
+            prod_guard
+                .push(AudioEngineCommand::SetDrumPadNote {
+                    pad_index: 3,
+                    note: 55,
+                })
+                .unwrap();
+        }
+        let mut learned_pads = DEFAULT_PAD_INPUT_NOTES;
+        learned_pads[3] = 62; // Pad 4 aprende nota física 62
+        mgr.set_pad_note_mappings(learned_pads);
+        render_state.process_commands();
+
+        assert_eq!(
+            render_state.drum_pad_notes[3], 55,
+            "La nota SF2 de salida del Pad 4 debe permanecer en 55 aunque su nota MIDI de entrada sea 62"
+        );
+        assert_eq!(
+            mgr.get_pad_note_mappings()[3], 62,
+            "La nota MIDI de entrada del Pad 4 debe ser 62"
+        );
+
+        // 3. Activar PLAY + REC y grabar en vivo golpes con velocities 1, 30, 50, 90 y 127
+        // incluyendo las notas que antes fallaban (46->62 aprendida, 45, 48, 49)
+        {
+            let mut prod_guard = prod_mutex.lock().unwrap();
+            prod_guard.push(AudioEngineCommand::SequencerPlay).unwrap();
+            prod_guard
+                .push(AudioEngineCommand::SequencerSetRecord(true))
+                .unwrap();
+        }
+        render_state.process_commands();
+        assert!(render_state.sequencer.is_playing && render_state.sequencer.is_recording);
+
+        let test_hits: [(u8, u8, usize, u8); 5] = [
+            (0x99, 36, 0, 1),   // Pad 1 (Kick) con velocity 1 en Canal 10
+            (0x90, 62, 3, 30),  // Pad 4 (aprendido en nota 62) con velocity 30 en Canal 1
+            (0x99, 45, 5, 50),  // Pad 6 (Low Tom, nota 45 > 43) con velocity 50 en Canal 10
+            (0x99, 48, 6, 90),  // Pad 7 (High Tom, nota 48 > 43) con velocity 90 en Canal 10
+            (0x99, 49, 7, 127), // Pad 8 (Crash, nota 49 > 43) con velocity 127 en Canal 10
+        ];
+
+        for &(status, note, expected_pad_idx, vel) in &test_hits {
+            MidiManager::process_midi_bytes(
+                "TestPort",
+                &[status, note, vel],
+                &mgr.pad_note_map,
+                &mgr.active_note_pads,
+                &mgr.action_cc_map,
+                &mgr.action_note_map,
+                &prod_mutex,
+                |_| {},
+            );
+            render_state.process_commands();
+
+            let active_pattern = render_state.sequencer.get_active_pattern();
+            assert_eq!(
+                active_pattern[expected_pad_idx][0],
+                127,
+                "El golpe en Pad {} (nota {}, vel {}) con REC+PLAY debe grabarse con Full Level (127)",
+                expected_pad_idx + 1,
+                note,
+                vel
+            );
+        }
+
+        // 4. Reproducción posterior de los eventos registrados:
+        // Desactivar REC, reiniciar al inicio del compás (Stop + Play) y verificar que el secuenciador
+        // dispara los eventos grabados con velocity 1.0 (127).
+        render_state.sequencer.set_recording(false);
+        render_state.sequencer.stop();
+        render_state.sequencer.play();
+
+        let (_step, triggers, count) = render_state
+            .sequencer
+            .advance_sample()
+            .expect("Debe disparar en tick 0 al iniciar Play");
+        let triggered_slice = &triggers[..count];
+        for &(_status, _note, expected_pad_idx, _vel) in &test_hits {
+            let found = triggered_slice
+                .iter()
+                .find(|&&(p_idx, _)| p_idx == expected_pad_idx);
+            assert!(
+                found.is_some(),
+                "El evento grabado en el Pad {} debe dispararse en la reproducción posterior",
+                expected_pad_idx + 1
+            );
+            let (_, triggered_vel) = found.unwrap();
+            assert!(
+                (triggered_vel - 1.0).abs() < 1e-6,
+                "El evento grabado en el Pad {} debe reproducirse posteriormente a nivel máximo (1.0 / 127)",
+                expected_pad_idx + 1
+            );
+        }
     }
 }

@@ -20,7 +20,8 @@ flowchart TD
     F9 --> F91["Fase 9.1: Cápsulas Noir-Tech & DSP Avanzado (DJ Filter & Tube Drive)"]
     F91 --> F92["Fase 9.2: Preparación Multiplataforma & Empaque Universal (macOS .dmg & Windows .exe)"]
     F92 --> F93["Fase 9.3: Migración & Ecosistema Linux Nativo (ALSA, PipeWire & WebKitGTK)"]
-    F93 --> F10["Fase 10: Wizard Interactivo de Calibración & Perfiles Hardware Universal"]
+    F93 --> F94["Fase 9.4: Auditoría Forense de Código, Depuración Funcional & Blindaje de Estado"]
+    F94 --> F10["Fase 10: Wizard Interactivo de Calibración & Perfiles Hardware Universal"]
     F10 --> F11["Fase 11: Sistema de Sesiones (.impact), Gestión de Proyectos & Exportación"]
     F11 --> F12["Fase 12: Drum Kit Creator (WAV Pool a SF2 Compiler)"]
     F12 --> F13["Fase 13: Sistema de Auto-Actualizaciones OTA (Tauri Updater)"]
@@ -505,6 +506,31 @@ flowchart TD
 
 ---
 
+### Fase 9.4: Auditoría Forense de Código, Depuración Funcional & Blindaje de Estado 🚧 [EN PROGRESO]
+
+* **Objetivo:** Ejecutar las mejoras quirúrgicas, limpiezas de código muerto confirmado y correcciones de integridad de estado derivadas de la doble auditoría estática adversarial ([docs/INFORME_AUDITORIA_CODEX.md](docs/INFORME_AUDITORIA_CODEX.md) y [docs/AUDITORIA_INDEPENDIENTE_ASTRA.md](docs/AUDITORIA_INDEPENDIENTE_ASTRA.md)), organizadas en 3 bloques incrementales de bajo riesgo y alto impacto funcional antes de iniciar la Fase 10.
+* **Documento Detallado de la Fase:** Ver desglose paso a paso y especificaciones técnicas completas en [PLAN_DE_TRABAJO_FASE_9.4.md](PLAN_DE_TRABAJO_FASE_9.4.md).
+* **Componentes y Especificaciones Técnicas (3 Bloques de Intervención):**
+  1. **Paso 1 (Bloque 1): Interacción de UI, Teclado, Ratón, Concurrencia Frontend y Limpieza ✅ [COMPLETADO]:**
+     - Filtro de auto-repetición (`e.repeat`) en atajo de barra espaciadora para transporte Play/Pause (`A18`).
+     - Aislamiento de propiedad de notas y pads disparados con ratón (`mouseActiveNotesRef` / `mouseActivePadsRef`) para no cortar notas sostenidas físicamente en el controlador MIDI al mover el cursor (`A12`).
+     - Finalización idempotente de gestos de puntero (`pointercancel` / `blur`) en faders, knobs y ruedas (`A13`) y limpieza segura de listeners IPC asíncronos (`A20`).
+     - Token anti-condición de carrera (`probeRequestIdRef`) en selección rápida de dispositivos en `AudioSettingsModal.tsx` (`A14`).
+     - Eliminación de código muerto confirmado (`MidiMonitor.tsx`, métodos duplicados sin uso en `engine.rs` y `sampler.rs` — `D02`) y sanitización de nombre de archivo en `delete_user_soundfont` (`A22`).
+  2. **Paso 2 (Bloque 2): Exactitud Musical en Secuenciador por Pasos, Arpegiador y Enrutamiento MIDI de Pads ✅ [COMPLETADO]:**
+     - Historial de `Undo` consciente del banco de origen `(PatternBank, BankPattern)` y registro de snapshots previo a `clear_track`, `clear_pattern` y `requantize_pattern` (`A09`).
+     - Anti-flam multi-pad independiente mediante arreglo estático `[Option<u32>; 8]` para grabación simultánea de múltiples pads (`A19`).
+     - Proyección circular al cierre de compás (tick `383`) y borrado unificado de eventos off-grid pertenecientes a la celda seleccionada (`A10`).
+     - Corrección de deriva de 1 muestra en `NoteRelease` del arpegiador (`A08`), liberación segura de voz previa al cambiar subdivisión (`A07`) y ampliación del arreglo estático `UP/DOWN` a 96 pasos para cubrir sin truncamiento 16 notas × 3 octavas (`A23`).
+     - Unificación del enrutamiento de entrada MIDI de los 8 pads (`[36, 38, 42, 46, 39, 45, 48, 49]`), soporte de MIDI Learn en `MidiManager` desacoplado de las notas SF2 de salida y coherencia `NoteOn`/`NoteOff` (`A11 parcial`, adelantado desde Subpaso 3.4).
+  3. **Paso 3 (Bloque 3): Blindaje de Estado del Motor de Audio, Remuestreo Dinámico y MIDI ⏳ [PENDIENTE]:**
+     - Preservación íntegra del estado del Arpegiador, mapeos de MIDI Learn y banco activo de SoundFont al reconstruir el stream de audio o abrir/cerrar ajustes, además de coordinación con el watchdog de audio (`A06`, `A16`).
+     - Envío automático de `AllNotesOff` y limpieza de estado visual al desconectar en caliente o cambiar el puerto USB MIDI (`A04`).
+     - Remuestreo dinámico de los samples WAV de pads al cambiar el Sample Rate del DAC (44.1 kHz / 48 kHz / 96 kHz) preservando afinación y duración exactas (`A05`).
+     - Desacople de faders/knobs virtuales respecto a CCs de MIDI Learn (`A11 restante`) y corrección de ganancia master duplicada en sintetizador fallback (`A24`).
+
+---
+
 ### Fase 10: Wizard Interactivo de Calibración & Perfiles de Hardware Universal 📋 [PLANIFICADA]
 * **Objetivo:** Transformar la aplicación en una plataforma universal compatible con cualquier teclado y controlador del mercado mediante un asistente guiado interactivo de auto-calibración (Hardware Setup Wizard) que detecte y configure automáticamente rango de teclas, pads, deslizadores, perillas y botones de transporte, guardando perfiles independientes.
 * **Componentes y Especificaciones Técnicas:**
@@ -612,6 +638,6 @@ flowchart TD
 * **Rendimiento Gráfico:** Interfaz fluida y optimizada sobre WebKitGTK con capas GPU aisladas.
 
 **Siguiente Hito de Desarrollo:**
-La aplicación cuenta ahora con soporte completo, probado y verificado en **Windows, macOS y Linux**. El siguiente paso en la hoja de ruta es la **Fase 10: Wizard Interactivo de Calibración & Perfiles de Hardware Universal** (o la fase que el usuario decida priorizar).
+La aplicación cuenta ahora con soporte completo, probado y verificado en **Windows, macOS y Linux**. Actualmente se encuentra en ejecución la **Fase 9.4: Auditoría Forense de Código, Depuración Funcional & Blindaje de Estado** (ver detalle en [PLAN_DE_TRABAJO_FASE_9.4.md](PLAN_DE_TRABAJO_FASE_9.4.md)) previo al inicio de la **Fase 10: Wizard Interactivo de Calibración & Perfiles de Hardware Universal**.
 
 

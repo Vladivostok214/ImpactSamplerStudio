@@ -47,6 +47,7 @@ pub struct ArpStateInfo {
 pub enum ArpOutputEvent {
     NoteTrigger { note: u8, velocity: u8 },
     NoteRelease { note: u8 },
+    NoteReplace { release_note: u8, trigger_note: u8, velocity: u8 },
 }
 
 /// Motor de Arpegiador Melódico en memoria plana (Zero-Alloc & Lock-Free)
@@ -68,9 +69,9 @@ pub struct Arpeggiator {
     pub hold_velocities: [u8; 16],
     pub hold_count: usize,
 
-    // Secuencia generada a ejecutar (16 notas * 3 octavas = 48 máximo)
-    pub sequence: [u8; 48],
-    pub sequence_velocities: [u8; 48],
+    // Secuencia generada a ejecutar (hasta 16 notas * 3 octavas en UP/DOWN = 94 pasos máximo, alojado en 96 slots en stack)
+    pub sequence: [u8; 96],
+    pub sequence_velocities: [u8; 96],
     pub sequence_len: usize,
     pub seq_index: usize,
 
@@ -102,8 +103,8 @@ impl Arpeggiator {
             hold_velocities: [0; 16],
             hold_count: 0,
 
-            sequence: [0; 48],
-            sequence_velocities: [0; 48],
+            sequence: [0; 96],
+            sequence_velocities: [0; 96],
             sequence_len: 0,
             seq_index: 0,
 
@@ -312,7 +313,7 @@ impl Arpeggiator {
                         s += 1;
                     }
                     for i in (1..expanded_len - 1).rev() {
-                        if s < 48 {
+                        if s < 96 {
                             self.sequence[s] = expanded_notes[i];
                             self.sequence_velocities[s] = expanded_vels[i];
                             s += 1;
@@ -336,25 +337,26 @@ impl Arpeggiator {
         }
 
         // Si hay una nota sonando, contar muestras para apagarla al 80% (Gate)
+        let mut released_note = None;
         if let Some(active_note) = self.active_playing_note {
             self.note_sample_counter += 1;
             if self.note_sample_counter >= self.note_duration_samples {
                 self.active_playing_note = None;
-                return Some(ArpOutputEvent::NoteRelease { note: active_note });
+                released_note = Some(active_note);
             }
         }
 
-        // Si no hay notas en la secuencia, no avanzar reloj de pasos
+        // Si no hay notas en la secuencia, no avanzar reloj de pasos; retornar eventual release pendiente
         if self.sequence_len == 0 {
-            return None;
+            return released_note.map(|note| ArpOutputEvent::NoteRelease { note });
         }
 
-        // Calcular muestras por tick a 96 ticks/negra
+        // Calcular muestras por tick a 96 ticks/negra (el reloj SIEMPRE avanza exactamente 1 muestra)
         let valid_bpm = bpm.clamp(30.0, 300.0);
         let samples_per_tick = (self.sample_rate_f as f64 * 60.0) / (valid_bpm as f64 * 96.0);
 
         self.sample_accumulator += 1.0;
-        let mut triggered_event = None;
+        let mut triggered_note_vel = None;
 
         while self.sample_accumulator >= samples_per_tick {
             self.sample_accumulator -= samples_per_tick;
@@ -365,6 +367,12 @@ impl Arpeggiator {
                 self.tick_accumulator = 0;
 
                 if self.sequence_len > 0 {
+                    // Si aún había una voz previa activa (ej. tras cambiar el rate a uno más rápido o gate >= 100%),
+                    // registrar su liberación antes de iniciar la nueva nota para evitar notas colgadas
+                    if let Some(prev_note) = self.active_playing_note.take() {
+                        released_note = Some(prev_note);
+                    }
+
                     let note = self.sequence[self.seq_index];
                     let vel = self.sequence_velocities[self.seq_index];
 
@@ -378,12 +386,21 @@ impl Arpeggiator {
                     self.note_sample_counter = 0;
                     self.active_playing_note = Some(note);
 
-                    triggered_event = Some(ArpOutputEvent::NoteTrigger { note, velocity: vel });
+                    triggered_note_vel = Some((note, vel));
                 }
             }
         }
 
-        triggered_event
+        match (released_note, triggered_note_vel) {
+            (Some(release_note), Some((trigger_note, velocity))) => Some(ArpOutputEvent::NoteReplace {
+                release_note,
+                trigger_note,
+                velocity,
+            }),
+            (None, Some((note, velocity))) => Some(ArpOutputEvent::NoteTrigger { note, velocity }),
+            (Some(note), None) => Some(ArpOutputEvent::NoteRelease { note }),
+            (None, None) => None,
+        }
     }
 
     /// Detiene y limpia el estado de notas activas para evitar notas colgadas
@@ -479,5 +496,237 @@ mod tests {
         }
 
         assert_eq!(triggered_note, Some(60));
+    }
+
+    #[test]
+    fn test_arp_exact_period_no_drift_across_multiple_cycles() {
+        // A 48 kHz y 120 BPM: 1 tick = 250 muestras.
+        // En 1/16 (24 ticks), cada paso dura exactamente 6000 muestras (gate 80% = 4800 muestras).
+        let mut arp = Arpeggiator::new(48000.0);
+        arp.set_enabled(true);
+        arp.set_rate(ArpRate::Sixteenth);
+        arp.set_mode(ArpMode::Up);
+        arp.handle_note_on(60, 100);
+        arp.handle_note_on(64, 100);
+        arp.handle_note_on(67, 100);
+
+        let mut trigger_samples = Vec::new();
+        let mut release_samples = Vec::new();
+
+        // Avanzar 10 pasos completos (60,000 muestras)
+        for sample_idx in 1..=60_000usize {
+            match arp.advance_sample(120.0) {
+                Some(ArpOutputEvent::NoteTrigger { .. }) => trigger_samples.push(sample_idx),
+                Some(ArpOutputEvent::NoteRelease { .. }) => release_samples.push(sample_idx),
+                Some(ArpOutputEvent::NoteReplace { .. }) => {
+                    release_samples.push(sample_idx);
+                    trigger_samples.push(sample_idx);
+                }
+                None => {}
+            }
+        }
+
+        assert_eq!(
+            trigger_samples,
+            vec![6000, 12000, 18000, 24000, 30000, 36000, 42000, 48000, 54000, 60000],
+            "Los disparos deben ocurrir exactamente cada 6000 muestras sin deriva de +1 muestra por NoteRelease"
+        );
+        assert_eq!(
+            release_samples,
+            vec![10800, 16800, 22800, 28800, 34800, 40800, 46800, 52800, 58800],
+            "Los NoteRelease al 80% gate (4800 muestras tras cada trigger) deben ocurrir en las muestras exactas"
+        );
+    }
+
+    #[test]
+    fn test_arp_short_medium_and_long_gate_and_step_boundary_coincidence() {
+        let mut arp = Arpeggiator::new(48000.0);
+        arp.set_enabled(true);
+        arp.set_rate(ArpRate::Sixteenth); // 6000 muestras por paso a 120 BPM
+        arp.handle_note_on(60, 100);
+        arp.handle_note_on(64, 100);
+
+        // 1. Primer trigger en muestra 6000
+        for _ in 1..6000 {
+            assert_eq!(arp.advance_sample(120.0), None);
+        }
+        assert_eq!(
+            arp.advance_sample(120.0),
+            Some(ArpOutputEvent::NoteTrigger { note: 60, velocity: 100 })
+        );
+
+        // Simulamos un Gate corto (ej. 1000 muestras) ajustando note_duration_samples
+        arp.note_duration_samples = 1000;
+        let mut rel_at = None;
+        let mut next_trig_at = None;
+        for s in 1..=6000 {
+            match arp.advance_sample(120.0) {
+                Some(ArpOutputEvent::NoteRelease { note: 60 }) => rel_at = Some(s),
+                Some(ArpOutputEvent::NoteTrigger { note: 64, .. }) => next_trig_at = Some(s),
+                _ => {}
+            }
+        }
+        assert_eq!(rel_at, Some(1000));
+        assert_eq!(next_trig_at, Some(6000));
+
+        // 2. Gate medio (estándar 80% = 4800 muestras)
+        assert_eq!(arp.note_duration_samples, 4800);
+        let mut rel_med = None;
+        let mut trig_med = None;
+        for s in 1..=6000 {
+            match arp.advance_sample(120.0) {
+                Some(ArpOutputEvent::NoteRelease { note: 64 }) => rel_med = Some(s),
+                Some(ArpOutputEvent::NoteTrigger { note: 60, .. }) => trig_med = Some(s),
+                _ => {}
+            }
+        }
+        assert_eq!(rel_med, Some(4800));
+        assert_eq!(trig_med, Some(6000));
+
+        // 3. Gate largo / coincidente exactamente con el límite del paso (6000 muestras = 100%)
+        // Debe emitir NoteReplace { release_note: 60, trigger_note: 64 } exactamente en la muestra 6000
+        arp.note_duration_samples = 6000;
+        for _ in 1..6000 {
+            assert_eq!(arp.advance_sample(120.0), None);
+        }
+        assert_eq!(
+            arp.advance_sample(120.0),
+            Some(ArpOutputEvent::NoteReplace {
+                release_note: 60,
+                trigger_note: 64,
+                velocity: 100,
+            })
+        );
+    }
+
+    #[test]
+    fn test_arp_rate_change_with_active_note_releases_previous_voice_first() {
+        // A 48 kHz y 120 BPM:
+        // Quarter (1/4 = 96 ticks) -> paso de 24000 muestras, gate de 19200 muestras.
+        let mut arp = Arpeggiator::new(48000.0);
+        arp.set_enabled(true);
+        arp.set_rate(ArpRate::Quarter);
+        arp.handle_note_on(60, 100);
+        arp.handle_note_on(67, 110);
+
+        // Avanzar hasta el primer disparo en 1/4 (24000 muestras)
+        for _ in 1..24000 {
+            let _ = arp.advance_sample(120.0);
+        }
+        assert_eq!(
+            arp.advance_sample(120.0),
+            Some(ArpOutputEvent::NoteTrigger { note: 60, velocity: 100 })
+        );
+        assert_eq!(arp.active_playing_note, Some(60));
+        assert_eq!(arp.note_duration_samples, 19200);
+
+        // Avanzar solo 1000 muestras (la nota 60 sigue activa, le faltan 18200 muestras de gate)
+        for _ in 0..1000 {
+            assert_eq!(arp.advance_sample(120.0), None);
+        }
+
+        // Cambiar el rate en caliente a 1/32 (12 ticks = 3000 muestras totales por paso).
+        // Ya llevamos 4 ticks (1000 muestras), por lo que en 2000 muestras más se alcanzará el nuevo paso (12 ticks)
+        // mucho antes de que venza el gate antiguo de 19200 muestras.
+        arp.set_rate(ArpRate::ThirtySecond);
+
+        let mut replace_event = None;
+        for _ in 0..2000 {
+            if let Some(ev) = arp.advance_sample(120.0) {
+                replace_event = Some(ev);
+                break;
+            }
+        }
+
+        assert_eq!(
+            replace_event,
+            Some(ArpOutputEvent::NoteReplace {
+                release_note: 60,
+                trigger_note: 67,
+                velocity: 110,
+            }),
+            "Al alcanzar el nuevo paso tras cambiar el rate, debe liberar la nota 60 antes de disparar la 67"
+        );
+        assert_eq!(arp.active_playing_note, Some(67));
+    }
+
+    #[test]
+    fn test_arp_enable_disable_and_reset_note_off_behavior() {
+        let mut arp = Arpeggiator::new(48000.0);
+
+        // Activar arpegiador sin nota previa no devuelve nota a cortar en el arp
+        assert_eq!(arp.set_enabled(true), None);
+        arp.set_rate(ArpRate::Sixteenth);
+        arp.handle_note_on(60, 100);
+
+        // Disparar nota 60 en muestra 6000
+        for _ in 0..6000 {
+            let _ = arp.advance_sample(120.0);
+        }
+        assert_eq!(arp.active_playing_note, Some(60));
+
+        // Desactivar el arpegiador a mitad de la nota sostenida debe devolver Some(60) para NoteOff inmediato
+        assert_eq!(arp.set_enabled(false), Some(60));
+        assert_eq!(arp.active_playing_note, None);
+        assert_eq!(arp.sequence_len, 0);
+        assert_eq!(arp.held_count, 0);
+
+        // Si se vuelve a activar, se dispara una nota y se llama reset(), debe retornar la nota activa una sola vez
+        arp.set_enabled(true);
+        arp.handle_note_on(72, 100);
+        for _ in 0..6000 {
+            let _ = arp.advance_sample(120.0);
+        }
+        assert_eq!(arp.active_playing_note, Some(72));
+        assert_eq!(arp.reset(), Some(72));
+        assert_eq!(arp.reset(), None, "Segundo reset consecutivo no debe emitir liberaciones duplicadas");
+    }
+
+    #[test]
+    fn test_arp_up_down_single_multiple_and_full_16x3_94_steps() {
+        let mut arp = Arpeggiator::new(48000.0);
+        arp.set_mode(ArpMode::UpDown);
+
+        // 1. Una sola nota y 1 octava -> longitud 1 sin duplicados
+        arp.set_octaves(1);
+        arp.handle_note_on(60, 100);
+        assert_eq!(arp.sequence_len, 1);
+        assert_eq!(arp.sequence[0], 60);
+
+        // 2. Tres notas (60, 64, 67) y 1 octava -> sube [60, 64, 67] y baja [64] = 4 pasos (extremos no duplicados)
+        arp.handle_note_on(64, 100);
+        arp.handle_note_on(67, 100);
+        assert_eq!(arp.sequence_len, 4);
+        assert_eq!(&arp.sequence[..4], &[60, 64, 67, 64]);
+
+        // 3. Máximo de 16 notas × 3 octavas (48 de subida + 46 de bajada = 94 pasos completos sin truncamiento)
+        let mut arp_max = Arpeggiator::new(48000.0);
+        arp_max.set_enabled(true);
+        arp_max.set_mode(ArpMode::UpDown);
+        arp_max.set_octaves(3);
+        arp_max.set_rate(ArpRate::ThirtySecond); // 3000 muestras por paso a 120 BPM
+
+        for i in 0..16u8 {
+            arp_max.handle_note_on(36 + i, 100);
+        }
+        assert_eq!(
+            arp_max.sequence_len, 94,
+            "16 notas × 3 octavas en modo UpDown deben generar exactamente 48 + 46 = 94 pasos"
+        );
+        // Verificar extremo inferior (índice 0 = 36), pico superior (índice 47 = 36 + 15 + 24 = 75) y último paso antes de reiniciar (índice 93 = 37)
+        assert_eq!(arp_max.sequence[0], 36);
+        assert_eq!(arp_max.sequence[47], 75);
+        assert_eq!(arp_max.sequence[93], 37);
+
+        // Recorrer los 94 pasos completos verificando ausencia de índices fuera de rango y ciclo exacto
+        let mut played = Vec::with_capacity(95);
+        for _ in 0..(95 * 3000) {
+            if let Some(ArpOutputEvent::NoteTrigger { note, .. }) = arp_max.advance_sample(120.0) {
+                played.push(note);
+            }
+        }
+        assert_eq!(played.len(), 95);
+        assert_eq!(&played[..94], &arp_max.sequence[..94]);
+        assert_eq!(played[94], 36, "El paso 95 (índice 94) debe reiniciar limpiamente en el inicio del ciclo (36)");
     }
 }

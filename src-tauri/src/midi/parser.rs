@@ -1,5 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+/// Mapa por defecto de notas MIDI de entrada para los 8 pads (orden estándar General MIDI / UI).
+/// Pad 1: 36 (Kick), Pad 2: 38 (Snare), Pad 3: 42 (Closed Hat), Pad 4: 46 (Open Hat),
+/// Pad 5: 39 (Clap), Pad 6: 45 (Low Tom), Pad 7: 48 (High Tom), Pad 8: 49 (Crash).
+pub const DEFAULT_PAD_INPUT_NOTES: [u8; 8] = [36, 38, 42, 46, 39, 45, 48, 49];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum MidiEventType {
@@ -39,7 +44,16 @@ pub struct NormalizedMidiEvent {
     pub timestamp_ms: u64,
 }
 
+#[allow(dead_code)]
 pub fn parse_midi_message(port_name: &str, bytes: &[u8]) -> Option<NormalizedMidiEvent> {
+    parse_midi_message_with_pad_map(port_name, bytes, &DEFAULT_PAD_INPUT_NOTES)
+}
+
+pub fn parse_midi_message_with_pad_map(
+    port_name: &str,
+    bytes: &[u8],
+    pad_notes: &[u8; 8],
+) -> Option<NormalizedMidiEvent> {
     if bytes.is_empty() {
         return None;
     }
@@ -58,7 +72,7 @@ pub fn parse_midi_message(port_name: &str, bytes: &[u8]) -> Option<NormalizedMid
             let note = bytes[1];
             let velocity = bytes[2];
             let note_name = get_note_name(note);
-            let pad_index = get_pad_index(note, channel);
+            let pad_index = resolve_pad_index(note, channel, pad_notes);
 
             if velocity == 0 {
                 Some(NormalizedMidiEvent {
@@ -90,7 +104,7 @@ pub fn parse_midi_message(port_name: &str, bytes: &[u8]) -> Option<NormalizedMid
             let note = bytes[1];
             let velocity = bytes[2];
             let note_name = get_note_name(note);
-            let pad_index = get_pad_index(note, channel);
+            let pad_index = resolve_pad_index(note, channel, pad_notes);
 
             Some(NormalizedMidiEvent {
                 port_name: port_name.to_string(),
@@ -140,18 +154,55 @@ pub fn parse_midi_message(port_name: &str, bytes: &[u8]) -> Option<NormalizedMid
     }
 }
 
-pub fn get_pad_index(note: u8, channel: u8) -> Option<u8> {
-    // Solo los mensajes del Canal 10 (canal estándar de pads de batería del Nektar Impact LX49+) activan pads.
-    // Esto garantiza que el teclado melódico (Canal 1 u otros) toque las notas graves 36..43 sin secuestro.
-    // Los pads físicos van estrictamente consecutivos: PAD1 (36) -> PAD8 (43).
-    if channel == 10 {
-        match note {
-            36..=43 => Some(note - 35),
-            _ => None,
+/// Resuelve el pad (`1..=8`) para una nota MIDI entrante siguiendo la política de prioridad:
+///
+/// 1. **Prioridad del mapeo activo de pads (`pad_notes`):** Se recorre `pad_notes` en orden
+///    de índice `0..8` (`first-match wins`). Cualquier nota presente en `pad_notes` (ya sea del
+///    mapa por defecto `[36, 38, 42, 46, 39, 45, 48, 49]` o aprendida vía MIDI Learn) resuelve
+///    directamente a su pad (`1..=8`) sin depender del canal MIDI ni discriminar contra el Pad 1 (`36`).
+/// 2. **Fallback General MIDI (exclusivo del Canal 10):** Si el mensaje entra por el Canal 10 y la
+///    nota no coincide con ninguna entrada de `pad_notes`, se aplica el fallback General MIDI sólo
+///    para aquellos pads que aún conservan su nota por defecto (evitando que la nota antigua de un
+///    pad reasignado por MIDI Learn siga disparando ese pad por fallback).
+/// 3. **Política ante asignaciones duplicadas:** La búsqueda evalúa los índices `0..8` en orden
+///    ascendente y retorna inmediatamente el primer pad coincidente (`lowest pad index wins`),
+///    garantizando que una misma nota nunca dispare dos pads.
+pub fn resolve_pad_index(note: u8, channel: u8, pad_notes: &[u8; 8]) -> Option<u8> {
+    // 1. Prioridad máxima: mapa activo de los 8 pads (por defecto o personalizados con MIDI Learn)
+    for (idx, &mapped_note) in pad_notes.iter().enumerate() {
+        if mapped_note == note {
+            return Some((idx + 1) as u8);
         }
-    } else {
-        None
     }
+
+    // 2. Canal 10: fallback General MIDI para notas alternativas de batería en pads no reasignados
+    if channel == 10 {
+        let fallback_pad = match note {
+            36 => Some(1),           // Kick
+            38 => Some(2),           // Snare
+            42 => Some(3),           // Closed Hat
+            46 => Some(4),           // Open Hat
+            37 | 39 | 40 => Some(5), // Side Stick / Clap / Electric Snare
+            41 | 43 | 45 => Some(6), // Low Floor / High Floor / Low Tom
+            47 | 48 => Some(7),      // Low-Mid / Hi-Mid Tom
+            49 | 51 => Some(8),      // Crash / Ride
+            _ => None,
+        };
+        if let Some(pad_num) = fallback_pad {
+            let idx = (pad_num - 1) as usize;
+            // Solo aplicar fallback si ese pad no fue reasignado a otra nota personalizada
+            if pad_notes[idx] == DEFAULT_PAD_INPUT_NOTES[idx] {
+                return Some(pad_num);
+            }
+        }
+    }
+
+    None
+}
+
+#[allow(dead_code)]
+pub fn get_pad_index(note: u8, channel: u8) -> Option<u8> {
+    resolve_pad_index(note, channel, &DEFAULT_PAD_INPUT_NOTES)
 }
 
 pub fn get_note_name(note: u8) -> String {

@@ -583,8 +583,8 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
     setActiveSf2Category(null);
   };
 
-  // Mapeo MIDI de notas por pad
-  const PAD_MIDI_NOTES = [36, 37, 38, 39, 40, 41, 42, 43];
+  // Mapeo MIDI de notas por pad (orden estándar General MIDI unificado con DEFAULT_MIDI_LEARN_MAPPING)
+  const PAD_MIDI_NOTES = [36, 38, 42, 46, 39, 45, 48, 49];
 
   const getPadName = (padIdx: number): string => {
     if (padEngineMode === "drumKitSf2") {
