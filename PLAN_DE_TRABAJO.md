@@ -508,8 +508,8 @@ flowchart TD
 
 ### Fase 9.4: Auditoría Forense de Código, Depuración Funcional & Blindaje de Estado ✅ [COMPLETADA]
 
-* **Objetivo:** Ejecutar las mejoras quirúrgicas, limpiezas de código muerto confirmado y correcciones de integridad de estado derivadas de la doble auditoría estática adversarial ([docs/INFORME_AUDITORIA_CODEX.md](docs/INFORME_AUDITORIA_CODEX.md) y [docs/AUDITORIA_INDEPENDIENTE_ASTRA.md](docs/AUDITORIA_INDEPENDIENTE_ASTRA.md)), organizadas en 3 bloques incrementales de bajo riesgo y alto impacto funcional antes de iniciar la Fase 10.
-* **Documento Detallado de la Fase:** Ver desglose paso a paso y especificaciones técnicas completas en [PLAN_DE_TRABAJO_FASE_9.4.md](PLAN_DE_TRABAJO_FASE_9.4.md).
+* **Objetivo:** Ejecutar las mejoras quirúrgicas, limpiezas de código muerto confirmado y correcciones de integridad de estado derivadas de la doble auditoría estática adversarial ([docs/archive/INFORME_AUDITORIA_CODEX.md](docs/archive/INFORME_AUDITORIA_CODEX.md) y [docs/archive/AUDITORIA_INDEPENDIENTE_ASTRA.md](docs/archive/AUDITORIA_INDEPENDIENTE_ASTRA.md)), organizadas en 3 bloques incrementales de bajo riesgo y alto impacto funcional antes de iniciar la Fase 10.
+* **Documento Detallado de la Fase:** Ver desglose paso a paso y especificaciones técnicas completas en [PLAN_DE_TRABAJO_FASE_9.4.md](docs/archive/PLAN_DE_TRABAJO_FASE_9.4.md).
 * **Componentes y Especificaciones Técnicas (3 Bloques de Intervención):**
   1. **Paso 1 (Bloque 1): Interacción de UI, Teclado, Ratón, Concurrencia Frontend y Limpieza ✅ [COMPLETADO]:**
      - Filtro de auto-repetición (`e.repeat`) en atajo de barra espaciadora para transporte Play/Pause (`A18`).
@@ -639,6 +639,6 @@ flowchart TD
 * **Rendimiento Gráfico:** Interfaz fluida y optimizada sobre WebKitGTK con capas GPU aisladas.
 
 **Siguiente Hito de Desarrollo:**
-La aplicación cuenta ahora con soporte completo, probado y verificado en **Windows, macOS y Linux**. La **Fase 9.4: Auditoría Forense de Código, Depuración Funcional & Blindaje de Estado** ha concluido exitosamente con todas sus auditorías de integración aprobadas (ver detalle en [PLAN_DE_TRABAJO_FASE_9.4.md](PLAN_DE_TRABAJO_FASE_9.4.md)), dejando el sistema completamente blindado y preparado para el inicio de la **Fase 10: Wizard Interactivo de Calibración & Perfiles de Hardware Universal**.
+La aplicación cuenta ahora con soporte completo, probado y verificado en **Windows, macOS y Linux**. La **Fase 9.4: Auditoría Forense de Código, Depuración Funcional & Blindaje de Estado** ha concluido exitosamente con todas sus auditorías de integración aprobadas (ver detalle en [PLAN_DE_TRABAJO_FASE_9.4.md](docs/archive/PLAN_DE_TRABAJO_FASE_9.4.md)), dejando el sistema completamente blindado y preparado para el inicio de la **Fase 10: Wizard Interactivo de Calibración & Perfiles de Hardware Universal**.
 
 

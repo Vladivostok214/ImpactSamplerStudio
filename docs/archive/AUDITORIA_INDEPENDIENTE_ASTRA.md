@@ -4,7 +4,7 @@ Fecha: 2026-11-07. Revisión estática del árbol disponible. Informe solicitado
 
 ## Alcance, método y límites
 
-Se leyeron primero `README.md` e `ImpactSampler Studio - SPEC.md`. La fase independiente examinó las rutas de producción de `src-tauri/` y `src/`, con atención al callback, IPC, MIDI, DSP, reconstrucción de streams y efectos React. Se cerró un inventario independiente antes de abrir `docs/INFORME_AUDITORIA_CODEX.md`. Después se contrastó ese informe con nuevas lecturas dirigidas. No se examinó `web-app`, no se implementaron correcciones ni se ejecutaron operaciones destructivas.
+Se leyeron primero `README.md` e `ImpactSampler Studio - SPEC.md`. La fase independiente examinó las rutas de producción de `src-tauri/` y `src/`, con atención al callback, IPC, MIDI, DSP, reconstrucción de streams y efectos React. Se cerró un inventario independiente antes de abrir `docs/archive/INFORME_AUDITORIA_CODEX.md`. Después se contrastó ese informe con nuevas lecturas dirigidas. No se examinó `web-app`, no se implementaron correcciones ni se ejecutaron operaciones destructivas.
 
 No se ejecutaron builds, tests Rust/React, la aplicación, hardware ASIO ni un perfilador: esas operaciones no son necesarias para la demostración estática y algunas escribirían artefactos. Se ejecutaron búsquedas, lecturas numeradas y un modelo aritmético en memoria del reloj ARP; este modelo **no es una ejecución del motor Rust**. No se auditó el interior de dependencias ni se certifican sus garantías. Las pruebas de intervención de este documento están propuestas, no superadas.
 

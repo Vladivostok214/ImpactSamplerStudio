@@ -1,7 +1,7 @@
 # Plan de Trabajo - Fase 9.4: Auditoría Forense de Código, Depuración Funcional & Blindaje de Estado
 
 > **Estado:** Completada ✅  
-> **Objetivo:** Ejecutar las mejoras quirúrgicas, limpiezas de código muerto confirmado y correcciones de integridad de estado derivadas de la doble auditoría estática adversarial ([`docs/INFORME_AUDITORIA_CODEX.md`](docs/INFORME_AUDITORIA_CODEX.md) y [`docs/AUDITORIA_INDEPENDIENTE_ASTRA.md`](docs/AUDITORIA_INDEPENDIENTE_ASTRA.md)), organizadas en 3 bloques incrementales de bajo riesgo y alto impacto funcional antes de iniciar la Fase 10.
+> **Objetivo:** Ejecutar las mejoras quirúrgicas, limpiezas de código muerto confirmado y correcciones de integridad de estado derivadas de la doble auditoría estática adversarial ([`INFORME_AUDITORIA_CODEX.md`](INFORME_AUDITORIA_CODEX.md) y [`AUDITORIA_INDEPENDIENTE_ASTRA.md`](AUDITORIA_INDEPENDIENTE_ASTRA.md)), organizadas en 3 bloques incrementales de bajo riesgo y alto impacto funcional antes de iniciar la Fase 10.
 
 ---
 
