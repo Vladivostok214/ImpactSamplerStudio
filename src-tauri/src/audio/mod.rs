@@ -34,6 +34,12 @@ pub enum SequencerUiEvent {
 pub enum AudioEngineCommand {
     NoteOn { note: u8, velocity: f32 },
     NoteOff { note: u8 },
+    /// Liberación selectiva de las notas y pads que pertenecían a una sesión MIDI física
+    /// invalidada (desconexión o cambio de puerto, A04). `notes` es un bitset de 128 notas
+    /// (`notes[n / 64] >> (n % 64)`), `pads` un bitset de los 8 pads (`bit i` = pad `i`, 0-based).
+    /// Equivale a un `NoteOff` / `PadRelease` por cada bit activo, en un único comando
+    /// atómico para la cola (sin alocaciones y sin posibilidad de entrega parcial).
+    ReleaseNotes { notes: [u64; 2], pads: u8 },
     ControlChange { controller: u8, value: f32 },
     PitchBend { normalized: i16 },
     SetMasterGain(f32),

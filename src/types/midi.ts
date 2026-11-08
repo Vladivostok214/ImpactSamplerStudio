@@ -9,6 +9,8 @@ export interface MidiStatusEvent {
   connected: boolean;
   portName?: string | null;
   ports?: MidiPortInfo[];
+  /** Época de sesión MIDI vigente (monotónica, asignada por el backend). */
+  session?: number;
 }
 
 export type MidiEventType =
@@ -22,6 +24,8 @@ export interface NormalizedMidiEvent {
   channel: number;
   event: MidiEventType;
   timestampMs: number;
+  /** Época de la sesión MIDI física que originó el evento (ausente en eventos virtuales). */
+  session?: number;
 }
 
 export interface AudioDeviceInfo {

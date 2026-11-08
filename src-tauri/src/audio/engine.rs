@@ -338,6 +338,30 @@ pub fn resolve_pad_fader_cc_index(controller: u8, midi_fader_ccs: &[u8; 9]) -> O
     Some(fallback_idx)
 }
 
+/// Determina si un Control Change (CC) es un mensaje musical de interpretación legítimo
+/// para ser procesado por el sintetizador SoundFont melódico en el canal 0.
+///
+/// Protege al sintetizador de:
+/// - Ráfagas de inicialización de hardware (ej. CC 11 = 0 por jack de pedal de expresión vacío).
+/// - Bank Select espurios (CC 0 / CC 32) que desalineen el banco del preset activo.
+/// - Controladores asignados a la consola (faders de pads, knobs de rack, master volume).
+#[inline]
+pub fn is_synth_melodic_cc(controller: u8) -> bool {
+    matches!(
+        controller,
+        1    // Modulation Wheel (Vibrato / LFO)
+        | 64 // Sustain / Damper Pedal (Hold 1)
+        | 65 // Portamento On/Off
+        | 66 // Sostenuto Pedal
+        | 67 // Soft Pedal
+        | 68 // Legato Footswitch
+        | 69 // Hold 2
+        | 120 // All Sound Off
+        | 121 // Reset All Controllers
+        | 123 // All Notes Off
+    )
+}
+
 fn load_factory_pad_samples(target_sample_rate: u32) -> [Option<Arc<PadSampleData>>; 8] {
     let mut slots: [Option<Arc<PadSampleData>>; 8] = std::array::from_fn(|_| None);
     let sample_dir = crate::soundfont::get_samples_dir();
@@ -530,6 +554,20 @@ impl AudioRenderState {
                             if seq.is_playing && seq.is_recording {
                                 seq.save_undo_state();
                                 seq.record_live_hit(pad_index, 127u8);
+                            }
+                        }
+                    }
+                }
+                // A04: la liberación selectiva por desconexión MIDI actúa sobre las teclas físicas del
+                // arpegiador compartido (HOLD conserva `hold_notes`); las voces directas se descartan
+                // porque el rebuild las recrea en silencio.
+                AudioEngineCommand::ReleaseNotes { notes, .. } => {
+                    if let Ok(mut arp) = shared_arpeggiator.lock() {
+                        if arp.enabled {
+                            for note in 0..128u8 {
+                                if (notes[(note / 64) as usize] >> (note % 64)) & 1 == 1 {
+                                    arp.handle_note_off(note);
+                                }
                             }
                         }
                     }
@@ -1266,6 +1304,35 @@ impl AudioRenderState {
         }
     }
 
+    /// Efecto de un `NoteOff` de entrada (MIDI físico o virtual) sobre el arpegiador o la voz melódica.
+    /// Compartido por `NoteOff` y `ReleaseNotes` para garantizar semántica idéntica (incluido HOLD,
+    /// que conserva `hold_notes` y solo retira la tecla física de `held_notes`).
+    fn apply_input_note_off(&mut self, note: u8) {
+        if self.arpeggiator.enabled {
+            self.arpeggiator.handle_note_off(note);
+            self.sync_shared_arpeggiator();
+        } else {
+            Self::release_melodic_voice_on(&mut self.synthesizer, &mut self.voices, note);
+        }
+    }
+
+    /// Efecto de un `PadRelease` de entrada sobre el motor de pads activo.
+    fn apply_input_pad_release(&mut self, pad_index: usize) {
+        match self.pad_engine_mode {
+            PadEngineMode::WavSampler => {
+                self.pad_sampler.release(pad_index);
+            }
+            PadEngineMode::DrumKitSf2 => {
+                if pad_index < 8 {
+                    if let Some(synth) = &mut self.drum_synthesizers[pad_index] {
+                        let note = self.drum_pad_notes[pad_index];
+                        synth.note_off(9, note);
+                    }
+                }
+            }
+        }
+    }
+
     /// Procesamiento de comandos en el callback de audio (R3 / R4 / R6):
     /// - Todas las lecturas/escrituras sobre espejos compartidos usan operaciones atómicas (`AtomicU64`,
     ///   `AtomicBool`, `AtomicI32`) o `Mutex::try_lock()` no bloqueante con sincronización diferida
@@ -1350,15 +1417,18 @@ impl AudioRenderState {
                             }
                         }
                         AudioEngineCommand::NoteOff { note } => {
-                            if self.arpeggiator.enabled {
-                                self.arpeggiator.handle_note_off(note);
-                                self.sync_shared_arpeggiator();
-                            } else {
-                                Self::release_melodic_voice_on(
-                                    &mut self.synthesizer,
-                                    &mut self.voices,
-                                    note,
-                                );
+                            self.apply_input_note_off(note);
+                        }
+                        AudioEngineCommand::ReleaseNotes { notes, pads } => {
+                            for note in 0..128u8 {
+                                if (notes[(note / 64) as usize] >> (note % 64)) & 1 == 1 {
+                                    self.apply_input_note_off(note);
+                                }
+                            }
+                            for pad_index in 0..8usize {
+                                if (pads >> pad_index) & 1 == 1 {
+                                    self.apply_input_pad_release(pad_index);
+                                }
                             }
                         }
                         AudioEngineCommand::SetMasterGain(gain) => {
@@ -1366,16 +1436,20 @@ impl AudioRenderState {
                             self.sync_shared_master_gain();
                         }
                         AudioEngineCommand::ControlChange { controller, value } => {
+                            let mut handled_by_station = false;
+
                             // 1. Master Volume (Fader 9 / CC configurado / CC 46 / CC 7)
                             if is_master_volume_cc(controller, &self.midi_fader_ccs) {
                                 self.master_gain = value.clamp(0.0, 1.0);
                                 self.sync_shared_master_gain();
+                                handled_by_station = true;
                             }
 
                             // 2. Knobs K1..K8 (CC dinámico configurado o preset LX49+ / GM unificado en R3)
                             if let Some(idx) = resolve_knob_cc_index(controller, &self.midi_knob_ccs) {
                                 self.fx_rack.set_knob_value(idx, value);
                                 self.sync_shared_fx_rack();
+                                handled_by_station = true;
                             }
 
                             // 3. Faders de Pads F1..F8 (CC dinámico configurado o preset LX49+ / GM unificado en R3)
@@ -1384,12 +1458,19 @@ impl AudioRenderState {
                                 self.pad_gains[idx] = pad_gain;
                                 self.pad_sampler.set_gain(idx, pad_gain);
                                 self.sync_shared_pad_gains();
+                                handled_by_station = true;
                             }
 
                             // 4. Sintetizador SoundFont Melódico
-                            if let Some(synth) = &mut self.synthesizer {
-                                let val_7bit = (value * 127.0).round().clamp(0.0, 127.0) as i32;
-                                synth.process_midi_message(0, 0xB0, controller as i32, val_7bit);
+                            // Solo se reenvían al SoundFont controladores de interpretación expresiva directa
+                            // (Mod Wheel CC 1, Sustain CC 64, etc.) que no pertenezcan a la consola interna,
+                            // protegiendo al canal 0 contra ráfagas de inicialización (ej. CC 11 = 0 por jack vacío)
+                            // y desalineaciones de banco (CC 0/32).
+                            if !handled_by_station && is_synth_melodic_cc(controller) {
+                                if let Some(synth) = &mut self.synthesizer {
+                                    let val_7bit = (value * 127.0).round().clamp(0.0, 127.0) as i32;
+                                    synth.process_midi_message(0, 0xB0, controller as i32, val_7bit);
+                                }
                             }
                         }
                         AudioEngineCommand::PitchBend { normalized } => {
@@ -1435,19 +1516,7 @@ impl AudioRenderState {
                             }
                         }
                         AudioEngineCommand::PadRelease { pad_index } => {
-                            match self.pad_engine_mode {
-                                PadEngineMode::WavSampler => {
-                                    self.pad_sampler.release(pad_index);
-                                }
-                                PadEngineMode::DrumKitSf2 => {
-                                    if pad_index < 8 {
-                                        if let Some(synth) = &mut self.drum_synthesizers[pad_index] {
-                                            let note = self.drum_pad_notes[pad_index];
-                                            synth.note_off(9, note);
-                                        }
-                                    }
-                                }
-                            }
+                            self.apply_input_pad_release(pad_index);
                         }
                         AudioEngineCommand::LoadPadSample { pad_index, sample } => {
                             self.pad_sampler.load_sample(pad_index, sample.clone());
@@ -4161,6 +4230,7 @@ mod tests {
                     &mgr.action_cc_map,
                     &mgr.action_note_map,
                     &prod_mutex,
+                    None,
                     |_| {},
                 );
                 render_state.process_commands();
@@ -4239,6 +4309,7 @@ mod tests {
                 &mgr.action_cc_map,
                 &mgr.action_note_map,
                 &prod_mutex,
+                None,
                 |_| {},
             );
             render_state.process_commands();
@@ -5689,5 +5760,189 @@ mod tests {
         assert_eq!(state.midi_fader_ccs[0], 21);
         assert_eq!(state.midi_knob_ccs[0], 73);
         assert!(state.is_midi_muted);
+    }
+
+    // --- A04: ReleaseNotes (liberación selectiva por desconexión MIDI) ---
+
+    fn a04_release(notes: &[u8], pads: &[usize]) -> AudioEngineCommand {
+        let mut n = [0u64; 2];
+        for &note in notes {
+            n[(note / 64) as usize] |= 1u64 << (note % 64);
+        }
+        let mut p = 0u8;
+        for &pad in pads {
+            p |= 1 << pad;
+        }
+        AudioEngineCommand::ReleaseNotes { notes: n, pads: p }
+    }
+
+    #[test]
+    fn test_a04_release_notes_releases_only_listed_direct_voices() {
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+        let mut state = build_test_render_state_from_engine(&engine, 48000.0, cons_arc);
+
+        prod.push(AudioEngineCommand::NoteOn { note: 60, velocity: 0.8 }).unwrap(); // MIDI físico
+        prod.push(AudioEngineCommand::NoteOn { note: 64, velocity: 0.8 }).unwrap(); // ratón
+        state.process_commands();
+        assert!(state.voices.iter().any(|v| v.active && v.note == 60 && !v.release));
+        assert!(state.voices.iter().any(|v| v.active && v.note == 64 && !v.release));
+
+        prod.push(a04_release(&[60], &[])).unwrap();
+        state.process_commands();
+
+        assert!(
+            state.voices.iter().all(|v| !(v.active && v.note == 60 && !v.release)),
+            "La nota del controlador desconectado debe entrar en release"
+        );
+        assert!(
+            state.voices.iter().any(|v| v.active && v.note == 64 && !v.release),
+            "La nota de otra fuente (ratón) debe seguir sonando"
+        );
+    }
+
+    #[test]
+    fn test_a04_release_notes_with_arp_without_hold_clears_physical_keys() {
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+        let mut state = build_test_render_state_from_engine(&engine, 48000.0, cons_arc);
+
+        prod.push(AudioEngineCommand::SetArpEnabled(true)).unwrap();
+        prod.push(AudioEngineCommand::NoteOn { note: 60, velocity: 0.9 }).unwrap();
+        prod.push(AudioEngineCommand::NoteOn { note: 64, velocity: 0.9 }).unwrap();
+        state.process_commands();
+        assert_eq!(state.arpeggiator.held_count, 2);
+
+        prod.push(a04_release(&[60, 64], &[])).unwrap();
+        state.process_commands();
+
+        assert_eq!(state.arpeggiator.held_count, 0, "Sin HOLD no quedan teclas físicas falsas");
+        assert_eq!(state.arpeggiator.sequence_len, 0, "Sin HOLD el arpegio se detiene");
+        assert!(state.arpeggiator.enabled, "El arpegiador sigue habilitado");
+    }
+
+    #[test]
+    fn test_a04_release_notes_with_arp_hold_keeps_latched_chord_without_false_keys() {
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+        let mut state = build_test_render_state_from_engine(&engine, 48000.0, cons_arc);
+
+        prod.push(AudioEngineCommand::SetArpEnabled(true)).unwrap();
+        prod.push(AudioEngineCommand::SetArpHold(true)).unwrap();
+        prod.push(AudioEngineCommand::NoteOn { note: 60, velocity: 0.9 }).unwrap();
+        prod.push(AudioEngineCommand::NoteOn { note: 64, velocity: 0.9 }).unwrap();
+        state.process_commands();
+        assert_eq!(state.arpeggiator.held_count, 2);
+
+        // Desconexión con las teclas aún "presionadas" físicamente
+        prod.push(a04_release(&[60, 64], &[])).unwrap();
+        state.process_commands();
+
+        assert_eq!(state.arpeggiator.held_count, 0, "Sin teclas físicas falsas");
+        assert_eq!(state.arpeggiator.hold_count, 2, "El acorde HOLD se preserva");
+        assert_eq!(state.arpeggiator.sequence_len, 2, "El arpegio retenido sigue activo");
+    }
+
+    #[test]
+    fn test_a04_release_notes_during_sequencer_playback_does_not_stop_transport() {
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+        let mut state = build_test_render_state_from_engine(&engine, 48000.0, cons_arc);
+
+        prod.push(AudioEngineCommand::SequencerPlay).unwrap();
+        prod.push(AudioEngineCommand::NoteOn { note: 60, velocity: 0.8 }).unwrap();
+        state.process_commands();
+        assert!(state.sequencer.is_playing);
+
+        prod.push(a04_release(&[60], &[0, 3])).unwrap();
+        state.process_commands();
+
+        assert!(state.sequencer.is_playing, "La desconexión MIDI no detiene el secuenciador");
+        assert!(state.voices.iter().all(|v| !(v.active && v.note == 60 && !v.release)));
+    }
+
+    #[test]
+    fn test_a04_release_notes_pending_in_queue_before_rebuild_preserves_hold_chord() {
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+        let mut state_1 = build_test_render_state_from_engine(&engine, 48000.0, cons_arc.clone());
+
+        prod.push(AudioEngineCommand::SetArpEnabled(true)).unwrap();
+        prod.push(AudioEngineCommand::SetArpHold(true)).unwrap();
+        prod.push(AudioEngineCommand::NoteOn { note: 60, velocity: 0.9 }).unwrap();
+        state_1.process_commands();
+        // ReleaseNotes sin procesar cuando el stream se reconstruye (no debe provocar pánico ni
+        // revivir teclas físicas; el acorde HOLD sobrevive)
+        prod.push(a04_release(&[60], &[])).unwrap();
+        drop(state_1);
+
+        let state_2 = build_test_render_state_from_engine(&engine, 44100.0, cons_arc);
+        assert_eq!(state_2.arpeggiator.held_count, 0);
+        assert_eq!(state_2.arpeggiator.hold_count, 1);
+    }
+
+    #[test]
+    fn test_a04_synth_melodic_cc_allowlist() {
+        assert!(is_synth_melodic_cc(1)); // Modulation Wheel
+        assert!(is_synth_melodic_cc(64)); // Sustain
+        assert!(is_synth_melodic_cc(65)); // Portamento
+        assert!(is_synth_melodic_cc(66)); // Sostenuto
+        assert!(is_synth_melodic_cc(67)); // Soft Pedal
+        assert!(is_synth_melodic_cc(68)); // Legato Footswitch
+        assert!(is_synth_melodic_cc(69)); // Hold 2
+        assert!(is_synth_melodic_cc(120)); // All Sound Off
+        assert!(is_synth_melodic_cc(121)); // Reset All Controllers
+        assert!(is_synth_melodic_cc(123)); // All Notes Off
+
+        // CCs espurios o de inicialización que NO deben reenviarse al sintetizador melódico
+        assert!(!is_synth_melodic_cc(11)); // Expression (evita muteo al reconectar si jack de pedal está vacío)
+        assert!(!is_synth_melodic_cc(0));  // Bank Select MSB
+        assert!(!is_synth_melodic_cc(32)); // Bank Select LSB
+        assert!(!is_synth_melodic_cc(7));  // Volume (manejado por consola interna)
+        assert!(!is_synth_melodic_cc(10)); // Pan
+    }
+
+    #[test]
+    fn test_a04_cc11_expression_zero_does_not_mute_soundfont_melodic_synth() {
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+        let mut state = build_test_render_state_from_engine(&engine, 48000.0, cons_arc);
+
+        let (sf, _) = crate::soundfont::load_soundfont_from_file("Piano - Realtime.sf2")
+            .or_else(|_| crate::soundfont::load_soundfont_from_file("Yamaha_RX7_Drums.sf2"))
+            .expect("Debe existir al menos un SoundFont para prueba");
+
+        prod.push(AudioEngineCommand::LoadSoundFont {
+            sound_font: sf,
+            patch_number: 0,
+            bank_number: 0,
+        }).unwrap();
+        state.process_commands();
+        assert!(state.synthesizer.is_some());
+
+        // Simular ráfaga de reconexión USB donde el Nektar Impact LX49+ emite CC 11 = 0
+        prod.push(AudioEngineCommand::ControlChange { controller: 11, value: 0.0 }).unwrap();
+        // Tocar una nota en el sintetizador melódico
+        prod.push(AudioEngineCommand::NoteOn { note: 60, velocity: 0.8 }).unwrap();
+        state.process_commands();
+
+        // Renderizar un bloque de audio
+        let mut buffer = vec![0.0f32; 1024];
+        state.render_f32(&mut buffer);
+
+        // Si CC 11 = 0 hubiera llegado al canal de rustysynth, expression = 0 habría silenciado el audio.
+        // Al estar filtrado por is_synth_melodic_cc, el sintetizador genera audio audible.
+        let max_amp = buffer.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+        assert!(
+            max_amp > 1e-4,
+            "El sintetizador melódico debe sonar tras recibir CC 11 = 0 en reconexión; max_amp={}",
+            max_amp
+        );
     }
 }

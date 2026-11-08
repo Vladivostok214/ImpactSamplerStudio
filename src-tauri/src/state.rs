@@ -3,7 +3,7 @@ use rtrb::Producer;
 use serde::{Deserialize, Serialize};
 
 use crate::audio::{engine::AudioEngine, AudioEngineCommand};
-use crate::midi::MidiManager;
+use crate::midi::{MidiManager, VirtualHolds};
 use crate::soundfont::SoundFontInfo;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,4 +34,6 @@ pub struct AppState {
     pub audio_engine: Arc<Mutex<AudioEngine>>,
     pub audio_producer: Arc<Mutex<Producer<AudioEngineCommand>>>,
     pub current_soundfont: Arc<Mutex<Option<SoundFontInfo>>>,
+    /// Notas/pads sostenidos por la interfaz virtual (A04): excluidos de la liberación por desconexión MIDI.
+    pub virtual_holds: Arc<VirtualHolds>,
 }

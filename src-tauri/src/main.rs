@@ -335,6 +335,9 @@ fn trigger_virtual_note(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    // A04: registrar la nota sostenida por la interfaz virtual antes de encolar, para que una
+    // desconexión MIDI concurrente no la libere.
+    state.virtual_holds.set_note(note, is_on);
     if let Ok(mut prod) = state.audio_producer.lock() {
         if is_on {
             let _ = prod.push(AudioEngineCommand::NoteOn {
@@ -441,6 +444,7 @@ fn trigger_virtual_pad(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    state.virtual_holds.set_pad(pad_index, is_on);
     if let Ok(mut prod) = state.audio_producer.lock() {
         if is_on {
             let _ = prod.push(AudioEngineCommand::PadTrigger {
@@ -1389,8 +1393,11 @@ fn main() {
         eprintln!("Aviso al iniciar motor de audio: {}", e);
     }
 
+    let midi_manager = MidiManager::new();
+    let virtual_holds = midi_manager.virtual_holds.clone();
     let app_state = AppState {
-        midi_manager: Arc::new(Mutex::new(MidiManager::new())),
+        midi_manager: Arc::new(Mutex::new(midi_manager)),
+        virtual_holds,
         audio_engine: audio_engine.clone(),
         audio_producer: Arc::new(Mutex::new(producer)),
         current_soundfont: Arc::new(Mutex::new(None)),

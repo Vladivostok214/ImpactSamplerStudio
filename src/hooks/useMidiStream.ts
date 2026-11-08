@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { MidiPortInfo, NormalizedMidiEvent, MidiStatusEvent } from "../types/midi";
@@ -9,12 +9,22 @@ import {
   loadSavedMidiMapping,
   saveMidiMapping,
 } from "../types/midiLearn";
+import { classifyMidiSession, clearHeld, mergeHeld } from "./midiOwnership";
 
 export function useMidiStream() {
   const [events, setEvents] = useState<NormalizedMidiEvent[]>([]);
   const [ports, setPorts] = useState<MidiPortInfo[]>([]);
-  const [activeNotes, setActiveNotes] = useState<Map<number, number>>(new Map()); // note -> velocity
-  const [activePads, setActivePads] = useState<Map<number, number>>(new Map()); // padIndex (1-8) -> velocity
+  // A04: la propiedad de teclas/pads se separa por origen. El MIDI físico y la interfaz virtual
+  // (ratón / teclado del ordenador) mantienen mapas independientes; la vista pública es su unión.
+  // Así, limpiar lo físico al desconectar no apaga lo que sostiene el ratón.
+  const [physicalNotes, setPhysicalNotes] = useState<Map<number, number>>(new Map()); // note -> velocity
+  const [virtualNotes, setVirtualNotes] = useState<Map<number, number>>(new Map());
+  const [physicalPads, setPhysicalPads] = useState<Map<number, number>>(new Map()); // padIndex (1-8) -> velocity
+  const [virtualPads, setVirtualPads] = useState<Map<number, number>>(new Map());
+  const activeNotes = useMemo(() => mergeHeld(physicalNotes, virtualNotes), [physicalNotes, virtualNotes]);
+  const activePads = useMemo(() => mergeHeld(physicalPads, virtualPads), [physicalPads, virtualPads]);
+  // Época de la sesión MIDI física vigente (monotónica, asignada por Rust). Descarta eventos tardíos.
+  const midiSessionRef = useRef(0);
   const [faders, setFaders] = useState<number[]>([64, 64, 64, 64, 64, 64, 64, 64, 100]); // F1-F9 (0-127, F9 Master al 80%)
   const [knobs, setKnobs] = useState<number[]>([64, 64, 0, 0, 0, 0, 0, 64]); // K1-K8
   const [pitchBend, setPitchBend] = useState<number>(0); // -8192 to 8191
@@ -112,13 +122,29 @@ export function useMidiStream() {
       })
       .catch(console.error);
 
+    // Limpia únicamente el estado visual originado por MIDI físico (A04).
+    const clearPhysicalState = () => {
+      setPhysicalNotes(clearHeld);
+      setPhysicalPads(clearHeld);
+    };
+
     let unlistenMidiFn: (() => void) | null = null;
     let unlistenStatusFn: (() => void) | null = null;
     let isSubscribed = true;
 
     // 2. Escuchar cambios de estado del hardware en caliente (Hot-Plug Watchdog)
     listen<MidiStatusEvent>("midi-status-changed", (eventPayload) => {
-      const { connected: isConn, ports: updatedPorts } = eventPayload.payload;
+      const { connected: isConn, ports: updatedPorts, session } = eventPayload.payload;
+      // A04: una época mayor implica conexión nueva o desconexión: se limpia lo físico. Un estado
+      // atrasado (época menor o igual) no retrocede la sesión ni borra teclas de la vigente.
+      if (typeof session === "number") {
+        if (session > midiSessionRef.current) {
+          midiSessionRef.current = session;
+          clearPhysicalState();
+        }
+      } else if (!isConn) {
+        clearPhysicalState();
+      }
       setConnected(isConn);
       if (updatedPorts && updatedPorts.length > 0) {
         setPorts(updatedPorts);
@@ -136,6 +162,20 @@ export function useMidiStream() {
     // 3. Escuchar stream de eventos MIDI en tiempo real desde Rust
     listen<NormalizedMidiEvent>("midi-event", (eventPayload) => {
       const midiEvent = eventPayload.payload;
+
+      // A04: descartar eventos tardíos de una conexión anterior y adoptar una sesión nueva.
+      const verdict = classifyMidiSession(midiSessionRef.current, midiEvent.session, midiEvent.portName);
+      if (verdict === "stale") {
+        return;
+      }
+      if (verdict === "newer") {
+        midiSessionRef.current = midiEvent.session as number;
+        clearPhysicalState();
+      }
+      const isVirtualSource = verdict === "virtual";
+      const setNotesForSource = isVirtualSource ? setVirtualNotes : setPhysicalNotes;
+      const setPadsForSource = isVirtualSource ? setVirtualPads : setPhysicalPads;
+
       setEvents((prev) => [midiEvent, ...prev.slice(0, 49)]);
 
       const { event } = midiEvent;
@@ -287,7 +327,7 @@ export function useMidiStream() {
           }
         }
 
-        setActiveNotes((prev) => {
+        setNotesForSource((prev) => {
           const next = new Map(prev);
           next.set(ev.note, ev.velocity);
           return next;
@@ -306,7 +346,7 @@ export function useMidiStream() {
         }
 
         if (mappedPadNum) {
-          setActivePads((prev) => {
+          setPadsForSource((prev) => {
             const next = new Map(prev);
             next.set(mappedPadNum!, ev.velocity);
             return next;
@@ -320,7 +360,7 @@ export function useMidiStream() {
           return;
         }
 
-        setActiveNotes((prev) => {
+        setNotesForSource((prev) => {
           const next = new Map(prev);
           next.delete(ev.note);
           return next;
@@ -338,7 +378,7 @@ export function useMidiStream() {
         }
 
         if (mappedPadNum) {
-          setActivePads((prev) => {
+          setPadsForSource((prev) => {
             const next = new Map(prev);
             next.delete(mappedPadNum!);
             return next;
@@ -455,7 +495,7 @@ export function useMidiStream() {
   };
 
   const triggerVirtualNote = (note: number, velocity: number, isOn: boolean) => {
-    setActiveNotes((prev) => {
+    setVirtualNotes((prev) => {
       const next = new Map(prev);
       if (isOn) {
         next.set(note, velocity);
@@ -473,7 +513,7 @@ export function useMidiStream() {
 
   const triggerVirtualPad = (padIdx: number, _note: number, isOn: boolean) => {
     const vel = isOn ? 127 : 0;
-    setActivePads((prev) => {
+    setVirtualPads((prev) => {
       const next = new Map(prev);
       if (isOn) {
         next.set(padIdx, vel);
