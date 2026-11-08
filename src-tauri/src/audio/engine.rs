@@ -5945,4 +5945,54 @@ mod tests {
             max_amp
         );
     }
+
+    #[test]
+    fn test_a05_custom_wav_preserves_duration_across_stream_rebuild_at_different_sample_rates() {
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+
+        // Cargar un Custom WAV de 1.0 segundo grabado a 44100 Hz (44100 muestras) en Pad 1 (índice 0)
+        let custom_wav = Arc::new(PadSampleData {
+            name: "CustomSnare_44k.wav".to_string(),
+            sample_rate: 44100,
+            data_l: vec![0.8f32; 44100],
+            data_r: vec![0.8f32; 44100],
+            length: 44100,
+        });
+        engine.shared_pad_samples.lock().unwrap()[0] = Some(custom_wav);
+
+        // 1. Construir AudioRenderState a 48000 Hz (Sample Rate de salida inicial)
+        let mut state_48k = build_test_render_state_from_engine(&engine, 48000.0, cons_arc.clone());
+        prod.push(AudioEngineCommand::PadTrigger { pad_index: 0, velocity: 1.0 }).unwrap();
+        state_48k.process_commands();
+        assert!(state_48k.pad_sampler.slots[0].voice.active);
+
+        // Renderizar 47999 frames estéreo (95998 floats): la voz aún debe seguir sonando
+        let mut buf_48k_early = vec![0.0f32; 47999 * 2];
+        state_48k.render_f32(&mut buf_48k_early);
+        assert!(state_48k.pad_sampler.slots[0].voice.active, "A 48 kHz la voz debe seguir activa en frame 47999");
+
+        // Renderizar los 2 frames restantes: en el frame 48000 debe finalizar (exactamente 1.0s)
+        let mut buf_48k_end = vec![0.0f32; 2 * 2];
+        state_48k.render_f32(&mut buf_48k_end);
+        assert!(!state_48k.pad_sampler.slots[0].voice.active, "A 48 kHz debe finalizar en 48000 frames");
+
+        // 2. Simular cambio de dispositivo o rebuild de stream a 96000 Hz
+        drop(state_48k);
+        let mut state_96k = build_test_render_state_from_engine(&engine, 96000.0, cons_arc);
+        prod.push(AudioEngineCommand::PadTrigger { pad_index: 0, velocity: 1.0 }).unwrap();
+        state_96k.process_commands();
+        assert!(state_96k.pad_sampler.slots[0].voice.active);
+
+        // Renderizar 95999 frames estéreo a 96000 Hz: la voz aún debe seguir activa
+        let mut buf_96k_early = vec![0.0f32; 95999 * 2];
+        state_96k.render_f32(&mut buf_96k_early);
+        assert!(state_96k.pad_sampler.slots[0].voice.active, "A 96 kHz la voz debe seguir activa en frame 95999");
+
+        // Renderizar 2 frames restantes: en el frame 96000 debe finalizar (exactamente 1.0s)
+        let mut buf_96k_end = vec![0.0f32; 2 * 2];
+        state_96k.render_f32(&mut buf_96k_end);
+        assert!(!state_96k.pad_sampler.slots[0].voice.active, "A 96 kHz debe finalizar en 96000 frames");
+    }
 }
