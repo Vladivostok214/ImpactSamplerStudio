@@ -506,7 +506,7 @@ flowchart TD
 
 ---
 
-### Fase 9.4: Auditoría Forense de Código, Depuración Funcional & Blindaje de Estado 🚧 [EN PROGRESO]
+### Fase 9.4: Auditoría Forense de Código, Depuración Funcional & Blindaje de Estado ✅ [COMPLETADA]
 
 * **Objetivo:** Ejecutar las mejoras quirúrgicas, limpiezas de código muerto confirmado y correcciones de integridad de estado derivadas de la doble auditoría estática adversarial ([docs/INFORME_AUDITORIA_CODEX.md](docs/INFORME_AUDITORIA_CODEX.md) y [docs/AUDITORIA_INDEPENDIENTE_ASTRA.md](docs/AUDITORIA_INDEPENDIENTE_ASTRA.md)), organizadas en 3 bloques incrementales de bajo riesgo y alto impacto funcional antes de iniciar la Fase 10.
 * **Documento Detallado de la Fase:** Ver desglose paso a paso y especificaciones técnicas completas en [PLAN_DE_TRABAJO_FASE_9.4.md](PLAN_DE_TRABAJO_FASE_9.4.md).
@@ -523,11 +523,12 @@ flowchart TD
      - Proyección circular al cierre de compás (tick `383`) y borrado unificado de eventos off-grid pertenecientes a la celda seleccionada (`A10`).
      - Corrección de deriva de 1 muestra en `NoteRelease` del arpegiador (`A08`), liberación segura de voz previa al cambiar subdivisión (`A07`) y ampliación del arreglo estático `UP/DOWN` a 96 pasos para cubrir sin truncamiento 16 notas × 3 octavas (`A23`).
      - Unificación del enrutamiento de entrada MIDI de los 8 pads (`[36, 38, 42, 46, 39, 45, 48, 49]`), soporte de MIDI Learn en `MidiManager` desacoplado de las notas SF2 de salida y coherencia `NoteOn`/`NoteOff` (`A11 parcial`, adelantado desde Subpaso 3.4).
-  3. **Paso 3 (Bloque 3): Blindaje de Estado del Motor de Audio, Remuestreo Dinámico y MIDI ⏳ [PENDIENTE]:**
-     - Preservación íntegra del estado del Arpegiador, mapeos de MIDI Learn y banco activo de SoundFont al reconstruir el stream de audio o abrir/cerrar ajustes, además de coordinación con el watchdog de audio (`A06`, `A16`).
-     - Envío automático de `AllNotesOff` y limpieza de estado visual al desconectar en caliente o cambiar el puerto USB MIDI (`A04`).
-     - Remuestreo dinámico de los samples WAV de pads al cambiar el Sample Rate del DAC (44.1 kHz / 48 kHz / 96 kHz) preservando afinación y duración exactas (`A05`).
-     - Desacople de faders/knobs virtuales respecto a CCs de MIDI Learn (`A11 restante`) y corrección de ganancia master duplicada en sintetizador fallback (`A24`).
+  3. **Paso 3 (Bloque 3): Blindaje de Estado del Motor de Audio, Remuestreo Dinámico y MIDI ✅ [COMPLETADO]:**
+     - Preservación íntegra de runtime state (Arpegiador con HOLD, asignaciones de MIDI Learn, Mute y banco/preset SF2 activo) al reconstruir el stream de audio mediante política FIFO determinista sin alocaciones en el hilo de audio (`A06`), con serialización estricta del watchdog (`rebuild_lock`) y filtrado de errores tardíos por generación monotónica (`A16`).
+     - Liberación selectiva de notas (`ReleaseNotes`) en desconexión física o cambio de puerto MIDI que apaga exclusivamente las voces afectadas sin cortar notas sostenidas en pantalla (respetando A12), invalidación inmediata por épocas monotónicas (`SessionEpoch`), normalización dinámica de puertos ALSA y filtro de ráfagas espurias de CC melódicos (`A04`).
+     - Reproducción fraccionaria con interpolación lineal en `PadSampler` (`step = sample_rate / engine_rate`), preservando duración y afinación exactas de Custom WAV a 44.1, 48 y 96 kHz sin remuestrear destructivamente los buffers PCM originales (`A05`).
+     - Desacople total de controles virtuales arrastrados en UI (`triggerVirtualFader` / `triggerVirtualKnob`) mediante comandos IPC directos normalizados $[0, 1]$ independientes de las tablas CC de MIDI Learn (`A11 residual`) y corrección de la doble atenuación de ganancia master en la ruta de sintetizador fallback (`A24`).
+     - Superación exitosa de las 4 auditorías finales de integración adversarial (F1 Seguridad RT, F2 Integración MIDI, F3 Integración Audio, F4 Higiene y Validación Global), con 79 pruebas unitarias en Rust y 9 en TypeScript aprobadas al 100%.
 
 ---
 
@@ -638,6 +639,6 @@ flowchart TD
 * **Rendimiento Gráfico:** Interfaz fluida y optimizada sobre WebKitGTK con capas GPU aisladas.
 
 **Siguiente Hito de Desarrollo:**
-La aplicación cuenta ahora con soporte completo, probado y verificado en **Windows, macOS y Linux**. Actualmente se encuentra en ejecución la **Fase 9.4: Auditoría Forense de Código, Depuración Funcional & Blindaje de Estado** (ver detalle en [PLAN_DE_TRABAJO_FASE_9.4.md](PLAN_DE_TRABAJO_FASE_9.4.md)) previo al inicio de la **Fase 10: Wizard Interactivo de Calibración & Perfiles de Hardware Universal**.
+La aplicación cuenta ahora con soporte completo, probado y verificado en **Windows, macOS y Linux**. La **Fase 9.4: Auditoría Forense de Código, Depuración Funcional & Blindaje de Estado** ha concluido exitosamente con todas sus auditorías de integración aprobadas (ver detalle en [PLAN_DE_TRABAJO_FASE_9.4.md](PLAN_DE_TRABAJO_FASE_9.4.md)), dejando el sistema completamente blindado y preparado para el inicio de la **Fase 10: Wizard Interactivo de Calibración & Perfiles de Hardware Universal**.
 
 

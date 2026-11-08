@@ -1,6 +1,6 @@
 # Plan de Trabajo - Fase 9.4: Auditoría Forense de Código, Depuración Funcional & Blindaje de Estado
 
-> **Estado:** En Progreso 🚧  
+> **Estado:** Completada ✅  
 > **Objetivo:** Ejecutar las mejoras quirúrgicas, limpiezas de código muerto confirmado y correcciones de integridad de estado derivadas de la doble auditoría estática adversarial ([`docs/INFORME_AUDITORIA_CODEX.md`](docs/INFORME_AUDITORIA_CODEX.md) y [`docs/AUDITORIA_INDEPENDIENTE_ASTRA.md`](docs/AUDITORIA_INDEPENDIENTE_ASTRA.md)), organizadas en 3 bloques incrementales de bajo riesgo y alto impacto funcional antes de iniciar la Fase 10.
 
 ---
@@ -97,7 +97,7 @@ flowchart LR
 
 ---
 
-### Paso 3 (Bloque 3): Blindaje de Estado del Motor de Audio, Remuestreo Dinámico y MIDI ⏳ [EN PROGRESO]
+### Paso 3 (Bloque 3): Blindaje de Estado del Motor de Audio, Remuestreo Dinámico y MIDI ✅ [COMPLETADO]
 
 * **Objetivo:** Asegurar que la reconstrucción del stream de audio (al abrir/cerrar ajustes o reconectar hardware) preserve el 100% del estado de la sesión, que los samples WAV mantengan su afinación a cualquier Sample Rate y que las desconexiones MIDI sean limpias.
 * **Subpasos Técnicos:**
@@ -122,13 +122,20 @@ flowchart LR
 
 ---
 
-## 4. Criterios de Aceptación y Cierre de la Fase 9.4
+## 4. Criterios de Aceptación y Cierre de la Fase 9.4 ✅ [CUMPLIDOS AL 100%]
 
 1. **Compilación Limpia:** `npm run build` y `cargo check --manifest-path src-tauri/Cargo.toml` finalizan con código `0` y sin advertencias nuevas.
-2. **Suite de Tests Automatizados:** `cargo test --manifest-path src-tauri/Cargo.toml` pasa al 100%, incluyendo nuevos tests unitarios para:
+2. **Suite de Tests Automatizados:** `cargo test --manifest-path src-tauri/Cargo.toml` pasa al 100% (79/79 pruebas aprobadas) y `node --experimental-strip-types --test tests/midiOwnership.test.ts` (9/9 pruebas aprobadas), cubriendo exhaustivamente:
    * `Undo` entre Bancos A y B y después de `clear_pattern` / `requantize_pattern`.
-   * Anti-flam simultáneo en múltiples pads.
+   * Anti-flam simultáneo en múltiples pads independientes.
    * Borrado de pasos off-grid y proyección circular del tick `383`.
-   * Reloj de arpegiador sin deriva de 1 muestra en `NoteRelease` y secuencia `UP/DOWN` extendida.
-   * Re-muestreo de `SampleData` al cambiar entre 44.1 kHz, 48 kHz y 96 kHz.
-3. **Actualización en Producción Local:** Binario actualizado con `npm run build:bin` e instalado en `/usr/bin/impact_sampler`.
+   * Reloj de arpegiador sin deriva de 1 muestra en `NoteRelease` y secuencia `UP/DOWN` extendida a 96 pasos.
+   * Reproducción fraccionaria e interpolación lineal de `PadSampleData` al cambiar entre 44.1 kHz, 48 kHz y 96 kHz.
+   * Coordinación del watchdog de audio y exclusión mutua sin reconstrucciones duplicadas.
+   * Liberación selectiva de notas (`ReleaseNotes`), filtrado de ráfagas CC melódicas y aislamiento de controles virtuales.
+3. **Auditorías Finales de Integración Adversarial (F1, F2, F3 y F4) Aprobadas:**
+   * **Auditoría F1 (Seguridad RT y reconstrucción):** Verificación sin asignaciones dinámicas en el callback de audio, exclusión mutua de rebuild serializada y sin condiciones de carrera.
+   * **Auditoría F2 (Integración MIDI, ownership y controles):** Verificación de ownership de notas virtuales/físicas, épocas monotónicas de sesión, reconexión limpia y desacople de MIDI Learn.
+   * **Auditoría F3 (Integración de audio: SF2, Custom WAV y procesamiento):** Verificación de ganancia master aplicada una sola vez (lineal), preservación de afinación fraccionaria WAV y coherencia de transporte.
+   * **Auditoría F4 (Higiene de código y validación global):** Verificación de cero dead code residual, cero warnings y árbol Git limpio con 7 commits atómicos.
+4. **Cierre Definitivo:** Fase 9.4 cerrada formalmente con todos los objetivos funcionales y de blindaje completados, lista para el inicio de la Fase 10.
