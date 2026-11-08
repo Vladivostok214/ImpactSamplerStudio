@@ -535,11 +535,14 @@ export function useMidiStream() {
       next[index] = value;
       return next;
     });
-    const controller = index === 8 ? 46 : 38 + index;
-    invoke("trigger_virtual_cc", {
-      controller,
-      value: value / 127,
-    }).catch(console.error);
+    // A11: Enviar comandos IPC directos por índice desacoplados de la tabla de CCs de MIDI Learn.
+    // Esto garantiza que reasignar un CC físico no desvíe ni anule el control del mouse en la UI.
+    const normalized = Math.max(0, Math.min(1, value / 127));
+    if (index === 8) {
+      invoke("set_master_volume", { gain: normalized }).catch(console.error);
+    } else if (index >= 0 && index < 8) {
+      invoke("set_pad_slot_gain", { padIndex: index, gain: normalized }).catch(console.error);
+    }
   };
 
   const triggerVirtualKnob = (index: number, value: number) => {
@@ -548,11 +551,11 @@ export function useMidiStream() {
       next[index] = value;
       return next;
     });
-    const controller = 56 + index;
-    invoke("trigger_virtual_cc", {
-      controller,
-      value: value / 127,
-    }).catch(console.error);
+    // A11: Actualización directa por índice de perilla en el rack FX (0..7) desacoplada de MIDI Learn.
+    const normalized = Math.max(0, Math.min(1, value / 127));
+    if (index >= 0 && index < 8) {
+      invoke("set_knob_value", { knobIndex: index, value: normalized }).catch(console.error);
+    }
   };
 
   const triggerVirtualPitchBend = (normalized: number) => {

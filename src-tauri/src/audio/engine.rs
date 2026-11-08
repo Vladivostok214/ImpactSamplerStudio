@@ -1947,7 +1947,9 @@ impl AudioRenderState {
                 v.phase -= 1.0;
             }
         }
-        (sample * self.master_gain).clamp(-1.0, 1.0)
+        // A24: Eliminar multiplicación redundante por self.master_gain; la ganancia master
+        // se aplica de manera uniforme y lineal en la etapa de salida final (render_f32/i16/u16).
+        sample.clamp(-1.0, 1.0)
     }
 
     fn render_internal(&mut self, num_frames: usize) {
@@ -5994,5 +5996,85 @@ mod tests {
         let mut buf_96k_end = vec![0.0f32; 2 * 2];
         state_96k.render_f32(&mut buf_96k_end);
         assert!(!state_96k.pad_sampler.slots[0].voice.active, "A 96 kHz debe finalizar en 96000 frames");
+    }
+
+    #[test]
+    fn test_a24_fallback_synth_master_gain_applied_linearly_once() {
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+        let mut state = build_test_render_state_from_engine(&engine, 48000.0, cons_arc);
+        assert!(state.synthesizer.is_none(), "Debe usar el sintetizador fallback aditivo");
+
+        // 1. Tocar una nota a master_gain = 1.0
+        prod.push(AudioEngineCommand::SetMasterGain(1.0)).unwrap();
+        prod.push(AudioEngineCommand::NoteOn { note: 69, velocity: 1.0 }).unwrap();
+        state.process_commands();
+
+        // Renderizar 512 frames a master_gain = 1.0
+        let mut buf_full = vec![0.0f32; 512 * 2];
+        state.render_f32(&mut buf_full);
+        let max_full = buf_full.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+        assert!(max_full > 0.1, "Debe generar audio audible en el fallback");
+
+        // 2. Establecer master_gain = 0.5 (A24: antes de la corrección, la doble ganancia resultaba en 0.5^2 = 0.25)
+        prod.push(AudioEngineCommand::SetMasterGain(0.5)).unwrap();
+        state.process_commands();
+
+        let mut buf_half = vec![0.0f32; 512 * 2];
+        state.render_f32(&mut buf_half);
+        let max_half = buf_half.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+
+        // La relación de amplitudes debe ser exactamente lineal (0.5 ± 0.05) y no cuadrática (0.25)
+        let ratio = max_half / max_full;
+        assert!(
+            (ratio - 0.5).abs() < 0.05,
+            "La ganancia en el fallback debe ser lineal (ratio esperado ~0.5, obtenido: {})",
+            ratio
+        );
+    }
+
+    #[test]
+    fn test_a11_virtual_controls_independent_from_midi_learn_and_physical_mappings() {
+        let (mut prod, cons) = RingBuffer::<AudioEngineCommand>::new(64);
+        let engine = AudioEngine::new();
+        let cons_arc = Arc::new(Mutex::new(Some(cons)));
+        let mut state = build_test_render_state_from_engine(&engine, 48000.0, cons_arc);
+
+        // 1. Asignar mapeos personalizados de MIDI Learn para controles físicos:
+        // Fader 0 (Pad 1) reasignado a CC 100; Knob 0 reasignado a CC 101
+        let mut custom_faders = [0u8; 9];
+        custom_faders[0] = 100;
+        let mut custom_knobs = [0u8; 8];
+        custom_knobs[0] = 101;
+        prod.push(AudioEngineCommand::SetMidiLearnCcMappings {
+            faders: custom_faders,
+            knobs: custom_knobs,
+        }).unwrap();
+        state.process_commands();
+
+        // 2. Comprobar que los comandos directos de controles virtuales (mouse en UI)
+        // actualizan sus slots por índice sin depender de los CCs físicos
+        prod.push(AudioEngineCommand::SetPadGain { pad_index: 0, gain: 0.72 }).unwrap();
+        prod.push(AudioEngineCommand::SetKnobValue { knob_index: 0, value: 0.83 }).unwrap();
+        prod.push(AudioEngineCommand::SetMasterGain(0.64)).unwrap();
+        state.process_commands();
+
+        assert_eq!(state.pad_gains[0], 0.72, "El fader virtual 0 debe actualizarse directamente por índice");
+        assert_eq!(state.fx_rack.get_mappings_info()[0].value, 0.83, "El knob virtual 0 debe actualizarse directamente por índice");
+        assert_eq!(state.master_gain, 0.64, "El master fader virtual debe actualizarse directamente");
+
+        // 3. Comprobar que los controles físicos continúan respondiendo a sus CCs aprendidos
+        prod.push(AudioEngineCommand::ControlChange { controller: 100, value: 0.45 }).unwrap();
+        prod.push(AudioEngineCommand::ControlChange { controller: 101, value: 0.33 }).unwrap();
+        state.process_commands();
+
+        assert_eq!(state.pad_gains[0], 0.45, "El hardware físico mapeado a CC 100 debe actualizar Pad 1");
+        assert_eq!(state.fx_rack.get_mappings_info()[0].value, 0.33, "El hardware físico mapeado a CC 101 debe actualizar Knob 1");
+
+        // 4. Comprobar que el CC 38 original antiguo ya no afecta a Pad 1 porque está reasignado a CC 100
+        prod.push(AudioEngineCommand::ControlChange { controller: 38, value: 0.10 }).unwrap();
+        state.process_commands();
+        assert_eq!(state.pad_gains[0], 0.45, "CC 38 antiguo no debe interferir con Pad 1 reasignado a CC 100");
     }
 }

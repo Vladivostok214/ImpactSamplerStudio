@@ -147,3 +147,47 @@ test("evento de una conexión nueva llega antes que su status-changed", () => {
   s.status(3); // llega después: sin efecto
   assert.deepEqual([...s.notes.keys()], [62]);
 });
+
+test("A11: faders y knobs virtuales usan IPC directo por índice desacoplado de CC", () => {
+  // Simular la lógica de triggerVirtualFader y triggerVirtualKnob
+  const invocations: Array<{ cmd: string; args: any }> = [];
+  const fakeInvoke = (cmd: string, args: any) => {
+    invocations.push({ cmd, args });
+    return Promise.resolve();
+  };
+
+  const dispatchFader = (index: number, value: number) => {
+    const normalized = Math.max(0, Math.min(1, value / 127));
+    if (index === 8) {
+      fakeInvoke("set_master_volume", { gain: normalized });
+    } else if (index >= 0 && index < 8) {
+      fakeInvoke("set_pad_slot_gain", { padIndex: index, gain: normalized });
+    }
+  };
+
+  const dispatchKnob = (index: number, value: number) => {
+    const normalized = Math.max(0, Math.min(1, value / 127));
+    if (index >= 0 && index < 8) {
+      fakeInvoke("set_knob_value", { knobIndex: index, value: normalized });
+    }
+  };
+
+  // 1. Faders de Pads (0..7)
+  dispatchFader(0, 127);
+  dispatchFader(3, 64);
+  assert.deepEqual(invocations[0], { cmd: "set_pad_slot_gain", args: { padIndex: 0, gain: 1 } });
+  assert.equal(invocations[1].cmd, "set_pad_slot_gain");
+  assert.equal(invocations[1].args.padIndex, 3);
+  assert.ok(Math.abs(invocations[1].args.gain - 64 / 127) < 1e-4);
+
+  // 2. Fader Master (índice 8)
+  dispatchFader(8, 96);
+  assert.equal(invocations[2].cmd, "set_master_volume");
+  assert.ok(Math.abs(invocations[2].args.gain - 96 / 127) < 1e-4);
+
+  // 3. Knobs de FX (0..7)
+  dispatchKnob(0, 127);
+  dispatchKnob(7, 0);
+  assert.deepEqual(invocations[3], { cmd: "set_knob_value", args: { knobIndex: 0, value: 1 } });
+  assert.deepEqual(invocations[4], { cmd: "set_knob_value", args: { knobIndex: 7, value: 0 } });
+});
